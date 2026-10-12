@@ -1,0 +1,21 @@
+# 由 dsh-gate service 生成。改动后请执行 systemctl daemon-reload。
+#
+# 想换端口或实例目录：systemctl edit dsh-gate.service，写一个 [Service] ExecStart= 覆盖即可。
+[Unit]
+Description=DSH 局域网网关（dsh-gate 0.2.0）
+Documentation=https://github.com/wycto/dsh-gate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wycto
+WorkingDirectory=/home/wycto
+ExecStart=/usr/local/bin/dsh-gate run --log-json --dsh-home /var/lib/dsh --port 3082
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

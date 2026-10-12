@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Title}}</title>
+<style>
+  /* =====================================================================
+     dsh-gate 登录页
+     全部样式内联，无任何外部请求：无 CDN、无外链字体、无外部图片、无
+     favicon 引用。断网 / 无外网的服务器上也能完整显示。
+     两套配色：默认深色，prefers-color-scheme: light 时切浅色。
+     ===================================================================== */
+
+  :root {
+    color-scheme: dark;
+
+    /* 背景与卡片 */
+    --bg: #080a11;
+    --bg-tint: #0d111b;
+    --card: rgba(20, 26, 38, .72);
+    --line: rgba(255, 255, 255, .11);
+    --line-soft: rgba(255, 255, 255, .06);
+    --line-top: rgba(255, 255, 255, .22);
+    --hover-fill: rgba(255, 255, 255, .07);
+
+    /* 文本 */
+    --text: #e9edf6;   /* 正文，对 --bg 对比度 ≈ 17:1 */
+    --muted: #98a1b4;  /* 次要文本，对卡片 ≈ 7.3:1 */
+    --faint: #808a9e;  /* 弱化文本，对卡片 ≈ 5.0:1 */
+
+    /* 输入区 */
+    --field: rgba(255, 255, 255, .04);
+    --field-hover: rgba(255, 255, 255, .065);
+    --field-focus: rgba(255, 255, 255, .07);
+
+    /* 主色 */
+    --accent: #5b8cff;
+    --ring: 0 0 0 3px rgba(91, 140, 255, .26);
+    --btn-a: #3a6ee8;
+    --btn-b: #2a55c4;
+    --btn-text: #ffffff;
+    --btn-glow: rgba(58, 110, 232, .55);
+
+    /* 标识图形 */
+    --mark-a: #7aa8ff;
+    --mark-b: #4fd6c4;
+
+    /* 极光层 */
+    --aurora-1: #1d4ed8;
+    --aurora-2: #0e7f8f;
+    --aurora-3: #4c3fb5;
+    --aurora-op: .5;
+    --grid-line: rgba(255, 255, 255, .035);
+
+    /* 状态色 */
+    --danger: #ff9090;
+    --danger-bg: rgba(255, 94, 94, .10);
+    --danger-line: rgba(255, 94, 94, .30);
+
+    --radius: 20px;
+    --ease: cubic-bezier(.22, .75, .25, 1);
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+
+      --bg: #e9edf5;
+      --bg-tint: #f6f8fc;
+      --card: rgba(255, 255, 255, .82);
+      --line: rgba(16, 24, 48, .13);
+      --line-soft: rgba(16, 24, 48, .07);
+      --line-top: rgba(255, 255, 255, .95);
+      --hover-fill: rgba(16, 24, 48, .05);
+
+      --text: #131a2b;   /* 正文，对白卡片 ≈ 15.6:1 */
+      --muted: #59637a;  /* 对白卡片 ≈ 6.0:1 */
+      --faint: #5b6478;  /* 对白卡片 ≈ 5.7:1 */
+
+      --field: #f3f5fb;
+      --field-hover: #eef1f8;
+      --field-focus: #ffffff;
+
+      --accent: #2f5ada;
+      --ring: 0 0 0 3px rgba(47, 90, 218, .18);
+      --btn-a: #3b6ae4;
+      --btn-b: #2a52c6;
+      --btn-glow: rgba(43, 82, 198, .40);
+
+      --mark-a: #3563e0;
+      --mark-b: #0f9c88;
+
+      --aurora-1: #93b4ff;
+      --aurora-2: #a5e6da;
+      --aurora-3: #c9c0ff;
+      --aurora-op: .55;
+      --grid-line: rgba(16, 24, 48, .04);
+
+      --danger: #b4232b;
+      --danger-bg: rgba(214, 45, 45, .07);
+      --danger-line: rgba(190, 30, 40, .26);
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    /* 视口单位而非 min-height: 100%：html 高度为 auto 时百分比高度不生效，
+       页面撑不满视口，卡片会顶在上面而不是垂直居中。svh 以手机的小视口
+       （地址栏还挂着时）为准，地址栏收放时高度不跳。 */
+    min-height: 100vh;
+    min-height: 100svh;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: clamp(.9375rem, .9rem + .18vw, 1rem);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    padding: clamp(1rem, 4vw, 2.5rem);
+    padding-left: calc(clamp(1rem, 4vw, 2.5rem) + env(safe-area-inset-left));
+    padding-right: calc(clamp(1rem, 4vw, 2.5rem) + env(safe-area-inset-right));
+    padding-bottom: calc(clamp(1rem, 4vw, 2.5rem) + env(safe-area-inset-bottom));
+  }
+
+  /* ---------------- 背景：极光光斑 + 栅格 ---------------- */
+
+  .aurora {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+    background: linear-gradient(180deg, var(--bg-tint), var(--bg) 62%);
+  }
+
+  .blob {
+    position: absolute;
+    display: block;
+    border-radius: 50%;
+    filter: blur(78px);
+    opacity: var(--aurora-op);
+    will-change: transform;
+  }
+
+  .blob-1 {
+    width: 62vmax; height: 62vmax;
+    left: -20vmax; top: -24vmax;
+    background: var(--aurora-1);
+    animation: drift-1 38s ease-in-out infinite;
+  }
+
+  .blob-2 {
+    width: 54vmax; height: 54vmax;
+    right: -18vmax; top: 6vmax;
+    background: var(--aurora-2);
+    animation: drift-2 46s ease-in-out infinite;
+  }
+
+  .blob-3 {
+    width: 48vmax; height: 48vmax;
+    left: 14vmax; bottom: -24vmax;
+    background: var(--aurora-3);
+    animation: drift-3 54s ease-in-out infinite;
+  }
+
+  .aurora::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 46px 46px;
+    -webkit-mask-image: radial-gradient(ellipse 92% 74% at 50% 36%, #000 8%, transparent 78%);
+    mask-image: radial-gradient(ellipse 92% 74% at 50% 36%, #000 8%, transparent 78%);
+  }
+
+  @keyframes drift-1 {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    50%  { transform: translate3d(14vw, 9vh, 0) scale(1.16); }
+    100% { transform: translate3d(-7vw, 15vh, 0) scale(.92); }
+  }
+
+  @keyframes drift-2 {
+    0%   { transform: translate3d(0, 0, 0) scale(.95); }
+    50%  { transform: translate3d(-13vw, 12vh, 0) scale(1.12); }
+    100% { transform: translate3d(6vw, -6vh, 0) scale(1); }
+  }
+
+  @keyframes drift-3 {
+    0%   { transform: translate3d(0, 0, 0) scale(1.05); }
+    50%  { transform: translate3d(11vw, -11vh, 0) scale(.9); }
+    100% { transform: translate3d(-9vw, -3vh, 0) scale(1.08); }
+  }
+
+  @keyframes pop-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ---------------- 布局 ---------------- */
+
+  .shell {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(.875rem, 3vw, 1.25rem);
+  }
+
+  .card {
+    position: relative;
+    padding: clamp(1.25rem, 6vw, 2rem);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 30px 70px -32px rgba(0, 0, 0, .85), 0 2px 10px rgba(0, 0, 0, .35);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(18px) saturate(140%);
+    overflow: hidden;
+  }
+
+  /* 玻璃顶边高光 + 顶部辉光 */
+  .card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--line-top) 50%, transparent);
+  }
+
+  .card::after {
+    content: "";
+    position: absolute;
+    top: -70px; left: 50%;
+    width: 150%; height: 150px;
+    transform: translateX(-50%);
+    background: radial-gradient(closest-side, rgba(91, 140, 255, .22), transparent);
+    pointer-events: none;
+  }
+
+  /* ---------------- 标识区 ---------------- */
+
+  .brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: .5rem;
+    margin-bottom: clamp(1.25rem, 5vw, 1.75rem);
+  }
+
+  .mark {
+    width: clamp(48px, 15vw, 56px);
+    height: clamp(48px, 15vw, 56px);
+    display: grid;
+    place-items: center;
+    border-radius: 16px;
+    background: linear-gradient(158deg, var(--hover-fill), rgba(255, 255, 255, .02));
+    border: 1px solid var(--line-soft);
+  }
+
+  .mark svg { width: 62%; height: auto; display: block; }
+
+  .title {
+    margin: 0;
+    font-size: clamp(1.125rem, 1.02rem + 1.05vw, 1.375rem);
+    font-weight: 640;
+    letter-spacing: .01em;
+    line-height: 1.3;
+  }
+
+  .subtitle {
+    margin: 0;
+    max-width: 26em;
+    color: var(--muted);
+    font-size: .9375rem;
+    line-height: 1.5;
+  }
+
+  /* ---------------- 错误提示 ---------------- */
+
+  .error {
+    display: flex;
+    align-items: flex-start;
+    gap: .55rem;
+    margin: 0 0 clamp(1rem, 4vw, 1.25rem);
+    padding: .7rem .85rem;
+    font-size: .875rem;
+    line-height: 1.5;
+    color: var(--danger);
+    background: var(--danger-bg);
+    border: 1px solid var(--danger-line);
+    border-radius: 12px;
+    animation: pop-in .3s var(--ease) both;
+  }
+
+  .error::before {
+    content: "";
+    flex: none;
+    width: .5rem;
+    height: .5rem;
+    margin-top: .45rem;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* ---------------- 表单 ---------------- */
+
+  .form {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(.875rem, 3vw, 1.125rem);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: .4rem;
+  }
+
+  .field > label {
+    font-size: .8125rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--muted);
+  }
+
+  .control { position: relative; }
+
+  input[type="text"],
+  input[type="password"] {
+    width: 100%;
+    padding: .72rem .875rem;
+    font: inherit;
+    /* 不低于 16px：更小的字号会让 iOS 在聚焦输入框时自动放大页面。 */
+    font-size: 1rem;
+    color: var(--text);
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    -webkit-appearance: none;
+    appearance: none;
+    transition: background-color .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease);
+  }
+
+  input[type="password"] { padding-right: 3rem; }
+
+  input::placeholder { color: var(--faint); opacity: 1; }
+
+  input:hover { background: var(--field-hover); }
+
+  input:focus {
+    outline: none;
+    background: var(--field-focus);
+    border-color: var(--accent);
+    box-shadow: var(--ring);
+  }
+
+  .toggle {
+    position: absolute;
+    top: 50%;
+    right: .3rem;
+    transform: translateY(-50%);
+    width: 2.25rem;
+    height: 2.25rem;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    font: inherit;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    border-radius: 9px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: color .18s var(--ease), background-color .18s var(--ease);
+  }
+
+  .toggle:hover { color: var(--text); background: var(--hover-fill); }
+
+  .toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    color: var(--text);
+  }
+
+  .toggle svg { width: 1.25rem; height: 1.25rem; display: block; }
+
+  .toggle .icon-off { opacity: 0; transition: opacity .16s var(--ease); }
+
+  .toggle[aria-pressed="true"] .icon-on { opacity: 0; }
+
+  .toggle[aria-pressed="true"] .icon-off { opacity: 1; }
+
+  .toggle path,
+  .toggle circle {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .submit {
+    width: 100%;
+    margin-top: .25rem;
+    padding: .8rem 1rem;
+    font: inherit;
+    font-weight: 600;
+    letter-spacing: .03em;
+    color: var(--btn-text);
+    background: linear-gradient(180deg, var(--btn-a), var(--btn-b));
+    border: 0;
+    border-radius: 12px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    box-shadow: 0 10px 22px -12px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .18);
+    transition: transform .12s var(--ease), filter .2s var(--ease), box-shadow .2s var(--ease), opacity .2s var(--ease);
+  }
+
+  .submit:hover {
+    filter: brightness(1.07);
+    box-shadow: 0 14px 26px -12px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .22);
+  }
+
+  .submit:active {
+    transform: translateY(1px);
+    filter: brightness(.97);
+  }
+
+  .submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .submit:disabled {
+    opacity: .62;
+    cursor: progress;
+    filter: none;
+    transform: none;
+    box-shadow: none;
+  }
+
+  /* ---------------- 提示与页脚 ---------------- */
+
+  .hint {
+    margin: clamp(1rem, 4vw, 1.25rem) 0 0;
+    text-align: center;
+    font-size: .8125rem;
+    color: var(--faint);
+  }
+
+  .foot {
+    margin: 0;
+    text-align: center;
+    font-size: .75rem;
+    letter-spacing: .01em;
+    color: var(--faint);
+  }
+
+  .foot .sep { padding: 0 .35rem; opacity: .65; }
+
+  /* ---------------- 动效降级 ---------------- */
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="aurora" aria-hidden="true">
+  <span class="blob blob-1"></span>
+  <span class="blob blob-2"></span>
+  <span class="blob blob-3"></span>
+</div>
+
+<main class="shell">
+
+  <section class="card">
+    <header class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 44 44" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="gateMark" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="var(--mark-a)"></stop>
+              <stop offset="1" stop-color="var(--mark-b)"></stop>
+            </linearGradient>
+          </defs>
+          <path d="M22 4.2 38 12.9v14.4L22 36 6 27.3V12.9z" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linejoin="round"></path>
+          <circle cx="22" cy="19.4" r="3.7" fill="url(#gateMark)"></circle>
+          <path d="M14.2 29.4 22 24.3l7.8 5.1" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"></path>
+        </svg>
+      </span>
+      <h1 class="title">{{.Title}}</h1>
+      {{if .Subtitle}}<p class="subtitle">{{.Subtitle}}</p>{{end}}
+    </header>
+
+    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+
+    <form class="form" id="login-form" method="post" action="{{.Action}}">
+      <input type="hidden" name="next" value="{{.Next}}">
+
+      <div class="field">
+        <label for="username">用户名</label>
+        <input id="username" name="username" type="text" value="{{.Username}}" autocomplete="username"
+               autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="输入用户名" required autofocus>
+      </div>
+
+      <div class="field">
+        <label for="password">密码</label>
+        <div class="control">
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 placeholder="输入密码" required>
+          <button type="button" class="toggle" id="pw-toggle" aria-label="显示密码" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <g class="icon-on">
+                <path d="M2.5 12S6.2 5.8 12 5.8 21.5 12 21.5 12 17.8 18.2 12 18.2 2.5 12 2.5 12Z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </g>
+              <g class="icon-off">
+                <path d="M9.6 6.3A9.3 9.3 0 0 1 12 6.1c5.8 0 9.5 5.9 9.5 5.9a17.6 17.6 0 0 1-3.1 3.8"></path>
+                <path d="M6.5 8.2A16.9 16.9 0 0 0 2.5 12S6.2 17.9 12 17.9a9.2 9.2 0 0 0 3.4-.7"></path>
+                <path d="M4.2 4.2 19.8 19.8"></path>
+              </g>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <button type="submit" class="submit" id="submit-btn"><span id="submit-label">登录</span></button>
+    </form>
+
+    <p class="hint">账号由网关管理员分配，如需开通请联系管理员。</p>
+  </section>
+
+  <footer class="foot">由 dsh-gate 保护<span class="sep">·</span>{{.Host}}<span class="sep">·</span>v{{.Version}}</footer>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var form = document.getElementById("login-form");
+  var password = document.getElementById("password");
+  var toggle = document.getElementById("pw-toggle");
+  var submit = document.getElementById("submit-btn");
+  var submitLabel = document.getElementById("submit-label");
+
+  /* 显示 / 隐藏密码：只改 input 的 type，并同步无障碍状态 */
+  if (toggle && password) {
+    toggle.addEventListener("click", function () {
+      var show = password.type === "password";
+      password.type = show ? "text" : "password";
+      toggle.setAttribute("aria-pressed", show ? "true" : "false");
+      toggle.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+      var end = password.value.length;
+      password.focus();
+      try { password.setSelectionRange(end, end); } catch (e) { /* 某些浏览器对 password 类型不支持 */ }
+    });
+  }
+
+  /* 提交后立刻禁用按钮，防止连点重复提交 */
+  if (form && submit && submitLabel) {
+    form.addEventListener("submit", function () {
+      if (submit.disabled) { return; }
+      submit.disabled = true;
+      submit.setAttribute("aria-busy", "true");
+      submitLabel.textContent = "正在登录…";
+    });
+  }
+})();
+</script>
+
+</body>
+</html>
