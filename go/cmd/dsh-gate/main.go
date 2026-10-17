@@ -6,6 +6,7 @@
 // 子命令：
 //
 //	dsh-gate setup [选项]       引导式初始化：建账号，可顺带启动与自启
+//	dsh-gate install [选项]     装管理端：建管理员账号，不拉起任何 dsh
 //	dsh-gate uninstall <实例名|all>  停掉指定实例；--service/--purge 另外两步
 //	dsh-gate plugin <list|add>  管理 dsh 配置档里的插件（自带 Node/pnpm 与换源）
 //	dsh-gate model <list|key|provider|default>  配模型（dsh-dock 装不上时的出路）
@@ -27,6 +28,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/wycto/dsh-gate/internal/i18n"
 	"github.com/wycto/dsh-gate/internal/version"
 )
 
@@ -36,6 +38,10 @@ func main() {
 
 // run 是真正的入口，单独抽出来是为了能在测试里直接调用。
 func run(argv []string) int {
+	// 全局 --lang 先摘出来：它属于整个进程的输出语言，不属于某个子命令。
+	explicitLang, argv := extractLang(argv)
+	setCLILang(explicitLang)
+
 	command := "run"
 	rest := argv
 	switch {
@@ -47,7 +53,8 @@ func run(argv []string) int {
 	case argv[0] == "run" || argv[0] == "stop" || argv[0] == "restart" ||
 		argv[0] == "status" || argv[0] == "user" || argv[0] == "check" ||
 		argv[0] == "service" || argv[0] == "version" || argv[0] == "setup" ||
-		argv[0] == "uninstall" || argv[0] == "plugin" || argv[0] == "model":
+		argv[0] == "install" || argv[0] == "uninstall" || argv[0] == "plugin" ||
+		argv[0] == "model" || argv[0] == "manage" || argv[0] == "portal":
 		command, rest = argv[0], argv[1:]
 	case argv[0] == "help" || argv[0] == "-h" || argv[0] == "--help":
 		printHelp(os.Stdout)
@@ -62,7 +69,7 @@ func run(argv []string) int {
 		// 「我就是想改个端口启动」的写法不必再补一个 run。
 		command, rest = "run", argv
 	default:
-		fmt.Fprintf(os.Stderr, "dsh-gate: 未知子命令 %q\n\n", argv[0])
+		fmt.Fprintf(os.Stderr, "dsh-gate: %s\n\n", tr(i18n.KeyCLIUnknownCommand, argv[0]))
 		printHelp(os.Stderr)
 		return 2
 	}
@@ -72,12 +79,19 @@ func run(argv []string) int {
 		return runCommand(rest)
 	case "setup":
 		return setupCommand(rest)
+	case "install":
+		return installCommand(rest)
 	case "uninstall":
 		return uninstallCommand(rest)
 	case "plugin":
 		return pluginCommand(rest)
 	case "model":
 		return modelCommand(rest)
+	case "manage":
+		return manageCommand(rest)
+	case "portal":
+		// portal 是 manage 的旧名，保留一段时间方便老脚本与肌肉记忆。
+		return manageCommand(rest)
 	case "stop":
 		return stopCommand(rest)
 	case "restart":
@@ -107,6 +121,7 @@ func printHelp(w *os.File) {
 
 用法:
   dsh-gate setup [选项]          引导式初始化：建账号，可顺带启动与自启
+  dsh-gate install [选项]        装管理端：建管理员账号，一个 dsh 都不拉起，实例之后在 /admin 配
   dsh-gate run [选项]            启动网关
   dsh-gate status [选项]         列出本机正在运行的实例（名字、端口、各自目录）
   dsh-gate stop <实例名|all>    停掉指定实例（必须写明目标）
@@ -115,6 +130,10 @@ func printHelp(w *os.File) {
   dsh-gate user passwd <用户名>  修改已有账号的口令（改完立即生效）
   dsh-gate user list             列出账号
   dsh-gate user rm <用户名>      删除账号
+  dsh-gate manage user add <用户名> --role admin     管理端：新建用户（账号提升到管理端一级）
+  dsh-gate manage instance add <名字> --dsh-home <目录>  管理端：新建 dsh 实例
+  dsh-gate manage grant add <用户名> <实例名>         管理端：把实例授权给用户
+  dsh-gate manage --help         管理端命令的完整用法（支持 --lang en 切换英文）
   dsh-gate check [选项]          体检：端口占用、dsh 状态、访问地址
   dsh-gate service install       设为开机（登录）自启，并立即启动（默认把命令拷进 /usr/local/bin）
   dsh-gate service uninstall     只取消开机自启（机器级的一个服务单元）
@@ -129,7 +148,8 @@ func printHelp(w *os.File) {
   dsh-gate version               打印版本号
 
 一条命令就能用起来:
-  $ dsh-gate setup               # 建账号，按需顺带启动与设自启
+  $ dsh-gate setup               # 建账号，按需顺带启动与设自启（单实例形态）
+  $ dsh-gate install --random --start   # 装管理端：先不拉 dsh，之后登 /admin 配实例
 或者分步来:
   $ dsh-gate user add admin      # 1. 创建一个登录账号
   $ dsh-gate run                 # 2. 启动网关，按提示在浏览器登录
@@ -151,6 +171,7 @@ func printHelp(w *os.File) {
 文件放在哪:
   dsh 的数据     ~/.dsh                      （会话、插件、配置；--dsh-home 可改）
   网关自己的数据 ~/.dsh-gate                  （账号表；--state-dir 可改）
+  管理端数据库   ~/.dsh-gate/portal.db        （账号、实例、授权；manage 子命令用它）
   自备 Node.js   ~/.dsh-gate/node             （本机没有 Node.js 时自动下载，随 --purge 删除）
   两者刻意分开：备份、清理、迁移时互不牵扯。
 

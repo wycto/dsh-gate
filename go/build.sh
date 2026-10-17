@@ -73,6 +73,13 @@ for target in $targets; do
 	# QUICKSTART 是一页纸的「解压之后怎么跑起来」，README 是完整说明，LICENSE 是授权。
 	cp LICENSE README.md QUICKSTART.md "$stage/"
 
+	# README 里的截图是相对路径（docs/images/*.png）。不连图一起打包的话，
+	# 解压出来看 README 全是裂图——所以按原目录结构把图带上。
+	if [ -d docs/images ]; then
+		mkdir -p "$stage/docs/images"
+		cp docs/images/*.png "$stage/docs/images/"
+	fi
+
 	if [ "$goos" = windows ]; then
 		(cd "$outdir" && zip -q -r "dsh-gate_${version}_${goos}_${goarch}.zip" "dsh-gate_${version}_${goos}_${goarch}")
 	else

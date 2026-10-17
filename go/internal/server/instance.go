@@ -483,29 +483,10 @@ func (i *Instance) Banner() string {
 // 的对外地址（192.168.x.x:8080、内网穿透域名、mDNS 主机名）都必须在这里
 // 点名，否则浏览器每个 API 调用都会收到 403。
 //
-// 自动加入本机的所有非回环 IP 是因为它们几乎必然就是用户要访问的地址；
-// 用户手动 --trusted-host 加的是那些自动发现不了的域名。
+// 实现搬到 TrustedHosts 里，因为管理端形态也要用同一份推导：那份代码当初
+// 漏了这一步，于是单实例下一切正常、管理端下每个实例都「一直连接中」。
 func buildTrustedHosts(cfg config.Instance) []string {
-	seen := map[string]bool{}
-	var hosts []string
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			return
-		}
-		seen[value] = true
-		hosts = append(hosts, value)
-	}
-	for _, host := range cfg.TrustedHosts {
-		add(host)
-	}
-	for _, address := range LocalAddresses() {
-		add(authorityHost(address))
-	}
-	if name := Hostname(); name != "" {
-		add(name)
-	}
-	return hosts
+	return TrustedHosts(cfg.TrustedHosts, cfg.PublicURL)
 }
 
 // authorityHost 把地址写成 dsh 认得的 authority 形式。

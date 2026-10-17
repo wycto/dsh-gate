@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -148,6 +149,39 @@ func (s *Supervisor) registry() string {
 func (s *Supervisor) childEnv() []string {
 	env := append(os.Environ(), "DSH_HOME="+s.opts.Home)
 	return npmEnv(env, s.registry())
+}
+
+// ensureWorkspaceDir 在拉起 dsh 之前确认工作目录可用，不存在就建出来。
+//
+// 存在的意义有两个，都来自同一条踩过的坑：工作目录不存在时，fork 失败的信息是
+// 「fork/exec /path/to/npx: no such file or directory」——它点名的是 npx，于是
+// 所有人都会去查 npx 装没装、PATH 对不对，而真正的原因是实例的工作目录压根没建。
+// 所以这里既不把话说错（自己判一次，报错指向目录），也不让人白等（缺了就建）。
+//
+// 空串表示沿用网关自己的当前目录，不算错。路径存在但不是目录时报错——那种情况
+// 建不出来，也没法当工作目录用。
+func ensureWorkspaceDir(dir string, log *slog.Logger) error {
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	switch {
+	case err == nil:
+		if !info.IsDir() {
+			return fmt.Errorf("实例的工作目录 %s 不是目录，dsh 无法在其中启动：请改成一个目录路径，或删掉它让网关重建", dir)
+		}
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("实例的工作目录 %s 不存在，自动创建也失败: %w", dir, err)
+		}
+		if log != nil {
+			log.Info("实例的工作目录原本不存在，已自动创建", "dir", dir)
+		}
+		return nil
+	default:
+		return fmt.Errorf("实例的工作目录 %s 无法访问: %w", dir, err)
+	}
 }
 
 // NativeURL 返回 dsh 的本机原生访问地址（含启动令牌），令牌未知时返回空串。
@@ -417,6 +451,19 @@ func (s *Supervisor) launch(ctx context.Context) error {
 // reap 自己（见其注释），否则「秒退的子进程」会让新旧两个重启循环并存，
 // 崩溃风暴就是这么来的。
 func (s *Supervisor) spawn(args []string) (*exec.Cmd, <-chan error, chan struct{}, error) {
+	// 工作目录不存在时 exec.Command 会报「fork/exec <可执行文件>: no such file
+	// or directory」——错误信息指向的是**命令**，而真正缺的是目录。照着这个报错
+	// 去查命令只会越查越远，所以先自己判一次，把话说清楚。
+	if err := ensureWorkspaceDir(s.opts.Workspace, s.log); err != nil {
+		return nil, nil, nil, err
+	}
+	// 把实例登记里的工作目录预置成 dsh 的默认工作区：否则用户每个实例第一次
+	// 进去都要在「选择一个工作区」里手动挑一次。失败不拦启动——预置只是让首次
+	// 使用更顺，挑一次仍然能用。
+	if err := SeedDefaultWorkspace(s.log, s.opts.Home, s.opts.Workspace); err != nil {
+		s.log.Warn("预置默认工作区失败（不影响启动，进去后手动选一次即可）", "err", err.Error())
+	}
+
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = s.opts.Workspace // 空串表示沿用当前进程的工作目录
 	cmd.Env = s.childEnv()

@@ -79,7 +79,13 @@ func stopCommand(args []string) int {
 		// 清掉登记：实例没了还留着条目，status 会一直显示一条「未运行」的
 		// 残留，看起来像出了问题。
 		_ = runDir().Remove(record.Name)
-		fmt.Printf("实例 %s 已停止（%s，连同它托管的 dsh）。\n", record.Name, record.Listen)
+		// 管理端（DSHPort 为 0）不托管 dsh，说「连同它托管的 dsh」是错的：
+		// 实例各自由 portalruntime 按需拉起，停管理端不等于停那些 dsh。
+		if record.DSHPort > 0 {
+			fmt.Printf("实例 %s 已停止（%s，连同它托管的 dsh）。\n", record.Name, record.Listen)
+		} else {
+			fmt.Printf("实例 %s 已停止（%s；它托管的实例由各实例自己管理）。\n", record.Name, record.Listen)
+		}
 	}
 	if failed > 0 {
 		return 1
@@ -229,9 +235,19 @@ func statusCommand(args []string) int {
 		running++
 		fmt.Printf("实例 %s\n", record.Name)
 		fmt.Printf("  网关端口  %s\n", record.Listen)
-		fmt.Printf("  dsh 端口  127.0.0.1:%d\n", record.DSHPort)
-		fmt.Printf("  dsh 目录  %s\n", record.DSHHome)
-		fmt.Printf("  账号表    %s\n", record.UsersFile)
+		// 管理端（DSHPort 为 0）不托管任何 dsh：实例各自由 portalruntime 按需拉起。
+		// 打一个「127.0.0.1:0」出来只会让人以为配错了端口。
+		if record.DSHPort > 0 {
+			fmt.Printf("  dsh 端口  127.0.0.1:%d\n", record.DSHPort)
+		} else {
+			fmt.Printf("  dsh 端口  无（管理端不托管 dsh，实例按需启动）\n")
+		}
+		if record.DSHHome != "" {
+			fmt.Printf("  dsh 目录  %s\n", record.DSHHome)
+		}
+		if record.UsersFile != "" {
+			fmt.Printf("  账号表    %s\n", record.UsersFile)
+		}
 		fmt.Printf("  进程号    %d\n", record.PID)
 		fmt.Printf("  已运行    %s\n", humanSince(record.StartedAt))
 		if record.TLS {

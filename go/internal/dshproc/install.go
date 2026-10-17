@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -103,14 +104,30 @@ type Resolution struct {
 // registry 为空表示用 npm 默认（含用户 ~/.npmrc），失败才自动试镜像；
 // 非空表示用户点名了源，只认这一个。
 func EnsureDSH(ctx context.Context, log *slog.Logger, registry string) (Resolution, error) {
+	return EnsureDSHWithBin(ctx, log, registry, "")
+}
+
+// EnsureDSHWithBin 与 EnsureDSH 相同，但把 extraBin 目录前置到子进程的 PATH 上。
+//
+// 为什么需要它：网关会把官方 Node.js 运行时下载到状态目录（`EnsureNodeRuntime`），
+// 那台机器上就**没有**系统级 npx。此时只看进程自己的 PATH 会得出「找不到 npx」，
+// 而实际上 npx 就在自备运行时里——用户看到的是「明明刚下好 Node 却说没装」。
+// 传进来的是目录（NodeBin 的父目录），不是 npx 文件本身：npx 的 shebang 是
+// `#!/usr/bin/env node`，只把 npx 塞进命令行、不把它的 bin 目录放进 PATH，
+// 子进程照样找不到 node。
+func EnsureDSHWithBin(ctx context.Context, log *slog.Logger, registry, extraBin string) (Resolution, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	npx := lookPathAny("npx", "npx.cmd")
-	if npx == "" {
+	if npx == "" && extraBin == "" {
 		return Resolution{}, errors.New("找不到 npx：dsh 通过官方命令 npx --yes @deepseek-ai/dsh 启动；" +
 			"网关会先把官方 Node.js 运行时下载到状态目录，这次没成功（原因见上面的下载报错）。" +
 			"也可以手工安装 Node.js（https://nodejs.org/），或用 --dsh-cmd 指定启动命令")
+	}
+	// 自备运行时里的 npx 用绝对路径调，不依赖 PATH 查找。
+	if npx == "" {
+		npx = filepath.Join(extraBin, "npx")
 	}
 
 	versions := append([]string{""}, fallbackVersions...)
@@ -133,7 +150,7 @@ func EnsureDSH(ctx context.Context, log *slog.Logger, registry string) (Resoluti
 		}
 		for _, version := range versions {
 			command := npxCommand(npx, version, source)
-			output, err := smokeTest(ctx, command, source)
+			output, err := smokeTestWithBin(ctx, command, source, extraBin)
 			if err == nil {
 				if i > 0 {
 					log.Info("dsh 已从镜像源拿到并验证通过", "registry", source, "command", redact(command))
@@ -218,6 +235,15 @@ func isNetworkFailure(err error, output string) bool {
 //   - 某些运行时：入口静默不执行（exit 0 无输出）；
 //   - 缺平台原生绑定：boot 报 No usable native binding。
 func smokeTest(ctx context.Context, command, registry string) (string, error) {
+	return smokeTestWithBin(ctx, command, registry, "")
+}
+
+// smokeTestWithBin 与 smokeTest 相同，但把 extraBin 目录前置到 PATH 上。
+//
+// npx 的 shebang 是 `#!/usr/bin/env node`：命令用自备运行时的绝对路径调，但
+// npx 脚本自己要找 node，所以 PATH 里必须有那个 bin 目录，否则会以
+// "env: node: No such file or directory" 失败。
+func smokeTestWithBin(ctx context.Context, command, registry, extraBin string) (string, error) {
 	args, err := SplitCommand(command)
 	if err != nil || len(args) == 0 {
 		return "", fmt.Errorf("解析 dsh 启动命令 %q 失败: %w", command, err)
@@ -227,7 +253,11 @@ func smokeTest(ctx context.Context, command, registry string) (string, error) {
 	smokeCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(smokeCtx, args[0], args[1:]...)
-	cmd.Env = npmEnv(os.Environ(), registry)
+	env := npmEnv(os.Environ(), registry)
+	if extraBin != "" {
+		env = setEnv(env, "PATH", prependPath(extraBin, envValue(env, "PATH")))
+	}
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err == nil && smokeOK(text) {
@@ -291,8 +321,8 @@ func smokeGuidance(output string, err error) error {
 			"（parseEnv 需要 20.12+）；请升级 Node.js 后重试，或用 --dsh-cmd 指定启动命令",
 			version, tailText(text, 200))
 	case err != nil && strings.Contains(err.Error(), "没有输出帮助"):
-		return fmt.Errorf("dsh 入口没有执行：web --help 静默退出 0、无任何输出。"+
-			"证据：这版 dsh 的 bin.js 以「if (import.meta.main)」守门，而实测 Node 20/22 没有该特性"+
+		return fmt.Errorf("dsh 入口没有执行：web --help 静默退出 0、无任何输出。" +
+			"证据：这版 dsh 的 bin.js 以「if (import.meta.main)」守门，而实测 Node 20/22 没有该特性" +
 			"（入口被跳过）、26 有——请升级 Node.js 到最新版后重试，或用 --dsh-cmd 指定启动命令")
 	default:
 		if err == nil {

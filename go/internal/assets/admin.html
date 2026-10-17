@@ -1,0 +1,766 @@
+<!doctype html>
+<!--
+  管理台：用户 CRUD、授权矩阵、审计。
+
+  刻意**不用 JavaScript**：所有操作都是普通表单 POST + 303 回跳（PRG）。
+  好处是页面可以沿用与登录页/管理端首页同一套严格 CSP（default-src 'none'），
+  也不会出现「脚本出错导致按钮点了没反应」这类问题；代价是每次操作刷新一次页面。
+
+  内容多，所以分了五页（用户 / 实例授权 / 实例 / 运行环境 / 审计），导航是一块
+  悬浮玻璃面板：宽屏固定在左侧、窄屏沉到底部。切页**依然没有脚本**——靠一组
+  隐藏的单选钮 + :has() 纯 CSS 完成，点菜单不刷新；服务端用 ?tab= 记住当前页，
+  表单提交（PRG）后仍回到提交前那一页。不支持 :has() 的老浏览器整体退回
+  一页平铺（与改造前相同），导航自动隐藏。
+-->
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>{{.Title}}</title>
+<style>
+:root{
+  /* ---------- macOS 深色（默认）----------
+     整体是一扇「窗口」：标题栏、内容区、底部 Dock。窗口用系统材质（半透明 +
+     背景模糊），所以背后必须是一张壁纸——纯色底上模糊是看不出来的。 */
+  --desktop-1:#12121a;
+  --desktop-2:#1b1b26;
+  --window:rgba(44,44,50,.62);
+  --titlebar:rgba(58,58,66,.52);
+  --content:rgba(34,34,40,.34);
+  --card:rgba(255,255,255,.045);
+  --card-2:rgba(255,255,255,.07);
+  --field:rgba(0,0,0,.28);
+  --line:rgba(255,255,255,.10);
+  --line-strong:rgba(255,255,255,.20);
+  --text:#f5f5f7;
+  --muted:#a1a1aa;
+  --faint:#71717a;
+  --accent:#0a84ff;
+  --accent-2:#5e5ce6;
+  --ok:#30d158;
+  --warning:#ffd60a;
+  --danger:#ff453a;
+  --radius-window:14px;
+  --radius-card:12px;
+  --radius-control:7px;
+  --shadow-window:0 40px 90px -40px rgba(0,0,0,.95),
+                  0 1px 0 rgba(255,255,255,.10) inset;
+  --shadow-dock:0 26px 60px -24px rgba(0,0,0,.85),
+                0 1px 0 rgba(255,255,255,.18) inset;
+  --ease:cubic-bezier(.32,.72,.24,1);
+  --gap:clamp(14px,1.1vw,22px);
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --desktop-1:#c9d8f0;
+    --desktop-2:#e8dff5;
+    --window:rgba(248,248,250,.74);
+    --titlebar:rgba(236,236,240,.62);
+    --content:rgba(255,255,255,.42);
+    --card:rgba(0,0,0,.035);
+    --card-2:rgba(0,0,0,.055);
+    --field:rgba(255,255,255,.75);
+    --line:rgba(0,0,0,.10);
+    --line-strong:rgba(0,0,0,.20);
+    --text:#1d1d1f;
+    --muted:#6e6e73;
+    --faint:#8e8e93;
+    --accent:#007aff;
+    --accent-2:#5856d6;
+    --ok:#34c759;
+    --warning:#ffcc00;
+    --danger:#ff3b30;
+    --shadow-window:0 30px 70px -40px rgba(30,40,80,.45),
+                    0 1px 0 rgba(255,255,255,.9) inset;
+    --shadow-dock:0 20px 46px -22px rgba(30,40,80,.45),
+                  0 1px 0 rgba(255,255,255,.9) inset;
+  }
+}
+/* 不支持背景模糊时把窗口调回不透明：半透明 + 不模糊 = 看不清字。 */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  :root{--window:#1c1c20;--titlebar:#26262a;--content:#1a1a1e}
+  @media (prefers-color-scheme: light){:root{--window:#f5f5f7;--titlebar:#ececf0;--content:#fbfbfd}}
+}
+
+*{box-sizing:border-box}
+::selection{background:color-mix(in srgb,var(--accent) 35%,transparent);color:var(--text)}
+*{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--line-strong) 80%,transparent) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--line-strong) 80%,transparent);
+  border-radius:999px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;color:var(--text);background:var(--desktop-1);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,
+              "PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  font-size:clamp(13px,.3vw + 12.4px,14.5px);line-height:1.5;
+  min-height:100svh;display:flex;justify-content:center;align-items:stretch;
+  padding:clamp(14px,2.2vh,30px) clamp(16px,2.4vw,44px) calc(96px + env(safe-area-inset-bottom));
+  position:relative;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+
+/* ---------------- 桌面壁纸 ----------------
+   macOS 的窗口是「浮在桌面上的」。壁纸用几团大而柔的色块模拟偏光渐变，
+   窗口的半透明材质才有东西可透。 */
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none;
+    background:linear-gradient(165deg,var(--desktop-1),var(--desktop-2))}
+.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:.72;
+         animation:drift 30s ease-in-out infinite alternate;will-change:transform}
+.bg span:nth-child(1){width:52vw;height:52vw;left:-14vw;top:-20vw;
+  background:radial-gradient(circle at 45% 45%,#3b5bdb,transparent 66%)}
+.bg span:nth-child(2){width:44vw;height:44vw;right:-12vw;top:-6vw;animation-delay:-8s;
+  background:radial-gradient(circle at 55% 45%,#8b3dff,transparent 66%)}
+.bg span:nth-child(3){width:56vw;height:56vw;left:14vw;bottom:-34vw;animation-delay:-16s;
+  background:radial-gradient(circle at 50% 50%,#0e7490,transparent 70%)}
+.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:.4;
+  background:radial-gradient(circle at 50% 50%,#db2777,transparent 68%)}
+@keyframes drift{
+  from{transform:translate3d(0,0,0) scale(1)}
+  to{transform:translate3d(2vw,2.5vh,0) scale(1.06)}
+}
+@media (prefers-color-scheme: light){
+  .bg span{opacity:.5}
+  .bg span:nth-child(1){background:radial-gradient(circle at 45% 45%,#7aa2ff,transparent 66%)}
+  .bg span:nth-child(2){background:radial-gradient(circle at 55% 45%,#c4a4ff,transparent 66%)}
+  .bg span:nth-child(3){background:radial-gradient(circle at 50% 50%,#7de3e0,transparent 70%)}
+  .bg span:nth-child(4){background:radial-gradient(circle at 50% 50%,#ffb3d1,transparent 68%)}
+}
+
+/* ---------------- 窗口 ---------------- */
+.window{
+  width:100%;max-width:1560px;
+  display:flex;flex-direction:column;
+  min-height:calc(100svh - clamp(14px,2.2vh,30px) - 96px);
+  background:var(--window);
+  border:1px solid var(--line);
+  border-radius:var(--radius-window);
+  box-shadow:var(--shadow-window);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
+  backdrop-filter:blur(40px) saturate(180%);
+  overflow:hidden;
+}
+/* 标题栏：左品牌 + 页面名，右侧工具与「窗口控制点」。 */
+.titlebar{
+  position:sticky;top:0;z-index:6;flex:none;
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
+  min-height:52px;padding:0 16px;
+  background:var(--titlebar);
+  border-bottom:1px solid var(--line);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  backdrop-filter:blur(30px) saturate(180%);
+}
+.tb-left{display:flex;align-items:center;gap:8px;justify-self:start;min-width:0}
+.tb-right{display:flex;align-items:center;gap:6px;justify-self:end;min-width:0}
+.titlebar .title{justify-self:center;white-space:nowrap}
+.titlebar .mark{width:22px;height:22px;flex:none;display:grid;place-items:center;
+  border-radius:6px;color:#fff;background:linear-gradient(160deg,#4f9dff,#7c5cff);
+  box-shadow:0 1px 0 rgba(255,255,255,.35) inset}
+.titlebar .mark svg{width:13px;height:13px}
+.titlebar .title{margin:0;font-size:.95em;font-weight:600;letter-spacing:-.005em}
+.titlebar .spacer{flex:1}
+.titlebar .who{color:var(--muted);font-size:.78em;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px}
+.titlebar .who::before{content:"";width:6px;height:6px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 6px color-mix(in srgb,var(--ok) 80%,transparent)}
+nav.tools{display:flex;gap:2px;font-size:.8em;align-items:center;flex-wrap:wrap}
+a.plain{display:inline-flex;align-items:center;padding:4px 9px;border-radius:6px;
+  color:var(--muted);text-decoration:none;transition:background-color .15s var(--ease),color .15s var(--ease)}
+a.plain:hover{color:var(--text);background:var(--card-2)}
+a.plain:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* macOS 的窗口控制点：绿黄红。用户要求放在右上角，所以不做左上角的红绿灯；
+   它们只是装饰，不参与交互（aria-hidden + 无指针事件），避免出现点了没反应的假按钮。 */
+.traffic{display:flex;align-items:center;gap:8px;margin-left:8px;pointer-events:none}
+.traffic i{width:12px;height:12px;border-radius:50%;box-shadow:0 0 0 .5px rgba(0,0,0,.25) inset}
+.traffic i:nth-child(1){background:#ff5f57}
+.traffic i:nth-child(2){background:#febc2e}
+.traffic i:nth-child(3){background:#28c840}
+
+/* ---------------- 窗口内容 ---------------- */
+.window-body{flex:1;display:flex;flex-direction:column;min-height:0;
+  background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 220px),var(--content)}
+main{
+  flex:1;width:100%;max-width:1500px;margin:0 auto;
+  padding:clamp(16px,1.4vw,26px) clamp(16px,1.6vw,28px);
+}
+main>.notice{margin:0 0 var(--gap)}
+
+/* ---------------- 分页：单选钮 + 面板（与之前一致） ---------------- */
+.tab-input{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none}
+.panel{display:none}
+body:has(#tab-users:checked) #panel-users,
+body:has(#tab-grants:checked) #panel-grants,
+body:has(#tab-instances:checked) #panel-instances,
+body:has(#tab-env:checked) #panel-env,
+body:has(#tab-audit:checked) #panel-audit{display:block}
+
+/* ---------------- 底部 Dock ----------------
+   macOS 的 Dock：居中、玻璃、悬停放大、当前页下方一个小圆点。 */
+.dock{
+  position:fixed;z-index:20;left:50%;bottom:calc(12px + env(safe-area-inset-bottom));
+  transform:translateX(-50%);
+  display:flex;align-items:flex-end;gap:2px;
+  padding:9px 11px;border-radius:22px;
+  background:rgba(38,38,42,.42);
+  border:1px solid rgba(255,255,255,.14);
+  box-shadow:var(--shadow-dock);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
+  backdrop-filter:blur(40px) saturate(180%);
+  max-width:calc(100vw - 24px);
+}
+@media (prefers-color-scheme: light){
+  .dock{background:rgba(250,250,252,.55);border-color:rgba(0,0,0,.10)}
+}
+.tab{
+  position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:4px;width:clamp(64px,4.9vw,76px);padding:9px 5px 11px;
+  border-radius:14px;border:1px solid transparent;
+  color:var(--muted);font-size:.7em;font-weight:500;letter-spacing:.01em;
+  cursor:pointer;white-space:nowrap;text-align:center;
+  transform-origin:bottom center;
+  transition:transform .18s var(--ease),background-color .18s var(--ease),
+             color .18s var(--ease),border-color .18s var(--ease);
+}
+.tab svg{width:26px;height:26px;flex:none}
+.tab span{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* Dock 的悬停放大：指针所在项放大，左右邻居跟着抬高一点，模仿 macOS 的放大效果。 */
+@media (hover:hover){
+  .tab:hover{transform:translateY(-5px) scale(1.14);color:var(--text);background:var(--card-2)}
+  .tab:hover + .tab{transform:translateY(-2px) scale(1.05)}
+  .tab:has(+ .tab:hover){transform:translateY(-2px) scale(1.05)}
+}
+/* 选中项：底色 + 下方小圆点（macOS 正在运行的应用标记）。 */
+.tab-input:checked + .tab{color:var(--text);background:var(--card-2);
+  border-color:var(--line-strong)}
+.tab-input:checked + .tab::after{content:"";position:absolute;bottom:2px;left:50%;
+  transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--accent)}
+.tab-input:focus-visible + .tab{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------------- 面板卡片（macOS 分组列表风格） ---------------- */
+section{
+  position:relative;
+  padding:clamp(14px,1.1vw,20px);
+  border-radius:var(--radius-card);
+  border:1px solid var(--line);
+  background:var(--card);
+  box-shadow:0 1px 0 rgba(255,255,255,.05) inset;
+  overflow-x:auto;
+  animation:fade-in .28s var(--ease) both;
+}
+@keyframes fade-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (hover:hover){
+  section:hover{border-color:var(--line-strong)}
+}
+.sec-head{display:flex;align-items:center;gap:9px;margin:0 0 clamp(10px,.8vw,14px)}
+.sec-ico{display:grid;place-items:center;width:26px;height:26px;flex:none;border-radius:7px;
+  color:#fff;background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 92%,#fff),var(--accent-2));
+  box-shadow:0 1px 0 rgba(255,255,255,.3) inset}
+.sec-ico svg{width:15px;height:15px}
+.sec-head h2{margin:0;font-size:1em;font-weight:600;letter-spacing:-.004em}
+section>h2{margin:clamp(14px,1.2vw,20px) 0 clamp(8px,.8vw,12px);
+  font-size:.98em;font-weight:600;letter-spacing:-.004em}
+section h2+.row,section h2+form{margin-top:6px}
+
+/* ---------------- 表格（macOS 列表） ---------------- */
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:.9em}
+th,td{text-align:left;padding:9px 12px;
+      border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap}
+th{color:var(--faint);font-weight:500;font-size:.82em;letter-spacing:.01em}
+tbody tr{transition:background-color .14s var(--ease)}
+@media (hover:hover){tbody tr:hover{background:var(--card-2)}}
+tbody tr:last-child td{border-bottom:none}
+td{color:var(--text)}
+td:first-child{font-weight:550}
+.inst-name{display:block;white-space:nowrap;color:var(--accent);text-decoration:none;
+           width:fit-content}
+.inst-name:hover{text-decoration:underline}
+.inst-meta{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:4px;
+           max-width:min(400px,34vw);
+           font-weight:400;font-size:.84em;color:var(--muted);white-space:normal}
+.inst-meta .kv{display:inline-flex;gap:5px;align-items:baseline;min-width:0}
+.inst-meta .k{color:var(--faint);flex:none}
+.inst-meta .mono{color:var(--muted);font-size:1em;white-space:normal;overflow-wrap:anywhere}
+td.actions{white-space:normal;text-align:right}
+td.actions form{display:inline-flex;gap:8px;align-items:center;margin:2px 0;flex-wrap:wrap;justify-content:flex-end}
+td.actions.wrap{max-width:min(440px,35vw)}
+td.actions.wrap input[type=text]{min-width:0;flex:0 1 160px;width:auto}
+td.actions.wrap select{flex:1 1 250px;min-width:0;max-width:none;width:auto}
+.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:.86em;color:var(--faint);
+      white-space:nowrap}
+.path{white-space:normal;overflow-wrap:anywhere}
+
+/* 列宽按面板钉死（与上一版同样的理由：自动布局会把空余宽度摊给内容少的列）。 */
+#panel-users table{table-layout:fixed}
+#panel-users th:nth-child(1){width:24%}
+#panel-users th:nth-child(2){width:210px}
+#panel-users th:nth-child(3){width:118px}
+#panel-users th:nth-child(4){width:140px}
+#panel-users td.actions{white-space:nowrap}
+#panel-users td.actions input[type=password]{width:150px;min-width:0}
+#panel-env table{table-layout:fixed}
+#panel-env th:nth-child(1){width:110px}
+#panel-env th:nth-child(2){width:190px}
+#panel-env th:nth-child(4){width:120px}
+#panel-instances table{table-layout:fixed}
+#panel-instances th:nth-child(1){width:280px}
+#panel-instances th:nth-child(2){width:100px}
+#panel-instances th:nth-child(4){width:72px}
+#panel-instances th:nth-child(5){width:92px}
+#panel-instances th:nth-child(6){width:112px}
+#panel-instances th:nth-child(7){width:360px}
+#panel-instances td.actions{display:flex;flex-direction:column;align-items:stretch;gap:8px;max-width:none}
+#panel-instances td.actions form{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin:0}
+#panel-instances td.actions form:has(input[type=text]){
+  display:grid;grid-template-columns:1fr auto;gap:8px}
+#panel-instances td.actions form:has(input[type=text]) input[type=text]{
+  grid-column:1/-1;width:100%;min-width:0;flex:none}
+#panel-instances td.actions form:has(input[type=text]) select{min-width:0;width:100%;flex:none}
+#panel-instances td.actions form:has(input[type=text]) button{justify-self:end}
+#panel-audit table{table-layout:fixed}
+#panel-audit th:nth-child(1){width:172px}
+#panel-audit th:nth-child(2){width:120px}
+#panel-audit th:nth-child(3){width:150px}
+#panel-audit th:nth-child(4){width:140px}
+
+/* ---------------- 表单控件（macOS 输入框 / 按钮） ---------------- */
+input[type=text],input[type=password],select{
+  background:var(--field);color:var(--text);
+  border:1px solid var(--line);border-radius:var(--radius-control);
+  padding:6px 9px;font:inherit;font-size:.94em;min-width:0;
+  box-shadow:0 1px 2px rgba(0,0,0,.12) inset;
+  transition:border-color .15s var(--ease),box-shadow .15s var(--ease);
+}
+input[type=text]{min-width:130px}
+input:focus,select:focus{outline:none;border-color:color-mix(in srgb,var(--accent) 70%,transparent);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 32%,transparent)}
+::placeholder,select:invalid{color:var(--faint)}
+
+button{
+  cursor:pointer;color:var(--text);
+  border:1px solid var(--line);border-radius:var(--radius-control);
+  background:var(--card-2);padding:5px 13px;
+  font:inherit;font-size:.9em;font-weight:500;white-space:nowrap;
+  box-shadow:0 1px 0 rgba(255,255,255,.08) inset;
+  transition:background-color .14s var(--ease),border-color .14s var(--ease),
+             transform .1s var(--ease),filter .14s var(--ease);
+}
+button:hover{background:color-mix(in srgb,var(--card-2) 70%,var(--text) 6%);border-color:var(--line-strong)}
+button:active{transform:translateY(.5px);filter:brightness(.95)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);border-color:color-mix(in srgb,var(--accent) 70%,#000);
+  color:#fff;font-weight:500;
+  box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 1px 2px rgba(0,0,0,.2)}
+button.primary:hover{filter:brightness(1.06);background:var(--accent)}
+button.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent);
+  background:color-mix(in srgb,var(--danger) 12%,transparent)}
+button.danger:hover{background:color-mix(in srgb,var(--danger) 20%,transparent);
+  border-color:color-mix(in srgb,var(--danger) 55%,transparent)}
+
+.row{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
+     gap:clamp(10px,.9vw,14px);align-items:end}
+.row label.field{min-width:0}
+.row label.field input,.row label.field select{width:100%;min-width:0}
+.row button{justify-self:start;min-height:30px}
+label.field{display:flex;flex-direction:column;gap:5px;font-size:.82em;color:var(--muted)}
+label.field input,label.field select{min-width:clamp(140px,17vw,230px)}
+
+/* ---------------- 徽标 / 提示 / 授权矩阵 ---------------- */
+.tag{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;
+     padding:1px 9px;font-size:.8em;color:var(--muted);white-space:nowrap;
+     background:var(--card-2)}
+.tag.on{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent);
+        background:color-mix(in srgb,var(--ok) 13%,transparent)}
+.tag.on::before{content:"";width:5px;height:5px;border-radius:50%;flex:none;background:var(--ok)}
+.tag.off{color:var(--faint)}
+.tag.off::before{content:"";width:5px;height:5px;border-radius:50%;flex:none;background:var(--faint)}
+
+.notice{position:relative;border-radius:10px;padding:9px 12px 9px 34px;
+        font-size:.92em;border:1px solid transparent}
+.notice::before{position:absolute;left:12px;top:50%;transform:translateY(-50%);
+  width:16px;height:16px;display:grid;place-items:center;border-radius:50%;
+  font-size:.7em;font-weight:700}
+.notice.err{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger);
+            border-color:color-mix(in srgb,var(--danger) 30%,transparent)}
+.notice.err::before{content:"!";border:1px solid currentColor}
+.notice.ok{background:color-mix(in srgb,var(--ok) 13%,transparent);color:var(--ok);
+           border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.notice.ok::before{content:"✓";border:1px solid currentColor}
+
+.matrix{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;
+        padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+        background:var(--card-2)}
+.matrix strong{min-width:clamp(56px,7vw,96px);font-weight:600}
+.matrix label{display:inline-flex;align-items:center;gap:6px;font-size:.9em;color:var(--muted);white-space:nowrap}
+.matrix input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+.matrix button{margin-left:auto}
+.empty{color:var(--faint);font-size:.88em}
+footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
+       color:var(--faint);font-size:.76em;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* ---------------- 窄屏：窗口铺满，表格改卡片 ---------------- */
+@media (max-width:900px){
+  body{padding:0 0 calc(84px + env(safe-area-inset-bottom))}
+  .window{min-height:calc(100svh - 84px);border-radius:0;border-left:0;border-right:0;
+          -webkit-backdrop-filter:none;backdrop-filter:none;background:var(--window)}
+  .titlebar{position:static;padding:8px 12px;min-height:46px;
+            grid-template-columns:auto 1fr auto;gap:8px}
+  .titlebar .title{justify-self:start;font-size:.92em}
+  .titlebar .who{display:none}
+  nav.tools{font-size:.78em}
+  .traffic{display:none}
+  main{padding:12px}
+  section{padding:13px;border-radius:11px;overflow-x:visible}
+  .sec-ico{width:24px;height:24px;border-radius:6px}
+
+  table,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  tr{border:1px solid var(--line);border-radius:10px;padding:5px 11px;margin-bottom:9px;
+     background:var(--card-2)}
+  tbody tr:last-child{margin-bottom:0}
+  tbody tr:hover{background:var(--card-2)}
+  tr.step{border:none;padding:0 2px 9px;margin-top:-5px;background:none}
+
+  td{border:none;padding:6px 0;display:flex;gap:12px;align-items:center;
+     justify-content:space-between;text-align:right;white-space:normal}
+  td+td{border-top:1px solid var(--line)}
+  td::before{content:attr(data-label);flex:0 0 auto;color:var(--muted);
+             font-size:.88em;text-align:left}
+  td:not([data-label])::before{content:none}
+  td:first-child{font-weight:600;font-size:1em;padding-top:7px;display:block;text-align:left}
+  td:first-child::before{content:none}
+  .inst-meta{display:block;max-width:none;margin-top:5px}
+  .inst-meta .kv{display:flex;gap:6px;justify-content:flex-start;text-align:left;flex-wrap:wrap}
+  .inst-meta .mono{white-space:normal;overflow-wrap:anywhere}
+  tr.step td{display:block;text-align:left;border:none;padding:0}
+  tr.step td::before{content:none}
+
+  td.actions.wrap{max-width:none}
+  td.actions{display:block;text-align:left;padding-top:9px}
+  td.actions::before{content:none}
+  td.actions form{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:8px;margin:0 0 8px}
+  td.actions form:last-child{margin-bottom:0}
+  td.actions input[type=text],td.actions input[type=password],td.actions select{
+    flex:1 1 130px;min-width:0;width:auto;max-width:none}
+  td.actions button{flex:0 0 auto;min-height:32px}
+  .mono{overflow-wrap:anywhere}
+  .dock{bottom:calc(10px + env(safe-area-inset-bottom));padding:6px 7px}
+  .tab{width:clamp(52px,15vw,64px);padding:6px 3px 7px}
+  .tab svg{width:20px;height:20px}
+}
+@media (max-width:720px){
+  .row{grid-template-columns:1fr;gap:10px}
+  .row label.field{width:100%}
+  .row input,.row select{width:100%}
+  .row button{width:100%;min-height:38px;justify-self:stretch}
+  label.field input,label.field select{min-width:0}
+  .matrix{flex-direction:column;align-items:stretch;gap:8px}
+  .matrix strong{min-width:0}
+  .matrix label{white-space:normal}
+  .matrix button{width:100%;margin:6px 0 0;min-height:38px}
+  button{min-height:30px}
+}
+/* 不支持 :has() 的老浏览器：整页退回一页平铺，Dock 隐藏。 */
+@supports not selector(:has(*)){
+  .dock{display:none}
+  .panel{display:block}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.001ms !important;animation-duration:.001ms !important}
+  .bg span{animation:none}
+  .tab:hover,.tab:hover + .tab,.tab:has(+ .tab:hover){transform:none}
+}
+</style>
+</head>
+<body>
+<div class="bg" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="tb-left">
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><path d="M22 4.2 38 12.9v14.4L22 36 6 27.3V12.9z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"></path><circle cx="22" cy="19.4" r="3.7" fill="currentColor"></circle><path d="M14.2 29.4 22 24.3l7.8 5.1" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"></path></svg></span>
+    </div>
+    <h1 class="title">{{.Title}}</h1>
+    <div class="tb-right">
+      <span class="who">{{.SignedInAs}}</span>
+      <nav class="tools">
+    <a class="plain" href="/">{{.BackToPortal}}</a>
+    <a class="plain" href="{{.OtherLangHref}}">{{.OtherLang}}</a>
+    <a class="plain" href="{{.SignOutHref}}">{{.SignOut}}</a>
+  </nav>
+      <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+    </div>
+  </div>
+  <div class="window-body">
+<main>
+  {{if .Error}}<p class="notice err" role="alert">{{.Error}}</p>{{end}}
+  {{if .Message}}<p class="notice ok" role="status">{{.Message}}</p>{{end}}
+
+  <div class="panels">
+  <section class="panel" id="panel-users">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg></span><h2>{{.UsersTitle}}</h2></div>
+    {{if .Users}}
+    <table>
+      <thead><tr><th>{{.ColName}}</th><th>{{.ColRole}}</th><th>{{.ColStatus}}</th><th>{{.ColInstances}}</th><th></th></tr></thead>
+      <tbody>
+      {{range .Users}}
+        <tr>
+          <td data-label="{{$.ColName}}">{{.Name}}{{if .DisplayName}}<br><span class="mono">{{.DisplayName}}</span>{{end}}</td>
+          <td data-label="{{$.ColRole}}">
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="user.role">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <select name="role">
+                {{range .RoleOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+              <button type="submit">{{$.BtnApply}}</button>
+            </form>
+          </td>
+          <td data-label="{{$.ColStatus}}"><span class="tag {{if .Disabled}}off{{else}}on{{end}}">{{.StatusLabel}}</span></td>
+          <td data-label="{{$.ColInstances}}">{{.GrantCount}}</td>
+          <td class="actions">
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="user.passwd">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <input type="password" name="password" placeholder="{{$.PhNewPassword}}" autocomplete="new-password">
+              <button type="submit">{{$.BtnPassword}}</button>
+            </form>
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="user.toggle">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <input type="hidden" name="disabled" value="{{if .Disabled}}0{{else}}1{{end}}">
+              <button type="submit">{{if .Disabled}}{{$.BtnEnable}}{{else}}{{$.BtnDisable}}{{end}}</button>
+            </form>
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="user.delete">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <button type="submit" class="danger">{{$.BtnDelete}}</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">{{.NoUsers}}</p>{{end}}
+
+    <form method="post" action="/admin" class="row" style="margin-top:14px">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="user.create">
+      <label class="field">{{.ColName}}<input type="text" name="name" required autocomplete="off"></label>
+      <label class="field">{{.PhPassword}}<input type="password" name="password" required autocomplete="new-password"></label>
+      <label class="field">{{.ColRole}}
+        <select name="role">{{range .Roles}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select>
+      </label>
+      <button type="submit" class="primary">{{.BtnCreateUser}}</button>
+    </form>
+  </section>
+
+  <section class="panel" id="panel-grants">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg></span><h2>{{.GrantsTitle}}</h2></div>
+    <p class="empty">{{.GrantsHint}}</p>
+    {{if .Users}}
+      {{range .Users}}
+      <form method="post" action="/admin" class="matrix" style="margin:6px 0 12px">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="action" value="grants.save">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <strong>{{.Name}}</strong>
+        {{if .InstanceOptions}}
+          {{range .InstanceOptions}}
+          <label><input type="checkbox" name="instance" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>
+          {{end}}
+        {{else}}<span class="empty">{{$.NoInstances}}</span>{{end}}
+        <button type="submit">{{$.BtnSaveGrants}}</button>
+      </form>
+      {{end}}
+    {{end}}
+  </section>
+
+  {{if .HasInstaller}}
+  <section class="panel" id="panel-env">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect><path d="m7 9.5 3 2.5-3 2.5"></path><path d="M12.5 15H17"></path></svg></span><h2>{{.EnvTitle}}</h2></div>
+    <table>
+      <thead><tr><th>{{.ColName}}</th><th>{{.ColStatus}}</th><th>PATH</th><th></th></tr></thead>
+      <tbody>
+      {{range .EnvTools}}
+        <tr>
+          <td class="mono" data-label="{{$.ColName}}">{{.Name}}</td>
+          <td data-label="{{$.ColStatus}}">
+            {{if .Found}}<span class="tag on">{{.Version}}</span>
+            {{else if .JobActive}}<span class="tag">{{.JobStep}}</span>
+            {{else if .JobFailed}}<span class="tag off">{{$.EnvInstallFailed}}</span>
+            {{else}}<span class="tag off">{{$.EnvMissing}}</span>{{end}}
+          </td>
+          <td class="mono path" data-label="PATH">
+            {{if .Found}}{{.Path}}
+            {{else if .JobFailed}}{{.JobError}}
+            {{else}}{{.Hint}}{{end}}
+          </td>
+          <td class="actions">
+            {{if and .Installable (not .Found)}}
+              {{if .JobActive}}
+                <span class="tag">{{$.InstallingLabel}}</span>
+              {{else}}
+                <form method="post" action="{{$.AdminPath}}">
+                  <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                  <input type="hidden" name="action" value="env.install">
+                  <input type="hidden" name="tool" value="{{.Name}}">
+                  <button type="submit" class="primary">{{if .JobFailed}}{{$.EnvBtnRetry}}{{else}}{{$.EnvBtnInstall}}{{end}}</button>
+                </form>
+              {{end}}
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    <p class="empty">{{.PlatformLabel}}<span class="mono">{{.EnvPlatform}}</span>
+      {{if .SelfNode}}<span>·</span>{{.SelfNodeLabel}}<span class="mono">{{.SelfNode}}</span>{{end}}
+      {{if .SelfPnpm}}<span>·</span>{{.SelfPnpmLabel}}<span class="mono">{{.SelfPnpm}}</span>{{end}}
+      <span>·</span>{{.ExistingLabel}}<span class="mono">{{if .ExistingDsh}}{{.ExistingDsh}}{{else}}{{.NoneLabel}}{{end}}</span></p>
+    <p class="empty">{{.EnvHint}}</p>
+  </section>
+  {{end}}
+
+  <section class="panel" id="panel-instances">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg></span><h2>{{.InstancesTitle}}</h2></div>
+    {{if .Instances}}
+    <table>
+      <thead><tr><th>{{.ColName}}</th><th>ID</th><th>DSH_HOME</th><th>{{.ColPort}}</th><th>{{.ColStatus}}</th>{{if $.HasInstaller}}<th>{{.ColPhase}}</th><th></th>{{end}}</tr></thead>
+      <tbody>
+      {{range .Instances}}
+        <tr>
+          <td data-label="{{$.ColName}}">
+            <a class="inst-name" href="{{.Href}}" target="_blank" rel="noopener">{{.Name}}</a>
+            {{/* 创建时能填的字段，建完都要能在这里看到；否则改完配置就再也确认不了
+                 自己填的是哪几个目录。留空的两个字段在 Go 侧已翻成一句人话。 */}}
+            <span class="inst-meta">
+              <span class="kv"><span class="k">{{$.ConfigLabel}}</span><span class="mono">{{.ConfigDir}}</span></span>
+              <span class="kv"><span class="k">{{$.WorkspaceLabel}}</span><span class="mono">{{.Workspace}}</span></span>
+              <span class="kv"><span class="k">{{$.HostLabel}}</span><span class="mono">{{.ListenHost}}</span></span>
+              <span class="kv"><span class="k">{{$.StartLabel}}</span>{{.StartLabel}}</span>
+            </span>
+          </td>
+          <td class="mono" data-label="ID">{{.ID}}</td>
+          <td class="mono path" data-label="DSH_HOME">{{.Home}}</td>
+          <td class="mono" data-label="{{$.ColPort}}">{{.Port}}</td>
+          <td data-label="{{$.ColStatus}}"><span class="tag {{if .Enabled}}on{{else}}off{{end}}">{{.StatusLabel}}</span></td>
+          {{if $.HasInstaller}}
+          <td data-label="{{$.ColPhase}}">
+            {{if .Installed}}<span class="tag on">{{.InstalledLabel}}</span>
+            {{else}}<span class="tag off">{{.NotReadyLabel}}</span>{{end}}
+            {{if .JobPhase}}<span class="tag">{{.JobPhase}}</span>{{end}}
+          </td>
+          <td class="actions wrap">
+            <form method="post" action="{{$.AdminPath}}">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="instance.install">
+              <input type="hidden" name="instance_id" value="{{.ID}}">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <input type="text" name="install_dir" value="{{.InstallDir}}" placeholder="{{$.InstDir}}">
+              <select name="install_mode">
+                {{range .ModeOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+              </select>
+              <button type="submit">{{$.BtnInstInstall}}</button>
+            </form>
+            <form method="post" action="{{$.AdminPath}}">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="instance.remove">
+              <input type="hidden" name="instance_id" value="{{.ID}}">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <button type="submit" class="danger">{{$.BtnInstRemove}}</button>
+            </form>
+          </td>
+          {{end}}
+        </tr>
+        {{if .JobStep}}
+        <tr class="step"><td colspan="7" class="mono">{{$.StepLabel}}{{.JobStep}}{{if .JobError}} · {{.JobError}}{{end}}{{if .JobCommand}} · {{$.CmdLabel}}{{.JobCommand}}{{end}}</td></tr>
+        {{end}}
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">{{.NoInstances}}</p>{{end}}
+
+    {{if .HasInstaller}}
+    <div class="sec-head" style="margin-top:clamp(16px,1.4vw,22px)"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span><h2>{{.CreateTitle}}</h2></div>
+    <form method="post" action="{{.AdminPath}}">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="instance.create">
+      <div class="row">
+        <label class="field">{{.NameLabel}}<input type="text" name="name" required></label>
+        <label class="field">{{.HomeLabel}}<input type="text" name="dsh_home" required></label>
+        <label class="field">{{.ConfigLabel}}<input type="text" name="config_dir"></label>
+        <label class="field">{{.WorkspaceLabel}}<input type="text" name="workspace"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">{{.PortLabel}}<input type="text" name="dsh_port" value="0" size="6"></label>
+        <label class="field">{{.HostLabel}}<input type="text" name="listen_host" value="127.0.0.1"></label>
+        <label class="field">{{.StartLabel}}
+          <select name="start_mode">
+            <option value="auto">{{.StartAuto}}</option>
+            <option value="ondemand">{{.StartDemand}}</option>
+          </select>
+        </label>
+        <label class="field">{{.ModeLabel}}
+          <select name="install_mode">
+            {{range .Modes}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
+          </select>
+        </label>
+        <label class="field">{{.InstDirLabel}}<input type="text" name="install_dir"></label>
+        <button type="submit" class="primary">{{.BtnInstCreate}}</button>
+      </div>
+      <p class="empty">{{.CreateHint}}</p>
+    </form>
+    {{end}}
+
+    <p class="empty">{{.InstancesHint}}</p>
+  </section>
+
+  <section class="panel" id="panel-audit">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg></span><h2>{{.AuditTitle}}</h2></div>
+    {{if .Audit}}
+    <table>
+      <thead><tr><th>{{.ColTime}}</th><th>{{.ColActor}}</th><th>{{.ColAction}}</th><th>{{.ColTarget}}</th><th>{{.ColDetail}}</th></tr></thead>
+      <tbody>
+      {{range .Audit}}
+        <tr><td class="mono" data-label="{{$.ColTime}}">{{.At}}</td><td data-label="{{$.ColActor}}">{{.Actor}}</td><td class="mono" data-label="{{$.ColAction}}">{{.Action}}</td><td data-label="{{$.ColTarget}}">{{.Target}}</td><td class="mono path" data-label="{{$.ColDetail}}">{{.Detail}}</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">{{.NoAudit}}</p>{{end}}
+  </section>
+  </div>
+</main>
+<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}</footer>
+  </div>
+</div>
+
+<nav class="dock" aria-label="{{.NavLabel}}">
+
+{{if .HasInstaller}}  <input type="radio" name="admintab" id="tab-users" class="tab-input"{{if eq .ActiveTab "users"}} checked{{end}}>
+  <label class="tab" for="tab-users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg><span>{{.UsersTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-grants" class="tab-input"{{if eq .ActiveTab "grants"}} checked{{end}}>
+  <label class="tab" for="tab-grants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg><span>{{.GrantsTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-instances" class="tab-input"{{if eq .ActiveTab "instances"}} checked{{end}}>
+  <label class="tab" for="tab-instances"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg><span>{{.InstancesTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-env" class="tab-input"{{if eq .ActiveTab "env"}} checked{{end}}>
+  <label class="tab" for="tab-env"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect><path d="m7 9.5 3 2.5-3 2.5"></path><path d="M12.5 15H17"></path></svg><span>{{.NavEnv}}</span></label>
+  <input type="radio" name="admintab" id="tab-audit" class="tab-input"{{if eq .ActiveTab "audit"}} checked{{end}}>
+  <label class="tab" for="tab-audit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg><span>{{.AuditTitle}}</span></label>
+{{else}}  <input type="radio" name="admintab" id="tab-users" class="tab-input"{{if eq .ActiveTab "users"}} checked{{end}}>
+  <label class="tab" for="tab-users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg><span>{{.UsersTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-grants" class="tab-input"{{if eq .ActiveTab "grants"}} checked{{end}}>
+  <label class="tab" for="tab-grants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg><span>{{.GrantsTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-instances" class="tab-input"{{if eq .ActiveTab "instances"}} checked{{end}}>
+  <label class="tab" for="tab-instances"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg><span>{{.InstancesTitle}}</span></label>
+  <input type="radio" name="admintab" id="tab-audit" class="tab-input"{{if eq .ActiveTab "audit"}} checked{{end}}>
+  <label class="tab" for="tab-audit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg><span>{{.AuditTitle}}</span></label>
+{{end}}  
+</nav>
+</body>
+</html>

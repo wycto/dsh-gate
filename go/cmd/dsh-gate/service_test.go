@@ -14,7 +14,7 @@ func TestQuoteForTaskScheduler(t *testing.T) {
 	args := []string{
 		`C:\Program Files\dsh-gate\dsh-gate.exe`,
 		"run", "--log-json",
-		"--dsh-home", `C:\Users\wei yi\.dsh`,
+		"--dsh-home", `C:\Users\demo user\.dsh`,
 		"--port", "3082",
 	}
 	got := quoteForTaskScheduler(args)
@@ -22,7 +22,7 @@ func TestQuoteForTaskScheduler(t *testing.T) {
 	if want := `\"C:\Program Files\dsh-gate\dsh-gate.exe\"`; got[0] != want {
 		t.Errorf("程序路径必须被转义引号包住：got %q want %q", got[0], want)
 	}
-	if want := `\"C:\Users\wei yi\.dsh\"`; got[4] != want {
+	if want := `\"C:\Users\demo user\.dsh\"`; got[4] != want {
 		t.Errorf("含空格的参数值必须引起来：got %q want %q", got[4], want)
 	}
 	// 不含空格的参数保持原样：多余的引号会被当成值的一部分传下去。

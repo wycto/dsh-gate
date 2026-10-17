@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -289,5 +290,89 @@ func TestFailedLaunchRecordsError(t *testing.T) {
 	}
 	if got := supervisor.LastError(); got == "" {
 		t.Error("失败原因应当被记录下来，供等待页面显示")
+	}
+}
+
+// TestEnsureWorkspaceDirCreatesMissing 验证工作目录不存在时会被建出来。
+//
+// 为什么值得一条测试：实例的工作目录是子进程的 cwd，缺了它 dsh 根本起不来。
+// 而报错完全指错方向——「fork/exec /path/to/npx: no such file or directory」
+// 让人以为 npx 没装，实际上缺的是目录。这条测试把这个坑钉住。
+func TestEnsureWorkspaceDirCreatesMissing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "deep", "nested", "workspace")
+
+	if err := ensureWorkspaceDir(dir, nil); err != nil {
+		t.Fatalf("目录不存在时应当自动创建，实际报错: %v", err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("自动创建后目录仍不存在: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("%s 应当是目录", dir)
+	}
+
+	// 再调一次必须幂等：重启实例会反复走这条路。
+	if err := ensureWorkspaceDir(dir, nil); err != nil {
+		t.Errorf("目录已存在时不应报错，实际: %v", err)
+	}
+}
+
+// TestEnsureWorkspaceDirRejectsFile 验证路径是文件时给出说得清的报错。
+//
+// 这种情况建不出目录来，只能报错；关键是错误信息要指向**目录**，
+// 而不是让人去查命令。
+func TestEnsureWorkspaceDirRejectsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureWorkspaceDir(path, nil)
+	if err == nil {
+		t.Fatal("路径是文件时应当报错")
+	}
+	if !strings.Contains(err.Error(), "不是目录") {
+		t.Errorf("错误应当说明它不是目录，实际: %v", err)
+	}
+	if strings.Contains(err.Error(), "fork/exec") {
+		t.Errorf("不应出现误导性的 fork/exec 报错，实际: %v", err)
+	}
+}
+
+// TestEnsureWorkspaceDirEmptyIsNoop 验证空工作目录不算错。
+//
+// 空串表示沿用网关自己的当前目录，是合法配置（bob-main 这类实例就是这样）。
+func TestEnsureWorkspaceDirEmptyIsNoop(t *testing.T) {
+	if err := ensureWorkspaceDir("", nil); err != nil {
+		t.Errorf("空工作目录不应报错，实际: %v", err)
+	}
+}
+
+// TestStartWithMissingWorkspaceSucceeds 是端到端的回归：工作目录不存在时，
+// dsh 仍然应当被拉起来——网关自己把目录补上，而不是让用户对着一条
+// 指错对象的报错发呆。
+func TestStartWithMissingWorkspaceSucceeds(t *testing.T) {
+	port := freePort(t)
+	token := "missing-workspace-token"
+	startFakeDSH(t, port, token)
+
+	options := launchOptions(t, port)
+	options.Workspace = filepath.Join(t.TempDir(), "not", "created", "yet")
+
+	supervisor := New(options)
+	if err := supervisor.Start(t.Context()); err != nil {
+		t.Fatalf("工作目录不存在时应当自动创建并成功拉起，实际: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = supervisor.Shutdown(ctx)
+	}()
+	if !supervisor.Ready() {
+		t.Fatal("应当已就绪")
+	}
+	if _, err := os.Stat(options.Workspace); err != nil {
+		t.Errorf("拉起后工作目录应当存在，实际: %v", err)
 	}
 }

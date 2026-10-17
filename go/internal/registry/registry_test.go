@@ -155,6 +155,46 @@ func TestPathSanitizesInstanceName(t *testing.T) {
 	}
 }
 
+func TestTildeRunDirExpands(t *testing.T) {
+	// 默认登记目录是 `~/.dsh-gate/run`。Windows 上 filepath.Join 产出的是 `~\...`，
+	// 而 expandPath 曾经只认 `~/`，于是登记写进「当前目录下的 ~ 文件夹」，换个目录
+	// 再 status 就找不到刚起的实例（真机 e2e 里暴露出来的）。
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := registry.Dir(filepath.Join("~/.dsh-gate", "run"))
+	expanded := string(dir.Expand())
+	if strings.HasPrefix(expanded, "~") {
+		t.Fatalf("默认登记目录没有展开: %q", expanded)
+	}
+	if !strings.HasPrefix(expanded, home) {
+		t.Fatalf("应展开到家目录 %q，实际 %q", home, expanded)
+	}
+
+	// 反斜杠写法（Windows 上 filepath.Join 的真实产物）同样要展开。
+	backslash := registry.Dir(`~\.dsh-gate\run`)
+	if got := string(backslash.Expand()); strings.HasPrefix(got, "~") {
+		t.Fatalf("反斜杠形式的默认目录没有展开: %q", got)
+	}
+
+	// Save / Load / List 必须口径一致：Path 也要走展开，否则 rename 的目标会指向
+	// 一个字面量 `~` 目录，写完读不回来。
+	if err := dir.Save(newRecord("expanded", 8080)); err != nil {
+		t.Fatalf("写入登记失败: %v", err)
+	}
+	record, ok, err := dir.Load("expanded")
+	if err != nil || !ok {
+		t.Fatalf("写进去的登记读不回来: ok=%v err=%v", ok, err)
+	}
+	if record.Name != "expanded" {
+		t.Fatalf("记录内容不对: %+v", record)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".dsh-gate", "run", "expanded.json")); err != nil {
+		t.Fatalf("登记应落在展开后的家目录里: %v", err)
+	}
+}
+
 func TestAlive(t *testing.T) {
 	// 存活判定看端口，不看进程号：进程号会被系统回收复用，端口不会。
 	closed := newRecord("gone", 1) // 端口 1 几乎不可能有人监听

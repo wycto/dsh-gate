@@ -15,6 +15,13 @@ on:
 permissions:
   contents: read
 
+# 一次发版会同时推 main 与标签，GitHub 会为此起两个运行。两个运行并发地在 Gitee 上
+# 创建同一个新引用时，后到的那次会被回「reference already exists」（创建引用的竞态）。
+# 串行执行即可消除：后一个运行等前一个结束（此时引用已存在，走 --force 更新而不是创建）。
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
 jobs:
   mirror:
     name: 推送分支与标签到 Gitee

@@ -482,6 +482,87 @@
       scroll-behavior: auto !important;
     }
   }
+
+  /* ---------------- macOS 登录界面 ----------------
+     系统登录界面：壁纸 + 居中用户头像 + 玻璃卡片。只覆盖观感，
+     结构与密码显隐脚本保持原样。 */
+  :root {
+    --accent: #0a84ff;
+    --btn-a: #0a84ff;
+    --btn-b: #0a84ff;
+    --btn-glow: rgba(10, 132, 255, .55);
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --accent: #007aff; --btn-a: #007aff; --btn-b: #007aff; }
+  }
+  body {
+    background:
+      radial-gradient(60% 50% at 20% 18%, #3b5bdb 0%, transparent 66%),
+      radial-gradient(55% 55% at 82% 24%, #8b3dff 0%, transparent 66%),
+      radial-gradient(60% 60% at 60% 96%, #0e7490 0%, transparent 70%),
+      linear-gradient(165deg, #12121a, #1b1b26);
+  }
+  @media (prefers-color-scheme: light) {
+    body {
+      background:
+        radial-gradient(60% 50% at 20% 18%, #7aa2ff 0%, transparent 66%),
+        radial-gradient(55% 55% at 82% 24%, #c4a4ff 0%, transparent 66%),
+        radial-gradient(60% 60% at 60% 96%, #7de3e0 0%, transparent 70%),
+        linear-gradient(165deg, #c9d8f0, #e8dff5);
+    }
+  }
+  .card {
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, .12);
+    background: rgba(44, 44, 50, .55);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    backdrop-filter: blur(40px) saturate(180%);
+    box-shadow: 0 40px 90px -40px rgba(0, 0, 0, .95), 0 1px 0 rgba(255, 255, 255, .10) inset;
+  }
+  @media (prefers-color-scheme: light) {
+    .card { background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .10); }
+  }
+  .mark {
+    background: linear-gradient(160deg, #4f9dff, #7c5cff);
+    border-color: transparent;
+    border-radius: 14px;
+    color: #fff;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .35) inset,
+                0 12px 26px -14px rgba(79, 157, 255, .85);
+  }
+  .title {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--text);
+    font-weight: 600;
+    letter-spacing: -.01em;
+  }
+  input[type="text"], input[type="password"] {
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, .12);
+    background: rgba(0, 0, 0, .28);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .15) inset;
+  }
+  @media (prefers-color-scheme: light) {
+    input[type="text"], input[type="password"] {
+      background: rgba(255, 255, 255, .78);
+      border-color: rgba(0, 0, 0, .10);
+    }
+  }
+  input[type="text"]:focus, input[type="password"]:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, .30);
+  }
+  .submit {
+    border-radius: 7px;
+    background: var(--accent);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .28) inset, 0 1px 2px rgba(0, 0, 0, .2);
+    letter-spacing: 0;
+  }
+  .submit:hover {
+    filter: brightness(1.07);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .28) inset, 0 2px 6px rgba(0, 0, 0, .2);
+  }
 </style>
 </head>
 <body>
@@ -519,17 +600,17 @@
       <input type="hidden" name="next" value="{{.Next}}">
 
       <div class="field">
-        <label for="username">用户名</label>
+        <label for="username">{{.L.Username}}</label>
         <input id="username" name="username" type="text" value="{{.Username}}" autocomplete="username"
-               autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="输入用户名" required autofocus>
+               autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="{{.L.UsernamePlaceholder}}" required autofocus>
       </div>
 
       <div class="field">
-        <label for="password">密码</label>
+        <label for="password">{{.L.Password}}</label>
         <div class="control">
           <input id="password" name="password" type="password" autocomplete="current-password"
-                 placeholder="输入密码" required>
-          <button type="button" class="toggle" id="pw-toggle" aria-label="显示密码" aria-pressed="false">
+                 placeholder="{{.L.PasswordPlaceholder}}" required>
+          <button type="button" class="toggle" id="pw-toggle" aria-label="{{.L.ShowPassword}}" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <g class="icon-on">
                 <path d="M2.5 12S6.2 5.8 12 5.8 21.5 12 21.5 12 17.8 18.2 12 18.2 2.5 12 2.5 12Z"></path>
@@ -545,13 +626,13 @@
         </div>
       </div>
 
-      <button type="submit" class="submit" id="submit-btn"><span id="submit-label">登录</span></button>
+      <button type="submit" class="submit" id="submit-btn"><span id="submit-label">{{.L.Submit}}</span></button>
     </form>
 
-    <p class="hint">账号由网关管理员分配，如需开通请联系管理员。</p>
+    <p class="hint">{{.L.Hint}}</p>
   </section>
 
-  <footer class="foot">由 dsh-gate 保护<span class="sep">·</span>{{.Host}}<span class="sep">·</span>v{{.Version}}</footer>
+  <footer class="foot">{{.L.FooterPrefix}}<span class="sep">·</span>{{.Host}}<span class="sep">·</span>v{{.Version}}</footer>
 
 </main>
 
@@ -571,7 +652,7 @@
       var show = password.type === "password";
       password.type = show ? "text" : "password";
       toggle.setAttribute("aria-pressed", show ? "true" : "false");
-      toggle.setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+      toggle.setAttribute("aria-label", show ? "{{.L.HidePassword}}" : "{{.L.ShowPassword}}");
       var end = password.value.length;
       password.focus();
       try { password.setSelectionRange(end, end); } catch (e) { /* 某些浏览器对 password 类型不支持 */ }

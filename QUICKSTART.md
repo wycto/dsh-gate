@@ -82,6 +82,42 @@ dsh-gate uninstall <实例名> --service          # 停掉并取消自启，数�
 dsh-gate uninstall <实例名> --service --purge  # 确认不要了再连数据一起删
 ```
 
+## 想要「一个入口 + 每人一个 dsh」？
+
+那是**管理端**形态：账号与实例都提到管理端一级，成员登录后只看到属于自己的实例。
+
+```sh
+dsh-gate manage user add admin --role admin --password-stdin
+dsh-gate manage instance add alice-main --dsh-home /srv/dsh/alice --owner alice
+dsh-gate manage grant add alice alice-main
+dsh-gate manage run --port 3082
+```
+
+浏览器打开管理端地址：普通用户看到「我的实例」，点进去就是那个 dsh；管理员多一个
+`/admin` 管理台（用户、实例、授权、审计）。
+
+**管理台里能直接装 dsh，不用你事先装好**：打开 `/admin` 就做一次运行环境检测
+（node / npm / npx / pnpm / git / dsh 各自的状态与路径），然后按实例挑安装方式。
+顺序是**先创建实例记录**（马上拿到 id 与端口），**再在后台安装** —— 安装要十几分钟，
+不能把页面挂住；刷新页面看进度。
+
+| 安装方式 | 适合 | 装出来是什么 |
+|---|---|---|
+| **npx**（默认） | 只想尽快用上 | `npx --yes @deepseek-ai/dsh` 现拉现跑 |
+| **git** | 要读源码 / 改代码 | clone 官方仓库 + `pnpm install` + build |
+| **pnpm** | 想离线复用、固定版本 | 装到实例自己的目录，不是全局 |
+
+机器上没有 Node 也不用先去装：git 与 pnpm 方式会自己把 Node 运行时与 pnpm 下到状态
+目录（不动系统）。网络慢就换源：
+
+```sh
+dsh-gate manage instance install alice-main --install-mode pnpm \
+    --npm-registry https://registry.npmmirror.com
+```
+
+命令行与页面是同一套数据与代码路径。详见 [README.md](README.md) 的「管理端」一节与
+[docs/portal.md](docs/portal.md)。
+
 ## 东西都在哪
 
 | 内容 | 位置（默认） |

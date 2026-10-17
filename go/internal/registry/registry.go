@@ -61,8 +61,14 @@ type Record struct {
 }
 
 // Path 返回登记条目在磁盘上的位置。
+//
+// 必须走 Expand：目录本身可能带 `~`（默认就是 `~/.dsh-gate/run`）。此前这里直接用
+// 未展开的 Dir，于是 Save 的 rename 目标与 Load/Remove 的读取路径都指向一个字面量
+// `~` 目录；在 Windows 上更直接——`filepath.Join` 产出的是 `~\...`，expandPath 只认
+// `~/`，于是 `dsh-gate run` 会把登记写进**当前目录下的 `~` 文件夹**，换个目录再
+// `status` 就找不到自己刚起的实例。
 func (d Dir) Path(name string) string {
-	return filepath.Join(string(d), sanitize(name)+".json")
+	return filepath.Join(string(d.Expand()), sanitize(name)+".json")
 }
 
 // sanitize 把实例名变成安全的文件名。
@@ -261,8 +267,12 @@ func (r Record) Alive() bool {
 }
 
 // expandPath 展开开头的 `~`。
+//
+// 两种分隔符都要认：`filepath.Join("~/.dsh-gate", "run")` 在 Windows 上产出的是
+// `~\\.dsh-gate\\run`，只判 `~/` 会让默认目录永远展不开（config.ExpandPath 里
+// 一直是两种都判的，这份私有副本漏了反斜杠那一支）。
 func expandPath(path string) string {
-	if path != "~" && !strings.HasPrefix(path, "~/") {
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
 		return path
 	}
 	home, err := os.UserHomeDir()

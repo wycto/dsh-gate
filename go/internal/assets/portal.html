@@ -1,0 +1,233 @@
+<!doctype html>
+<!--
+  管理端首页：「我的实例」。
+
+  与登录页同样的约束：全部样式内联，无任何外部请求（无 CDN、无外链字体、无图片），
+  断网也能完整显示；语言由服务端注入，页面自身不做翻译。
+-->
+<html lang="{{.Lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>{{.Title}}</title>
+<style>
+:root{
+  /* 与管理台同一套 macOS 令牌：桌面壁纸 + 浮在壁纸上的窗口。 */
+  --desktop-1:#12121a;
+  --desktop-2:#1b1b26;
+  --window:rgba(44,44,50,.62);
+  --titlebar:rgba(58,58,66,.52);
+  --content:rgba(34,34,40,.34);
+  --card:rgba(255,255,255,.05);
+  --card-2:rgba(255,255,255,.08);
+  --line:rgba(255,255,255,.10);
+  --line-strong:rgba(255,255,255,.20);
+  --text:#f5f5f7;
+  --muted:#a1a1aa;
+  --faint:#71717a;
+  --accent:#0a84ff;
+  --accent-2:#5e5ce6;
+  --ok:#30d158;
+  --radius-window:14px;
+  --radius-card:12px;
+  --radius-control:7px;
+  --shadow-window:0 40px 90px -40px rgba(0,0,0,.95),0 1px 0 rgba(255,255,255,.10) inset;
+  --ease:cubic-bezier(.32,.72,.24,1);
+}
+@media (prefers-color-scheme: light){
+  :root{
+    --desktop-1:#c9d8f0;--desktop-2:#e8dff5;
+    --window:rgba(248,248,250,.74);
+    --titlebar:rgba(236,236,240,.62);
+    --content:rgba(255,255,255,.42);
+    --card:rgba(0,0,0,.035);--card-2:rgba(0,0,0,.06);
+    --line:rgba(0,0,0,.10);--line-strong:rgba(0,0,0,.20);
+    --text:#1d1d1f;--muted:#6e6e73;--faint:#8e8e93;
+    --accent:#007aff;--accent-2:#5856d6;--ok:#34c759;
+    --shadow-window:0 30px 70px -40px rgba(30,40,80,.45),0 1px 0 rgba(255,255,255,.9) inset;
+  }
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  :root{--window:#1c1c20;--titlebar:#26262a;--content:#1a1a1e}
+  @media (prefers-color-scheme: light){:root{--window:#f5f5f7;--titlebar:#ececf0;--content:#fbfbfd}}
+}
+
+*{box-sizing:border-box}
+::selection{background:color-mix(in srgb,var(--accent) 35%,transparent);color:var(--text)}
+*{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--line-strong) 80%,transparent) transparent}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;color:var(--text);background:var(--desktop-1);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,
+              "PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  font-size:clamp(13px,.3vw + 12.4px,14.5px);line-height:1.5;
+  min-height:100svh;display:flex;justify-content:center;align-items:stretch;
+  padding:clamp(14px,2.2vh,30px) clamp(16px,2.4vw,44px) clamp(20px,3vh,40px);
+  position:relative;overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none;
+    background:linear-gradient(165deg,var(--desktop-1),var(--desktop-2))}
+.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:.72;
+         animation:drift 30s ease-in-out infinite alternate;will-change:transform}
+.bg span:nth-child(1){width:52vw;height:52vw;left:-14vw;top:-20vw;
+  background:radial-gradient(circle at 45% 45%,#3b5bdb,transparent 66%)}
+.bg span:nth-child(2){width:44vw;height:44vw;right:-12vw;top:-6vw;animation-delay:-8s;
+  background:radial-gradient(circle at 55% 45%,#8b3dff,transparent 66%)}
+.bg span:nth-child(3){width:56vw;height:56vw;left:14vw;bottom:-34vw;animation-delay:-16s;
+  background:radial-gradient(circle at 50% 50%,#0e7490,transparent 70%)}
+.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:.4;
+  background:radial-gradient(circle at 50% 50%,#db2777,transparent 68%)}
+@keyframes drift{
+  from{transform:translate3d(0,0,0) scale(1)}
+  to{transform:translate3d(2vw,2.5vh,0) scale(1.06)}
+}
+@media (prefers-color-scheme: light){
+  .bg span{opacity:.5}
+  .bg span:nth-child(1){background:radial-gradient(circle at 45% 45%,#7aa2ff,transparent 66%)}
+  .bg span:nth-child(2){background:radial-gradient(circle at 55% 45%,#c4a4ff,transparent 66%)}
+  .bg span:nth-child(3){background:radial-gradient(circle at 50% 50%,#7de3e0,transparent 70%)}
+  .bg span:nth-child(4){background:radial-gradient(circle at 50% 50%,#ffb3d1,transparent 68%)}
+}
+
+.window{
+  width:100%;max-width:1560px;display:flex;flex-direction:column;
+  background:var(--window);border:1px solid var(--line);border-radius:var(--radius-window);
+  box-shadow:var(--shadow-window);
+  -webkit-backdrop-filter:blur(40px) saturate(180%);
+  backdrop-filter:blur(40px) saturate(180%);
+  overflow:hidden;
+}
+.titlebar{
+  position:sticky;top:0;z-index:6;flex:none;
+  display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
+  min-height:52px;padding:0 16px;
+  background:var(--titlebar);border-bottom:1px solid var(--line);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  backdrop-filter:blur(30px) saturate(180%);
+}
+.tb-left{display:flex;align-items:center;gap:8px;justify-self:start;min-width:0}
+.tb-right{display:flex;align-items:center;gap:8px;justify-self:end;min-width:0}
+.titlebar .title{justify-self:center;white-space:nowrap;margin:0;font-size:.95em;font-weight:600}
+.titlebar .mark{width:22px;height:22px;flex:none;padding:4px;border-radius:6px;color:#fff;
+  background:linear-gradient(160deg,#4f9dff,#7c5cff);
+  box-shadow:0 1px 0 rgba(255,255,255,.35) inset}
+.titlebar .who{color:var(--muted);font-size:.78em;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px}
+.titlebar .who::before{content:"";width:6px;height:6px;border-radius:50%;
+  background:var(--ok);box-shadow:0 0 6px color-mix(in srgb,var(--ok) 80%,transparent)}
+nav.tools{display:flex;gap:2px;font-size:.8em;align-items:center;flex-wrap:wrap}
+a.plain{display:inline-flex;align-items:center;padding:4px 9px;border-radius:6px;
+  color:var(--muted);text-decoration:none;transition:background-color .15s var(--ease),color .15s var(--ease)}
+a.plain:hover{color:var(--text);background:var(--card-2)}
+a.plain:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.traffic{display:flex;align-items:center;gap:8px;margin-left:6px;pointer-events:none}
+.traffic i{width:12px;height:12px;border-radius:50%;box-shadow:0 0 0 .5px rgba(0,0,0,.25) inset}
+.traffic i:nth-child(1){background:#ff5f57}
+.traffic i:nth-child(2){background:#febc2e}
+.traffic i:nth-child(3){background:#28c840}
+
+.window-body{flex:1;display:flex;flex-direction:column;min-height:0;
+  background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 220px),var(--content)}
+main{
+  flex:1;width:100%;max-width:1500px;margin:0 auto;
+  padding:clamp(20px,1.8vw,34px) clamp(16px,1.6vw,28px);
+}
+/* 实例 = 一格格「应用图标」卡片：macOS 的 Finder 图标视图。 */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));
+       gap:clamp(14px,1.1vw,20px)}
+.card{
+  position:relative;display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:clamp(18px,1.5vw,24px) 16px 16px;
+  border:1px solid var(--line);border-radius:var(--radius-card);
+  background:var(--card);text-align:center;
+  transition:background-color .16s var(--ease),border-color .16s var(--ease),transform .16s var(--ease);
+}
+@media (hover:hover){
+  .card:hover{background:var(--card-2);border-color:var(--line-strong);transform:translateY(-2px)}
+}
+.card .appicon{width:56px;height:56px;border-radius:13px;display:grid;place-items:center;color:#fff;
+  background:linear-gradient(160deg,#4f9dff,#7c5cff);
+  box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 22px -12px rgba(79,157,255,.75)}
+.card .appicon svg{width:30px;height:30px}
+.card .name{font-size:.96em;font-weight:600;overflow-wrap:anywhere;margin-top:2px}
+.card .id{color:var(--faint);font-size:.76em;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace}
+.card .go{
+  margin-top:10px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  width:100%;height:32px;padding:0 14px;border-radius:var(--radius-control);text-decoration:none;
+  font-size:.88em;font-weight:500;color:#fff;
+  background:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 70%,#000);
+  box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 1px 2px rgba(0,0,0,.2);
+  transition:filter .14s var(--ease),transform .1s var(--ease);
+}
+.card .go::after{content:"›";font-size:1.2em;line-height:1}
+.card .go:hover{filter:brightness(1.07)}
+.card .go:active{transform:translateY(.5px)}
+.card .go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.empty{
+  border:1px dashed var(--line-strong);border-radius:var(--radius-card);
+  padding:clamp(26px,2.4vw,42px);color:var(--muted);font-size:.92em;text-align:center;
+  background:var(--card);
+}
+footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
+       color:var(--faint);font-size:.76em;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+@media (max-width:900px){
+  body{padding:0}
+  .window{min-height:100svh;border-radius:0;border-left:0;border-right:0}
+  .titlebar{position:static;padding:8px 12px;min-height:46px;
+            grid-template-columns:auto 1fr auto;gap:8px}
+  .titlebar .title{justify-self:start;font-size:.92em}
+  .titlebar .who{display:none}
+  .traffic{display:none}
+  nav.tools{font-size:.78em}
+  main{padding:14px}
+  .cards{grid-template-columns:1fr;gap:12px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.001ms !important;animation-duration:.001ms !important}
+  .bg span{animation:none}
+  .card:hover{transform:none}
+}
+</style>
+</head>
+<body>
+<div class="bg" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
+<div class="window">
+<header class="titlebar">
+  <div class="tb-left"><span class="mark" aria-hidden="true"><svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><path d="M22 4.2 38 12.9v14.4L22 36 6 27.3V12.9z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"></path><circle cx="22" cy="19.4" r="3.7" fill="currentColor"></circle><path d="M14.2 29.4 22 24.3l7.8 5.1" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"></path></svg></span></div>
+  <h1 class="title">{{.Title}}</h1>
+  <div class="tb-right">
+    <span class="who">{{.SignedInAs}}</span>
+    <nav class="tools">
+    {{if .IsAdmin}}<a class="plain" href="/admin">{{.AdminLabel}}</a>{{end}}
+    <a class="plain" href="{{.OtherLangHref}}">{{.OtherLang}}</a>
+    <a class="plain" href="{{.SignOutHref}}">{{.SignOut}}</a>
+  </nav>
+    <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+  </div>
+</header>
+<div class="window-body">
+
+<main>
+  {{if .Instances}}
+  <div class="cards">
+    {{range .Instances}}
+    <div class="card">
+      <span class="appicon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg></span>
+      <span class="name">{{.Name}}</span>
+      <span class="id">{{.ID}}</span>
+      <a class="go" href="{{.Href}}" target="_blank" rel="noopener">{{$.Enter}}</a>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">{{.NoInstances}}</p>
+  {{end}}
+</main>
+
+<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}</footer>
+</div>
+</body>
+</html>

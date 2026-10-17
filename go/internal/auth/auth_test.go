@@ -3,6 +3,8 @@ package auth
 import (
 	"testing"
 	"time"
+
+	"github.com/wycto/dsh-gate/internal/i18n"
 )
 
 func TestSafeNext(t *testing.T) {
@@ -39,20 +41,42 @@ func TestHumanDuration(t *testing.T) {
 		90 * 24 * time.Hour:          "2160 小时",
 	}
 	for input, want := range cases {
-		if got := humanDuration(input); got != want {
-			t.Errorf("humanDuration(%s) = %q，期望 %q", input, got, want)
+		if got := humanDuration(input, i18n.ZH); got != want {
+			t.Errorf("humanDuration(%s, zh) = %q，期望 %q", input, got, want)
+		}
+	}
+
+	// 英文走同一套分支，但用的是英文目录。
+	english := map[time.Duration]string{
+		500 * time.Millisecond:       "1s",
+		30 * time.Second:             "30s",
+		90 * time.Second:             "1m 30s",
+		2 * time.Minute:              "2m",
+		2*time.Hour + 15*time.Minute: "2h 15m",
+		3 * time.Hour:                "3h",
+	}
+	for input, want := range english {
+		if got := humanDuration(input, i18n.EN); got != want {
+			t.Errorf("humanDuration(%s, en) = %q，期望 %q", input, got, want)
 		}
 	}
 }
 
 func TestSessions(t *testing.T) {
 	sessions := NewSessions(time.Hour)
-	token := sessions.Create()
+	token := sessions.Create("alice")
 	if token == "" {
 		t.Fatal("令牌不应为空")
 	}
 	if !sessions.Valid(token) {
 		t.Error("新建的会话应当有效")
+	}
+	// 会话必须记得「是谁」：管理端按登录名查实例授权。
+	if subject, ok := sessions.Subject(token); !ok || subject != "alice" {
+		t.Errorf("会话主体应为 alice，实际 %q ok=%v", subject, ok)
+	}
+	if _, ok := sessions.Subject("never-issued"); ok {
+		t.Error("伪造令牌不该有主体")
 	}
 	if sessions.Valid("") {
 		t.Error("空令牌不应有效")
@@ -69,9 +93,30 @@ func TestSessions(t *testing.T) {
 	}
 }
 
+// TestDestroySessionsOfSubject 覆盖管理端的「改密 / 停用后把人踢下线」。
+func TestDestroySessionsOfSubject(t *testing.T) {
+	sessions := NewSessions(time.Hour)
+	aliceA := sessions.Create("alice")
+	aliceB := sessions.Create("alice")
+	bob := sessions.Create("bob")
+
+	if n := sessions.DestroySubject("alice"); n != 2 {
+		t.Errorf("应作废 alice 的 2 个会话，实际 %d", n)
+	}
+	if sessions.Valid(aliceA) || sessions.Valid(aliceB) {
+		t.Error("alice 的会话应全部失效")
+	}
+	if !sessions.Valid(bob) {
+		t.Error("不该影响别人的会话")
+	}
+	if n := sessions.DestroySubject(""); n != 0 {
+		t.Errorf("空主体不该作废任何会话，实际 %d", n)
+	}
+}
+
 func TestSessionsExpire(t *testing.T) {
 	sessions := NewSessions(time.Millisecond)
-	token := sessions.Create()
+	token := sessions.Create("alice")
 	time.Sleep(5 * time.Millisecond)
 	if sessions.Valid(token) {
 		t.Error("过期的会话不应有效")

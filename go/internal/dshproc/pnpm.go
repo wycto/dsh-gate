@@ -35,6 +35,15 @@ const pnpmInstallTimeout = 10 * time.Minute
 //
 // registry 是拉包用的 npm 源（跟 dsh 用同一个，留空表示 npm 默认）。
 func EnsurePnpm(ctx context.Context, log *slog.Logger, stateDir, registry string) (string, error) {
+	return EnsurePnpmWithBin(ctx, log, stateDir, registry, "")
+}
+
+// EnsurePnpmWithBin 与 EnsurePnpm 相同，但把 extraBin 目录前置到子进程的 PATH 上。
+//
+// 为什么需要它：网关会把官方 Node.js 运行时下载到状态目录（`EnsureNodeRuntime`），
+// 那台机器上就没有系统级 npm。此时只看进程自己的 PATH 会得出「找不到 npm」，
+// 而 npm 就在自备运行时里——git / pnpm 两种方式都会因此装不下去。
+func EnsurePnpmWithBin(ctx context.Context, log *slog.Logger, stateDir, registry, extraBin string) (string, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -55,9 +64,13 @@ func EnsurePnpm(ctx context.Context, log *slog.Logger, stateDir, registry string
 	}
 
 	npm := lookPathAny("npm", "npm.cmd")
-	if npm == "" {
+	if npm == "" && extraBin == "" {
 		return "", errors.New("找不到 npm，无法为 dsh 准备 pnpm（插件安装需要它）；" +
 			"请安装 Node.js（自带 npm），或用 --dsh-cmd 指定启动命令")
+	}
+	// 自备运行时里的 npm 用绝对路径调，不依赖 PATH 查找。
+	if npm == "" {
+		npm = filepath.Join(extraBin, binaryName("npm"))
 	}
 
 	log.Info("正在安装 pnpm 到网关状态目录（dsh 的插件安装器需要它，不改系统）", "dir", prefix, "registry", registry)
@@ -65,7 +78,12 @@ func EnsurePnpm(ctx context.Context, log *slog.Logger, stateDir, registry string
 	defer cancel()
 
 	cmd := exec.CommandContext(installCtx, npm, "install", "--global", "pnpm", "--prefix", prefix)
-	cmd.Env = npmEnv(os.Environ(), registry)
+	env := npmEnv(os.Environ(), registry)
+	if extraBin != "" {
+		// npm 脚本的 shebang 是 `#!/usr/bin/env node`，PATH 里要有 node。
+		env = setEnv(env, "PATH", prependPath(extraBin, envValue(env, "PATH")))
+	}
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {

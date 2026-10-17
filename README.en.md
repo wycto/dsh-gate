@@ -2,7 +2,7 @@
 
 **A LAN / remote access gateway for [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/guide/quickstart).**
 
-A single-binary Go program with zero third-party dependencies. It serves a login page on a LAN-reachable port and, once you are authenticated, reverse-proxies requests to the local dsh. If dsh is not running yet, it starts it for you.
+A single-binary Go program that uses only the Go standard library (the management console's SQLite is the one exception — see [go.mod](go/go.mod)). It serves a login page on a LAN-reachable port and, once you are authenticated, reverse-proxies requests to the local dsh. If dsh is not running yet, it starts it for you.
 
 ![dsh-gate login page (dark)](docs/images/login.png)
 
@@ -26,6 +26,7 @@ A single-binary Go program with zero third-party dependencies. It serves a login
   - [dsh-gate stop](#dsh-gate-stop)
   - [dsh-gate restart](#dsh-gate-restart)
   - [dsh-gate user](#dsh-gate-user)
+  - [dsh-gate manage](#dsh-gate-manage)
   - [dsh-gate check](#dsh-gate-check)
   - [dsh-gate service](#dsh-gate-service)
   - [dsh-gate uninstall](#dsh-gate-uninstall)
@@ -157,6 +158,132 @@ The token's lifetime is strictly confined to the gateway process's memory: **nev
 > Just want it running? See the one-page [QUICKSTART.md](QUICKSTART.md) (Chinese; it ships
 > with every release package).
 
+## Portal: one entry point, many dsh instances
+
+The single-instance setup below is "one gateway + one dsh". The portal lifts **accounts and
+instances to portal level**: one entry point, one admin page, N independent dsh instances, and
+each user only sees the instances they were granted.
+
+```sh
+# 1. Create the first portal account (administrator)
+dsh-gate manage user add admin --role admin --password-stdin
+
+# 2. Create instances (each with its own DSH_HOME; opaque id and loopback port are assigned)
+dsh-gate manage instance add alice-main --dsh-home /srv/dsh/alice --owner alice
+dsh-gate manage instance add bob-main   --dsh-home /srv/dsh/bob   --owner bob
+
+# 3. Grant instances to users
+dsh-gate manage grant add alice alice-main
+dsh-gate manage grant add bob   bob-main
+
+# 4. Start the portal
+dsh-gate manage run --port 3082
+```
+
+After logging in at `http://<server>:3082/`, a normal user sees "My instances" cards; opening
+one lands straight in that dsh (the portal performs the launch-token handover server-side, so
+the browser never needs to know any token). Administrators additionally get `/admin`: user
+management, instance creation and dsh installation, a grant checkbox matrix and the audit log.
+
+![The dsh-gate admin page](docs/images/admin.png)
+
+<sub>The whole admin page at a glance: users and roles, the instance grant matrix, the runtime
+environment check, instances and installation, and the audit log. Below are the instances
+section (one example per install mode) and the "installing" state — both instance installs and
+runtime-environment fixes are background jobs; refresh the page to watch progress.</sub>
+
+<p>
+  <img src="docs/images/admin-instances.png" width="620" alt="Instance list and the create-instance form">
+  <img src="docs/images/admin-installing.png" width="620" alt="A runtime fix in progress, showing “installing pnpm” and “installing”">
+</p>
+
+### Installing dsh from the admin page
+
+The admin page **does not require dsh to be installed beforehand**. It runs an environment
+check as soon as you open it, then lets you pick an install mode per instance. The order is
+deliberate: **create the instance record first** (you immediately get the opaque id and the
+port, visible on the page), **then install in the background** — an install takes many minutes
+and must not hold an HTTP request open.
+
+`/admin` contains:
+
+- **dsh environment check**: status, version and path for node / npm / npx / pnpm / git / dsh,
+  with a hint for anything missing, plus the platform, the gateway's own Node and pnpm, and any
+  dsh already on the machine. No system Node needed — the gateway downloads its own.
+- **A missing pnpm can be installed with one click**: dsh's plugin installer uses pnpm, while
+  Node only ships npm/npx — on a clean server, "add plugin" fails with `spawn pnpm ENOENT`.
+  One click fixes it: pnpm goes into the gateway state dir (`<state dir>/pnpm`), the system is
+  untouched, no root required, and `uninstall --purge` removes it. Like the dsh install it runs
+  in the background — refresh for progress, and the row turns into a version once done.
+  (git gets no button: it needs the system package manager, and the distro differences are too
+  wide to automate safely, so it stays a command in the hint.)
+
+  ![The dsh environment check](docs/images/admin-env.png)
+- **Create instance** form: name → dsh data dir (`DSH_HOME`) → **config dir** → workspace →
+  **port** → **listen host** → **start mode** → **install mode** → install dir.
+- **Instance list**: each row shows install phase and progress (queued / installing / done /
+  failed, with the current step and any error), an install-mode dropdown, the install dir, and
+  "install" / "delete" buttons. Re-installing is idempotent: the install dir does not nest
+  deeper on every run.
+- **Usable on a phone**: on narrow screens the tables turn into cards, each value carrying its
+  own column label, action buttons laid out full-width instead of being pushed off-screen, and
+  the create form stacked. Breakpoint 720px; the desktop layout is unchanged.
+
+  <img src="docs/images/admin-mobile.png" width="340" alt="The admin console on a phone: each user is a card with labelled fields and full-width buttons">
+
+Three install modes:
+
+| Mode | Best for | What it does | Resulting launch command |
+|---|---|---|---|
+| **npx** (default) | Getting going fast, no dsh on the machine | `npx --yes @deepseek-ai/dsh`, smoke-verified afterwards | `<own Node>/bin/npx --yes @deepseek-ai/dsh` |
+| **git** | Reading or modifying the source | `git clone` the official repo → `pnpm install` → `pnpm run build` | `node <install dir>/deepseek-harness/apps/cli/lib/bin.js` |
+| **pnpm** | Offline reuse, a pinned version per instance | pnpm installs dsh into the **instance's own directory** (not globally) | `<install dir>/dsh/node_modules/.bin/dsh` |
+
+git and pnpm modes provision Node and pnpm themselves (into the state dir, never touching the
+system). The CLI and the page share the same data and the same code path:
+
+```sh
+# Decide the install mode while creating the record (same as the page's "create instance")
+dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
+    --workspace /srv/ui/work --port 18104 --listen-host 127.0.0.1 \
+    --install-mode pnpm --install-dir /srv/ui/inst
+
+# Or create the record first and install later (or reinstall with a different mode)
+dsh-gate manage instance install ui-app --install-mode pnpm
+```
+
+`instance install` runs **synchronously on the CLI** (you are sitting at the terminal watching
+progress print) and as a **background job in the admin page** (refresh to see progress). A
+failed install does not remove the record: the instance is still there, fix it and install again.
+
+Key points:
+
+- **Sub-path mounting**: every instance lives under `/i/<opaque id>/`. All instances share one
+  hostname and therefore one set of cookie names, so the portal rewrites upstream `Set-Cookie`
+  `Path` values to the matching mount prefix. That rewrite is what keeps sessions from bleeding
+  across instances, and `go/tests/portal-e2e.sh` verifies it.
+- **Denied looks like missing**: an instance you were not granted returns the same 404 response
+  as an instance that does not exist.
+- **Every dsh stays on loopback**: each dsh binds `127.0.0.1:<auto-assigned port>`; the portal
+  is the only public listener. Instances created with `--on-demand` start when a user first
+  opens them.
+- **CLI parity**: `manage user|instance|grant` covers everything the admin page does (including
+  instance creation and dsh installation); `--lang zh-CN|en` switches CLI output (also
+  `DSH_GATE_LANG` / `LC_ALL` / `LANG`).
+- The portal database is `<state dir>/portal.db` (SQLite, mode 0600). On upgrade, an existing
+  single-instance `users.json` is imported on first start (the first user becomes an
+  administrator) and existing passwords keep working. Older databases gain the new columns with
+  defaults that reproduce the pre-upgrade behaviour, so existing instances are unaffected.
+
+Current limitations (details in [docs/portal.md](docs/portal.md)):
+
+- The admin page can create instances, install dsh, grant access and show the audit log;
+  starting, stopping, restarting and reading instance logs are still CLI-only.
+- `localStorage` is shared per origin, so one browser visiting two instances shares UI state
+  (credentials do not leak).
+- Changing a password or disabling a user from the CLI does not immediately disconnect them
+  from a running portal (restart it, or use the admin page, which revokes sessions at once).
+
 ## Getting started in 30 seconds
 
 ```sh
@@ -192,7 +319,7 @@ dsh-gate uninstall --purge    # ... and delete the state directory as well
 Step 2 prints a banner like this:
 
 ```
-dsh-gate 0.3.13 · 共 1 个实例
+dsh-gate 0.3.14 · 共 1 个实例
 实例 default 已启动
   访问地址（网关端口 3082）
   本机      http://127.0.0.1:3082/
@@ -495,12 +622,12 @@ Output lands in `dist/<version>/` — one directory per platform (binary + LICEN
 README), a `.tar.gz` per target (`.zip` on Windows), and `SHA256SUMS`:
 
 ```
-dist/0.3.13/
-├── dsh-gate_0.3.13_darwin_arm64/dsh-gate        dsh-gate_0.3.13_linux_arm64/dsh-gate
-├── dsh-gate_0.3.13_darwin_arm64.tar.gz          dsh-gate_0.3.13_linux_arm64.tar.gz
-├── dsh-gate_0.3.13_darwin_amd64/…               dsh-gate_0.3.13_linux_arm/dsh-gate   (armv7, e.g. Raspberry Pi)
-├── dsh-gate_0.3.13_darwin_amd64.tar.gz           dsh-gate_0.3.13_windows_amd64/dsh-gate.exe
-├── …                                           dsh-gate_0.3.13_windows_arm64/…
+dist/0.3.14/
+├── dsh-gate_0.3.14_darwin_arm64/dsh-gate        dsh-gate_0.3.14_linux_arm64/dsh-gate
+├── dsh-gate_0.3.14_darwin_arm64.tar.gz          dsh-gate_0.3.14_linux_arm64.tar.gz
+├── dsh-gate_0.3.14_darwin_amd64/…               dsh-gate_0.3.14_linux_arm/dsh-gate   (armv7, e.g. Raspberry Pi)
+├── dsh-gate_0.3.14_darwin_amd64.tar.gz           dsh-gate_0.3.14_windows_amd64/dsh-gate.exe
+├── …                                           dsh-gate_0.3.14_windows_arm64/…
 └── SHA256SUMS
 ```
 
@@ -518,7 +645,7 @@ Without an override the version falls back to the value in the source; releases 
 it with `-ldflags`:
 
 ```sh
-go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.13" -o dsh-gate ./cmd/dsh-gate
+go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.14" -o dsh-gate ./cmd/dsh-gate
 ```
 
 `go/internal/version/version.go` is the single source of truth for the version — you
@@ -773,6 +900,87 @@ Options may appear before or after the positional argument: `user add admin --ds
 
 `user rm` refuses to remove the last remaining account.
 
+### dsh-gate manage
+
+The portal form: accounts and instances are lifted to portal level — one entry point and N
+independent dsh instances. With no subcommand it prints usage.
+
+```text
+# Users
+dsh-gate manage user add <name> [--role admin|user] [--random|--password-stdin]
+dsh-gate manage user passwd <name> [--random|--password-stdin]
+dsh-gate manage user role <name> <admin|user>
+dsh-gate manage user disable|enable <name>
+dsh-gate manage user list
+dsh-gate manage user rm <name>
+
+# Instances
+dsh-gate manage instance list
+dsh-gate manage instance add <name> --dsh-home <dir> [options]
+dsh-gate manage instance install <name> [--install-mode npx|git|pnpm]
+dsh-gate manage instance rename <old name or id> <new name>
+dsh-gate manage instance rm <name or id>
+
+# Grants
+dsh-gate manage grant list [<name>]
+dsh-gate manage grant add <user> <instance name or id>
+dsh-gate manage grant rm  <user> <instance name or id>
+
+# Common options (accepted by every subcommand)
+--db <path>         portal database (default <state dir>/portal.db)
+--state-dir <dir>   gateway state directory (default ~/.dsh-gate)
+--lang <zh-CN|en>   output language (also DSH_GATE_LANG / LC_ALL / LANG)
+```
+
+Options for `instance add`:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--dsh-home` | required | that instance's dsh data directory (`DSH_HOME`) |
+| `--config-dir` | empty | config directory; empty means the same as `--dsh-home` |
+| `--workspace` | empty | that instance's default working directory (what the agent may read/write) |
+| `--port` | auto-assigned | dsh listen port (loopback only) |
+| `--listen-host` | `127.0.0.1` | listen address; use `0.0.0.0` to let clients reach that dsh directly |
+| `--owner` | empty | default owner (login name). **A display field only — it does not grant access**; use `manage grant add` for that |
+| `--on-demand` | `false` | start on demand: launch dsh only when someone opens it |
+| `--install-mode` | `npx` | one of `npx` / `git` / `pnpm` |
+| `--install-dir` | `<dsh-home>/install` | install directory (not needed for npx) |
+
+Options for `instance install`: `--install-mode`, `--install-dir`, `--npm-registry` (use a
+mirror, e.g. `https://registry.npmmirror.com`), `--git-url`, `--git-ref`.
+
+```sh
+# Portal account (the first administrator)
+dsh-gate manage user add admin --role admin --password-stdin
+
+# Create an instance and fix the install mode at the same time
+dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
+    --workspace /srv/ui/work --port 18104 --install-mode pnpm --install-dir /srv/ui/inst
+
+# Create the record first, install later (or reinstall with another mode)
+dsh-gate manage instance install ui-app --install-mode pnpm
+
+# Slow network: switch registries
+dsh-gate manage instance install ui-app --install-mode npx \
+    --npm-registry https://registry.npmmirror.com
+
+# Grant and start the portal
+dsh-gate manage grant add alice ui-app
+dsh-gate manage run --port 3082
+```
+
+`instance install` runs **synchronously** on the CLI: progress prints to the terminal and the
+command returns when it is done. On the `/admin` page it is a **background job** (refresh to
+see progress), because a long install must not hold an HTTP request open. A failed install does
+**not** remove the instance record: the record stays, fix the problem and install again.
+
+An instance's **workspace** is pre-registered as dsh's default workspace before dsh is launched, so
+you can start chatting straight away instead of picking one from "select a workspace" first. An
+instance where you have already picked your own workspace is left untouched.
+
+`instance rm` only unregisters the instance from the portal; it does **not** touch the dsh data
+directory (sessions and workspace are the user's data).
+
 ### dsh-gate check
 
 A pre-flight check: accounts, port usage, whether dsh is ready, and the addresses clients should use. It changes no state.
@@ -961,7 +1169,7 @@ Prints the version.
 
 ```sh
 $ dsh-gate version
-dsh-gate 0.3.13
+dsh-gate 0.3.14
 ```
 
 ---
@@ -1224,12 +1432,30 @@ http://192.168.1.20:3082/?token=6f1c...
 
 The gateway stores that token in memory and never logs it. When adopting a dsh that somebody else started, this is the only workable source of the token; you can also supply it directly with `--dsh-token`.
 
-**The page loads but every API call returns 403.**
+**Inside an instance it stays on "reconnecting" — reload the page.**
 
-`--trusted-host` does not cover the address you are using. dsh trusts loopback addresses, its own bind address and the authorities named explicitly. LAN IPs are added automatically; hostnames, mDNS names and tunnelling domains are not. Add one:
+Every dsh launch mints a **new launch token**, which invalidates the dsh session in any tab you
+already had open. The dsh frontend only shows "reconnecting" and retries forever; **it does not
+redo the token handoff by itself** — that is dsh client behaviour the gateway cannot change (a
+rejected WebSocket handshake cannot be redirected).
+
+A page reload is enough: a reload is a navigation, and the gateway performs the handoff with the
+new token during it. **So after restarting the gateway, or after an instance restarts, any open
+tab needs one reload.**
+
+**The page loads but every API call returns 403 (inside an instance it stays on "reconnecting" and the workspace will not open).**
+
+`--trusted-host` does not cover the address you are using. dsh trusts loopback addresses, its own bind address and the authorities named explicitly, so it rejects every `/api` request and the WebSocket. The symptom is misleading: **the page itself loads fine** (`GET /` is the launch-token exchange, which is not behind that fence); only the conversation and workspace spin.
+
+LAN IPs and hostnames are added automatically, so usually there is nothing to do. Three cases cannot be derived: custom domains, mDNS names and tunnelling domains — plus **container port mapping / NAT**, where the interface address the gateway sees inside the container is not the one you typed in the browser. Name it explicitly:
 
 ```sh
 dsh-gate run --trusted-host dsh.example.com --trusted-host my-mac.local
+
+# Management form: --public-url makes the gateway derive the hostname too
+dsh-gate manage run --port 3082 --public-url http://172.18.98.20:12090/
+# Or name the authority directly (with a port = that exact authority only)
+dsh-gate manage run --port 3082 --trusted-host 172.18.98.20:12090
 ```
 
 **The port is already in use.**

@@ -2,7 +2,7 @@
 
 **给 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/guide/quickstart) 加一道局域网 / 异地访问网关。**
 
-单二进制、零第三方依赖的 Go 程序。它在一个局域网可达的端口上提供登录页，鉴权通过后把请求反向代理到本机的 dsh；dsh 还没起来时，它会顺手把 dsh 拉起来。
+单二进制、只用 Go 标准库（管理端的 SQLite 是唯一例外，见 [go.mod](go/go.mod)）的 Go 程序。它在一个局域网可达的端口上提供登录页，鉴权通过后把请求反向代理到本机的 dsh；dsh 还没起来时，它会顺手把 dsh 拉起来。
 
 ![dsh-gate 登录页（深色）](docs/images/login.png)
 
@@ -27,6 +27,7 @@ English version: [README.en.md](README.en.md)
   - [dsh-gate stop](#dsh-gate-stop)
   - [dsh-gate restart](#dsh-gate-restart)
   - [dsh-gate user](#dsh-gate-user)
+  - [dsh-gate manage](#dsh-gate-manage)
   - [dsh-gate check](#dsh-gate-check)
   - [dsh-gate service](#dsh-gate-service)
   - [dsh-gate uninstall](#dsh-gate-uninstall)
@@ -154,6 +155,117 @@ dsh-gate 的解法是：**令牌只留在网关进程内存里，由网关替浏
 
 > 只想尽快跑起来？看一页纸的 [QUICKSTART.md](QUICKSTART.md)（也随每个发布包一起分发）。
 
+## 管理端：一个入口，多个 dsh 实例
+
+上面那套是「一个网关 + 一个 dsh」。管理端把**账号与实例都提升到管理端一级**：一个入口、
+一个管理页面、N 个彼此独立的 dsh，每个用户只看到属于自己的实例。
+
+```sh
+# 1. 建管理端账号（第一个管理员）
+dsh-gate manage user add admin --role admin --password-stdin
+
+# 2. 建两个实例（各自的 DSH_HOME；不透明 id 与回环端口自动分配）
+dsh-gate manage instance add alice-main --dsh-home /srv/dsh/alice --owner alice
+dsh-gate manage instance add bob-main   --dsh-home /srv/dsh/bob   --owner bob
+
+# 3. 把实例授权给对应用户
+dsh-gate manage grant add alice alice-main
+dsh-gate manage grant add bob   bob-main
+
+# 4. 启动管理端
+dsh-gate manage run --port 3082
+```
+
+打开 `http://<服务器>:3082/` 登录后：普通用户看到「我的实例」卡片，点进去就是那个
+实例的 dsh（管理端在服务端完成启动令牌交接，浏览器不需要知道任何令牌）；管理员多一个
+`/admin` 管理台（用户增删改、实例增删与安装、授权勾选矩阵、审计）。
+
+![dsh-gate 管理台](docs/images/admin.png)
+
+<sub>管理台一页看完：用户与角色、实例授权矩阵、运行环境检测、实例与安装、审计。
+下图是其中的实例区块（三种安装方式各一例）与「安装中」状态——实例安装与运行环境
+补齐都是后台任务，刷新页面看进度。</sub>
+
+<p>
+  <img src="docs/images/admin-instances.png" width="620" alt="实例列表与创建实例表单">
+  <img src="docs/images/admin-installing.png" width="620" alt="运行环境补齐进行中，状态显示「正在安装 pnpm」与「安装中」">
+</p>
+
+### 管理台里装 dsh：先建记录，再装
+
+管理台**不需要你事先装好 dsh**。页面打开就做一次**运行环境检测**，然后按实例选择
+安装方式。顺序是刻意的：**先创建实例记录**（立刻拿到不透明 id 与端口，页面马上可见），
+**再在后台安装** —— 安装动辄十几分钟，不能把 HTTP 请求挂在那儿等。
+
+`/admin` 页面上有：
+
+- **dsh 运行环境检测**：node / npm / npx / pnpm / git / dsh 各自的状态、版本与路径；
+  缺哪个就告诉你补装办法。末尾还有平台、管理端自备的 Node 与 pnpm、本机已有的 dsh。
+  机器上没有 Node 也不用先去装，管理端会自己下一份到状态目录。
+- **缺 pnpm 时可以直接点「安装」**：dsh 的插件安装器走 pnpm，而 Node 只自带 npm/npx，
+  干净的服务器上点「添加插件」会报 `spawn pnpm ENOENT`。点一下就装好——装到网关状态
+  目录（`<状态目录>/pnpm`），不碰系统、不需要 root，卸载时随 `uninstall --purge` 一起
+  消失。与 dsh 安装一样是后台任务，刷新页面看进度；装好后那一行自己变成版本号。
+  （git 不给按钮：它要走系统包管理器，发行版差异太大，给命令更稳妥。）
+
+  ![dsh 运行环境检测](docs/images/admin-env.png)
+- **创建实例**表单：名字 → dsh 数据目录（`DSH_HOME`）→ **配置目录** → 工作目录 →
+  **端口** → **监听地址** → **启动方式** → **安装方式** → 安装目录。
+- **实例列表**：每行显示安装阶段与进度（排队中 / 安装中 / 已完成 / 失败，附步骤与
+  报错）、安装方式下拉、安装目录，以及「安装」「删除」按钮。重装是幂等的：安装目录
+  不会越装越深。
+- **手机上也能用**：窄屏下表格自动变成一张张卡片，每个值带上自己的列名，动作按钮
+  整行铺开、不再被挤出屏幕；新建表单竖排铺满。断点 720px，桌面端布局不变。
+
+  <img src="docs/images/admin-mobile.png" width="340" alt="管理台在手机上的卡片布局：每个用户是一张卡片，字段带列名，按钮整行排列">
+
+三种安装方式，按你的机器条件挑：
+
+| 方式 | 适合 | 它做什么 | 装出来的启动命令 |
+|---|---|---|---|
+| **npx**（默认） | 只想尽快用上，机器上没有 dsh | `npx --yes @deepseek-ai/dsh` 现拉现跑，装完还会冒烟验证一次 | `<自备 Node>/bin/npx --yes @deepseek-ai/dsh` |
+| **git** | 要读源码、改代码、跟上游分支 | `git clone` 官方仓库 → `pnpm install` → `pnpm run build` | `node <安装目录>/deepseek-harness/apps/cli/lib/bin.js` |
+| **pnpm** | 想离线复用、多实例各自固定版本 | 用 pnpm 把 dsh 装到**实例自己的目录**（不是全局） | `<安装目录>/dsh/node_modules/.bin/dsh` |
+
+git 与 pnpm 方式会自动备齐 Node 运行时与 pnpm（装到状态目录，不动系统）。命令行与页面
+走**同一套数据与代码路径**：
+
+```sh
+# 建记录时就把安装方式定下来（页面上的「创建实例」等价）
+dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
+    --workspace /srv/ui/work --port 18104 --listen-host 127.0.0.1 \
+    --install-mode pnpm --install-dir /srv/ui/inst
+
+# 也可以先建记录、之后单独装（或换方式重装）
+dsh-gate manage instance install ui-app --install-mode pnpm
+```
+
+`instance install` 在**命令行是同步的**（你人就坐在终端前等，进度直接打屏）；在管理台
+是**后台任务**（页面刷新看进度）。失败不影响记录：实例还在，改完再装一次即可。
+
+**要点**
+
+- **子路径挂载**：每个实例挂在 `/i/<不透明 id>/` 下。同一域名下所有实例共用一套
+  Cookie 名，所以管理端会把上游 Cookie 的 `Path` 改写到各自的挂载前缀 —— 这是「会话
+  不串」的关键，也是 `go/tests/portal-e2e.sh` 重点验的一条。
+- **越权与不存在同形**：访问没有授权的实例返回 404，响应体与「实例不存在」完全一致，
+  不把「这个实例存在」当信息泄漏出去。
+- **每个 dsh 只听回环**：实例的 dsh 绑定 `127.0.0.1:<自动分配的端口>`，对外只有管理端
+  一个口。`--on-demand` 的实例在用户点进来的那一刻才拉起。
+- **命令与页面等价**：`manage user|instance|grant` 覆盖管理台的全部能力（含实例创建与
+  dsh 安装）；`--lang zh-CN|en` 切换输出语言（也可用 `DSH_GATE_LANG` / `LC_ALL` / `LANG`）。
+- 管理端数据库在 `<状态目录>/portal.db`（0600，SQLite）。升级时若存在旧的单实例
+  `users.json`，首次启动会自动导入账号（第一个用户成为管理员），旧口令继续可用。
+  老库升级到新 schema 时，缺的字段会按「升级前的行为」补默认值，已有实例不受影响。
+
+**目前的限制**（细节见 [docs/portal.md](docs/portal.md)）
+
+- 管理台可以建实例、装 dsh、授权、看审计；实例的**启停 / 重启 / 看日志**仍在命令行；
+- 同一个浏览器先后进入两个实例时，`localStorage` 按域名共享（UI 状态会互相看见，
+  凭证不串）；
+- 命令行改口令 / 停用用户后，**运行中的管理端不会立刻把人踢下线**（重启管理端，或让管理
+  员在页面上做同样操作才会立即吊销会话）。
+
 ## 30 秒上手
 
 一条命令的走法——`setup` 会逐项询问（回车接受默认值）、最后汇总确认一遍
@@ -196,7 +308,7 @@ dsh-gate uninstall                     # 不再用了：取消自启 + 停实例
 第 2 步会打印这样一段启动横幅：
 
 ```
-dsh-gate 0.3.13 · 共 1 个实例
+dsh-gate 0.3.14 · 共 1 个实例
 实例 default 已启动
   访问地址（网关端口 3082）
   本机      http://127.0.0.1:3082/
@@ -499,12 +611,12 @@ sh go/build.sh linux/arm64     # 只编译指定目标
 外加 `.tar.gz`（Windows 是 `.zip`）与 `SHA256SUMS`：
 
 ```
-dist/0.3.13/
-├── dsh-gate_0.3.13_darwin_arm64/dsh-gate        dsh-gate_0.3.13_linux_arm64/dsh-gate
-├── dsh-gate_0.3.13_darwin_arm64.tar.gz          dsh-gate_0.3.13_linux_arm64.tar.gz
-├── dsh-gate_0.3.13_darwin_amd64/…               dsh-gate_0.3.13_linux_arm/dsh-gate   （树莓派等 armv7）
-├── dsh-gate_0.3.13_darwin_amd64.tar.gz           dsh-gate_0.3.13_windows_amd64/dsh-gate.exe
-├── …                                           dsh-gate_0.3.13_windows_arm64/…
+dist/0.3.14/
+├── dsh-gate_0.3.14_darwin_arm64/dsh-gate        dsh-gate_0.3.14_linux_arm64/dsh-gate
+├── dsh-gate_0.3.14_darwin_arm64.tar.gz          dsh-gate_0.3.14_linux_arm64.tar.gz
+├── dsh-gate_0.3.14_darwin_amd64/…               dsh-gate_0.3.14_linux_arm/dsh-gate   （树莓派等 armv7）
+├── dsh-gate_0.3.14_darwin_amd64.tar.gz           dsh-gate_0.3.14_windows_amd64/dsh-gate.exe
+├── …                                           dsh-gate_0.3.14_windows_arm64/…
 └── SHA256SUMS
 ```
 
@@ -522,7 +634,7 @@ GOOS=linux   GOARCH=arm64 go build -o dsh-gate      ./cmd/dsh-gate
 脚本用 `-ldflags` 注入，手工构建时也可以：
 
 ```sh
-go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.13" -o dsh-gate ./cmd/dsh-gate
+go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.14" -o dsh-gate ./cmd/dsh-gate
 ```
 
 ---
@@ -839,6 +951,93 @@ dsh-gate user rm olduser
 
 `user rm` 拒绝删除最后一个账号。
 
+### dsh-gate manage
+
+管理端形态的入口：账号与实例都提升到管理端一级，一个入口、N 个彼此独立的 dsh。
+不带子命令时打印用法。
+
+```text
+# 用户
+dsh-gate manage user add <名字> [--role admin|user] [--random|--password-stdin]
+dsh-gate manage user passwd <名字> [--random|--password-stdin]
+dsh-gate manage user role <名字> <admin|user>
+dsh-gate manage user disable|enable <名字>
+dsh-gate manage user list
+dsh-gate manage user rm <名字>
+
+# 实例
+dsh-gate manage instance list
+dsh-gate manage instance add <名字> --dsh-home <目录> [选项]
+dsh-gate manage instance install <名字> [--install-mode npx|git|pnpm]
+dsh-gate manage instance rename <旧名或 id> <新名>
+dsh-gate manage instance rm <名字或 id>
+
+# 授权
+dsh-gate manage grant list [<名字>]
+dsh-gate manage grant add <用户> <实例名或 id>
+dsh-gate manage grant rm  <用户> <实例名或 id>
+
+# 公共选项（每条子命令都认）
+--db <路径>         管理端数据库（默认 <状态目录>/portal.db）
+--state-dir <目录>  网关状态目录（默认 ~/.dsh-gate）
+--lang <zh-CN|en>   输出语言（也可用 DSH_GATE_LANG / LC_ALL / LANG）
+```
+
+`instance add` 的选项：
+
+| 选项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--dsh-home` | 必填 | 该实例的 dsh 数据目录（`DSH_HOME`） |
+| `--config-dir` | 空 | 配置目录，留空则同 `--dsh-home` |
+| `--workspace` | 空 | 该实例的默认工作目录（agent 能读写的范围） |
+| `--port` | 自动分配 | dsh 监听端口（只绑回环） |
+| `--listen-host` | `127.0.0.1` | 监听地址，改成 `0.0.0.0` 才允许外部直连该 dsh |
+| `--owner` | 空 | 默认拥有者（登录名）。**只是展示字段，不产生访问权限**——要让人进得去，还得 `manage grant add` |
+| `--on-demand` | `false` | 按需启动：有访问才拉起 dsh |
+| `--install-mode` | `npx` | `npx` / `git` / `pnpm` 三种安装方式 |
+| `--install-dir` | `<dsh-home>/install` | 安装目录（npx 方式不需要） |
+
+`instance install` 的选项：`--install-mode`、`--install-dir`、`--npm-registry`
+（换镜像源，例如 `https://registry.npmmirror.com`）、`--git-url`、`--git-ref`。
+
+```sh
+# 管理端账号（第一个管理员）
+dsh-gate manage user add admin --role admin --password-stdin
+
+# 建实例：把安装方式一起定下来
+dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
+    --workspace /srv/ui/work --port 18104 --install-mode pnpm --install-dir /srv/ui/inst
+
+# 先建记录、之后单独装（或换方式重装）
+dsh-gate manage instance install ui-app --install-mode pnpm
+
+# 网络慢就换源
+dsh-gate manage instance install ui-app --install-mode npx \
+    --npm-registry https://registry.npmmirror.com
+
+# 授权并启动管理端
+dsh-gate manage grant add alice ui-app
+dsh-gate manage run --port 3082
+```
+
+`instance install` 在命令行是**同步**执行的：进度直接打在终端上，装完才返回。
+在管理台 `/admin` 页面里则是**后台任务**（页面刷新看进度），因为长安装不能把 HTTP
+请求挂住。安装失败**不影响实例记录**：记录还在，改完再装一次即可。
+
+`instance rm` 只解除管理端里的登记，**不动 dsh 的数据目录**（会话与工作区是用户的数据）。
+
+实例的「工作目录」会在拉起 dsh 之前**预置成它的默认工作区**，所以进去就能直接开始对话，不用先在「选择一个工作区」里挑一次。已经自己挑过工作区的实例不会被改动。
+
+**访问地址要能被 dsh 信任。** 管理端把浏览器的 `Host` 原样递给每个实例的 dsh，而 dsh 的
+`/api` 栅栏只信任回环、自身绑定地址与被点名的 authority。管理端会把 `--public-url` 的主机名、
+本机所有非回环 IP、主机名自动交给每个实例，所以**直接用局域网 IP 访问通常什么都不用配**。
+但**容器端口映射 / NAT / 自定义域名**下网关推导不出来，要用下面两个选项之一显式点名；
+否则页面能打开，进去之后却一直「重新连接中」（细节见[常见问题](#常见问题)）：
+
+```sh
+dsh-gate manage run --port 3082 --public-url http://172.18.98.20:12090/
+```
+
 ### dsh-gate check
 
 启动前体检：账号、端口占用、dsh 是否就绪、访问地址。不修改任何状态。
@@ -1035,7 +1234,7 @@ dsh-gate model provider remove my-gw                   # 删掉
 
 ```sh
 $ dsh-gate version
-dsh-gate 0.3.13
+dsh-gate 0.3.14
 ```
 
 ---
@@ -1285,6 +1484,12 @@ WebSocket 走 HTTP/1.1 升级（浏览器的 `WebSocket` API 本来就如此）�
 
 ## 常见问题
 
+**进实例后一直「重新连接中」，刷新一下就好。**
+
+dsh 每次启动都会生成**新的启动令牌**，浏览器上那个标签页里的 dsh 会话随之作废。dsh 的前端遇到这种情况只会显示「重新连接中」并无限重试，**它自己不会重新做令牌交接**——这是 dsh 客户端的行为，网关改不了（WebSocket 握手被拒时无法重定向）。
+
+刷一下页面即可：刷新是一次导航，网关会在那次导航里顺手用新令牌重新交接。**所以每次重启网关、或实例重启过之后，已经打开的标签页都需要刷新一次。**
+
 **页面能打开，但一直 401。**
 
 dsh 的会话与 authority 绑定。换了访问地址（IP ↔ 主机名 ↔ 穿透域名）、或者 dsh 重启换了新令牌之后，浏览器手上的 dsh 会话就失效了。网关会自动清掉交接标记并重试一次，通常表现为「页面自己就好了」。仍然不行的话，把 dsh 启动时打印的完整地址粘到网关地址后面访问一次即可：
@@ -1295,12 +1500,19 @@ http://192.168.1.20:3082/?token=6f1c...
 
 网关学到这个令牌之后就把它记在内存里，不会再出现在任何日志里。接管别人已经启动的 dsh 时，这是唯一可行的令牌来源；也可以直接用 `--dsh-token` 指定。
 
-**页面能打开，但 API 全是 403。**
+**页面能打开，但 API 全是 403（进实例后一直「重新连接中」、工作区打不开）。**
 
-`--trusted-host` 没覆盖你正在用的地址。dsh 只信任回环、自身绑定地址和被显式点名的 authority。局域网 IP 会自动加入，但主机名、mDNS 名、内网穿透域名不会。加一个即可：
+`--trusted-host` 没覆盖你正在用的地址。dsh 只信任回环、自身绑定地址和被显式点名的 authority，所以它会把每个 `/api` 请求和 WebSocket 都拒掉。症状很有欺骗性：**页面能正常打开**（`GET /` 走的是令牌交换，不过那道栅栏），只有进去之后的对话与工作区转圈。
+
+局域网 IP 与主机名会自动加入，一般不用管。**推导不出来的是这三种**：自定义域名、mDNS 名、内网穿透域名；以及**容器端口映射 / NAT**——网关在容器里看到的网卡地址不是你在浏览器里敲的那个，谁也推不出来。加一个即可：
 
 ```sh
 dsh-gate run --trusted-host dsh.example.com --trusted-host my-mac.local
+
+# 管理端形态：用 --public-url 让网关把主机名一起推导进去
+dsh-gate manage run --port 3082 --public-url http://172.18.98.20:12090/
+# 也可以直接点名（带端口 = 只认这个 authority）
+dsh-gate manage run --port 3082 --trusted-host 172.18.98.20:12090
 ```
 
 **端口被占。**
@@ -1429,6 +1641,53 @@ PATH；系统里已有 pnpm 时不动。日志里能看到 `已自备 pnpm：…
 dsh-gate plugin add dsh-dock     # 官方源失败会自动换镜像源
 dsh-gate restart all             # 装完重启 dsh 才生效
 ```
+
+**管理台里装 dsh 报 `Ignored build scripts: node-pty, koffi, …`。**
+
+pnpm 10 起默认**拒绝**依赖的 `postinstall` 脚本（供应链安全），而 dsh 的原生依赖正是靠它
+准备平台相关的产物（`node-pty` / `koffi` 编译或搬运原生绑定，`protobufjs` / `@google/genai`
+生成运行时代码）。不放行时 pnpm 会**以失败退出**（不是警告），dsh 装不起来。
+
+dsh-gate 的 pnpm 与 git 方式已经自动用 `--allow-build=<包名>` 逐个放行这几个包，正常不会
+看到这条报错。如果你在**手动**跑 pnpm，或者上游新增了原生依赖，照报错里点名的包加参数：
+
+```sh
+pnpm add @deepseek-ai/dsh --allow-build=node-pty --allow-build=koffi \
+    --allow-build=protobufjs --allow-build=@google/genai \
+    --allow-build=@deepseek-ai/dsh-subprocess-local
+```
+
+别图省事写成 `--allow-build=*`：那等于把整条依赖链的脚本都放开，正是 pnpm 默认拒绝的初衷。
+
+**git 方式装 dsh 卡在 `pnpm install` 很久，最后报 `ERR_PNPM_FETCH_TIMEOUT`。**
+
+上游 monorepo 依赖很重（实测 clone + install + build 十几分钟），其中个别包（例如
+`cdn.sheetjs.com` 上的 `xlsx`）不在 npm 主源上，慢网络下会超时。这不是 dsh-gate 的问题：
+
+```sh
+# 换更近的 npm 镜像源（对 npm 上的依赖生效；上游 CDN 依赖仍走原地址）
+dsh-gate manage instance install <实例名> --install-mode git \
+    --npm-registry https://registry.npmmirror.com
+
+# 或者干脆用 npx / pnpm 方式，它们只从 npm 拉 dsh，不碰上游 monorepo 的 CDN 依赖
+dsh-gate manage instance install <实例名> --install-mode pnpm
+```
+
+dsh-gate 只在 **lockfile 与 package.json 不一致**时才把 `--frozen-lockfile` 退回普通
+`install`；网络类失败会**原地报错**，不会让你白等一轮重拉同一批包。
+
+**管理台页面上的安装进度不动 / 一直显示「安装中」。**
+
+管理台**没有 JavaScript**，进度是服务端渲染的：**刷新页面**才更新。另外任务状态只在内存里
+（管理端进程重启后，「安装中」的任务不会被继承——没有任何东西能继续推进它），重新发起一次
+安装即可。装失败也不影响实例记录：记录还在，改个方式再装。
+
+**Alpine 上跑不起来（`exec format error` 或 Node 起不来）。**
+
+官方 Node.js 二进制是 glibc 的，Alpine 是 musl，跑不了。用 `apk add nodejs` 装系统自带的
+Node，网关会优先用它；或者换 Debian / Ubuntu 这类发行版。另外精简镜像常常没装
+`ca-certificates`，会报 `x509: certificate signed by unknown authority`，装上
+`ca-certificates` 即可。
 
 **页面显示 `dsh web authentication required; reopen the URL printed by dsh web.`**
 

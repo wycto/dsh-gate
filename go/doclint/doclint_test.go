@@ -189,3 +189,72 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// imageRefPattern 抓 Markdown 图片与 HTML <img src> 两种引用。
+// 两种都要抓：README 里同一张图可能用 Markdown 语法（配 alt）也可能用
+// <img width=...> 控制尺寸，漏掉任一种就会出现裂图而没人发现。
+var imageRefPattern = regexp.MustCompile(`(?:!\[[^\]]*\]\(([^)\s]+)\)|<img[^>]+src="([^"]+)")`)
+
+// TestReadmeImageRefsResolve 检查文档里引用的每张图都真实存在。
+//
+// 图片是相对路径，改了文件名或挪了目录之后 Markdown 不会报错，只有人打开页面
+// 才看得到裂图；而 README 又会随发行包一起分发，裂图会直接发给用户。
+func TestReadmeImageRefsResolve(t *testing.T) {
+	for _, doc := range []string{readmeZH, readmeEN} {
+		text := read(t, doc)
+		found := 0
+		for _, m := range imageRefPattern.FindAllStringSubmatch(text, -1) {
+			ref := m[1]
+			if ref == "" {
+				ref = m[2]
+			}
+			// 只检查仓库内的相对路径；外链图（http/https）不归这里管。
+			if strings.Contains(ref, "://") {
+				continue
+			}
+			found++
+			path := filepath.Join("..", "..", ref)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Errorf("%s 引用了不存在的图片 %q: %v", doc, ref, err)
+				continue
+			}
+			if info.IsDir() {
+				t.Errorf("%s 的图片引用 %q 指向目录而不是文件", doc, ref)
+			}
+			if info.Size() == 0 {
+				t.Errorf("%s 的图片 %q 是空文件", doc, ref)
+			}
+		}
+		if found == 0 {
+			t.Errorf("%s 里没找到任何图片引用，检查正则是否失效", doc)
+		}
+	}
+}
+
+// TestPackagedDocsIncludeImages 检查打包脚本会把文档引用的图一起放进发行包。
+//
+// README 随包分发，图却留在仓库里的话，用户解压出来看到的全是裂图。
+// 这里断言 build.sh 里有拷贝 docs/images 的那一步——脚本是 shell，没法直接
+// 调它的函数，就核对它确实写了这件事。
+func TestPackagedDocsIncludeImages(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "build.sh"))
+	if err != nil {
+		t.Fatalf("读取 go/build.sh 失败: %v", err)
+	}
+	script := string(raw)
+
+	for _, want := range []string{"docs/images", "cp docs/images/"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("build.sh 里应有 %q，否则发行包里的 README 会裂图", want)
+		}
+	}
+	// 截图目录必须真的有图，不然拷贝步骤等于空转。
+	entries, err := os.ReadDir(filepath.Join("..", "..", "docs", "images"))
+	if err != nil {
+		t.Fatalf("读取 docs/images 失败: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Error("docs/images 里没有任何图片")
+	}
+}

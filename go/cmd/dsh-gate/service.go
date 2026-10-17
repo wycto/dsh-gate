@@ -59,6 +59,8 @@ func serviceCommand(args []string) int {
 	fs.StringVar(&selfPath, "binary", "", "dsh-gate 可执行文件的绝对路径（默认用当前运行的真实路径）")
 	fs.StringVar(&binDir, "bin-dir", defaultBinDir,
 		"把 dsh-gate 拷贝到这个目录（需在 PATH 里），命令就能直接敲；留空则不拷贝")
+	manage := fs.Bool("manage", false,
+		"托管管理端（manage run）而不是单实例网关（run）")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -89,6 +91,9 @@ func serviceCommand(args []string) int {
 		WorkingDir: workDir,
 		ConfigPath: configPath,
 	}
+	if *manage {
+		opts.Command = "manage run"
+	}
 	if opts.Binary == "" {
 		// 用自己的真实路径而不是 PATH 查找：服务管理器的环境很干净，写死绝对
 		// 路径才不会在某天突然「找不到命令」。
@@ -106,7 +111,9 @@ func serviceCommand(args []string) int {
 		if err != nil {
 			return usageError("%v", err)
 		}
-		for _, key := range []string{"user", "working-dir", "binary", "bin-dir"} {
+		// 这几个不是实例配置：它们决定「怎么装」而不是「装成什么样」。
+		// --manage 也在这里剔除——它已经体现在子命令里，再传一次就是重复。
+		for _, key := range []string{"user", "working-dir", "binary", "bin-dir", "manage"} {
 			delete(values, key)
 		}
 		opts.Overrides = values
@@ -171,11 +178,20 @@ type serviceOptions struct {
 	ConfigPath string
 	// Overrides 是命令行显式给出的实例选项，键是选项名（不含前导 --）。
 	Overrides map[string]string
+	// Command 是托管时要跑的子命令，默认 "run"（单实例形态）。
+	//
+	// 管理端形态要托管的是 "manage run"：它有自己的端口、账号库与实例表，
+	// 与单实例形态互不兼容。为空时按 "run" 处理，保持老调用方不变。
+	Command string
 }
 
 // serviceArgs 返回托管时要执行的完整命令行，含程序名本身。
 func (o serviceOptions) serviceArgs() []string {
-	args := []string{o.Binary, "run", "--log-json"}
+	command := o.Command
+	if command == "" {
+		command = "run"
+	}
+	args := []string{o.Binary, command, "--log-json"}
 	if o.ConfigPath != "" {
 		return append(args, "--config", o.ConfigPath)
 	}

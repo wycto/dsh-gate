@@ -229,6 +229,10 @@ func registerRunDirFlag(fs *flag.FlagSet) func() registry.Dir {
 }
 
 // logDirFor 返回某个实例的日志目录。
+//
+// 必须 Expand：runDir 可能带 `~`（默认就是 ~/.dsh-gate/run），而 registry.Dir 的
+// Path / Save 内部都会自己展开，唯独这里原来是裸 Join——于是日志落进一个字面量
+// 的 `~` 目录，而命令行提示里印的是展开后的路径，用户照着找永远找不到。
 func logDirFor(runDir registry.Dir) string {
-	return filepath.Join(string(runDir), "logs")
+	return filepath.Join(string(runDir.Expand()), "logs")
 }

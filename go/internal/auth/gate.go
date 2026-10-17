@@ -15,14 +15,18 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/wycto/dsh-gate/internal/assets"
 	"github.com/wycto/dsh-gate/internal/cookie"
-	"github.com/wycto/dsh-gate/internal/users"
+	"github.com/wycto/dsh-gate/internal/i18n"
 )
+
+// LangCookie 是记住界面语言偏好的 Cookie 名。它不是凭据，因此不加 HttpOnly：
+// 页面上的语言切换按钮要能改它。
+const LangCookie = "dsh_gate_lang"
 
 // 网关自有端点的路径前缀。
 //
@@ -41,10 +45,21 @@ const (
 // 网关的内存吃光。真实的登录表单只有几十字节。
 const maxFormBytes = 8 << 10
 
+// Verifier 是鉴权网关对账号表的最小需求。
+//
+// 用接口而不是具体类型是为了让管理端的 SQLite 账号表直接接进来（它实现
+// Verify + Count），而**不改动**单实例形态用的 internal/users。
+type Verifier interface {
+	// Verify 校验账号口令。账号不存在与口令错误都必须返回 false。
+	Verify(name, password string) bool
+	// Count 返回账号总数；为 0 时网关拒绝启动（否则没人能登录）。
+	Count() int
+}
+
 // Options 是鉴权网关的配置。
 type Options struct {
-	// Users 是账号表。
-	Users *users.Store
+	// Users 是账号表（可以是 internal/users 的 JSON 表，也可以是管理端的 SQLite 表）。
+	Users Verifier
 	// SessionTTL 是登录会话有效期。
 	SessionTTL time.Duration
 	// MaxFails / LockoutBase 是登录失败限速参数。
@@ -146,7 +161,7 @@ func (g *Gate) Handler(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("WWW-Authenticate", `FormLogin realm="dsh-gate"`)
-		http.Error(w, "尚未登录，请先访问 "+g.loginURL(r), http.StatusUnauthorized)
+		http.Error(w, i18n.T(g.langFor(w, r), i18n.KeyLoginErrNotSignedIn, g.loginURL(r)), http.StatusUnauthorized)
 	})
 }
 
@@ -159,22 +174,23 @@ func (g *Gate) handleLogin(w http.ResponseWriter, r *http.Request) {
 		g.handleLoginPost(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "不支持的方法", http.StatusMethodNotAllowed)
+		http.Error(w, i18n.T(g.langFor(w, r), i18n.KeyLoginErrMethod), http.StatusMethodNotAllowed)
 	}
 }
 
 // handleLoginPost 校验口令并建立会话。
 func (g *Gate) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	lang := g.langFor(w, r)
 	ip := cookie.ClientIP(r)
 	if wait, ok := g.limiter.Allow(ip); !ok {
 		g.renderLogin(w, r, http.StatusTooManyRequests,
-			"尝试次数过多，请在 "+humanDuration(wait)+"后再试")
+			i18n.T(lang, i18n.KeyLoginErrTooMany, humanDuration(wait, lang)))
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		g.renderLogin(w, r, http.StatusBadRequest, "请求格式有误")
+		g.renderLogin(w, r, http.StatusBadRequest, i18n.T(lang, i18n.KeyLoginErrBadRequest))
 		return
 	}
 	name := strings.TrimSpace(r.PostFormValue("username"))
@@ -185,12 +201,13 @@ func (g *Gate) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if !g.opts.Users.Verify(name, password) {
 		wait := g.limiter.Fail(ip)
 		g.log.Warn("登录失败", "ip", ip, "user", name, "locked", wait > 0)
-		g.renderLogin(w, r, http.StatusUnauthorized, "用户名或口令不正确")
+		g.renderLogin(w, r, http.StatusUnauthorized, i18n.T(lang, i18n.KeyLoginErrBadCreds))
 		return
 	}
 
 	g.limiter.Reset(ip)
-	token := g.sessions.Create()
+	// 会话绑定登录名：管理端要按「是谁」查实例授权（grants）。
+	token := g.sessions.Create(name)
 	cookie.Set(w, cookie.Session, token, cookie.Options{
 		Secure: g.opts.CookieSecure,
 		MaxAge: g.opts.SessionTTL,
@@ -281,6 +298,7 @@ func isLoopbackRequest(r *http.Request) bool {
 
 // renderLogin 渲染登录页。
 func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, message string) {
+	lang := g.langFor(w, r)
 	data := struct {
 		Title    string
 		Subtitle string
@@ -290,14 +308,16 @@ func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, m
 		Host     string
 		Version  string
 		Action   string
+		L        i18n.LoginStrings
 	}{
 		Title:    g.opts.Title,
 		Subtitle: g.opts.Subtitle,
 		Error:    message,
 		Next:     safeNext(r.URL.Query().Get("next")),
-		Host:     displayHost(r),
+		Host:     displayHost(r, lang),
 		Version:  g.version(),
 		Action:   PathLogin,
+		L:        i18n.Login(lang),
 	}
 	if r.Method == http.MethodPost {
 		data.Username = strings.TrimSpace(r.PostFormValue("username"))
@@ -368,34 +388,67 @@ func safeNext(raw string) string {
 }
 
 // displayHost 返回用于页脚展示的主机名。
-func displayHost(r *http.Request) string {
+func displayHost(r *http.Request, lang i18n.Lang) string {
 	if host := r.Host; host != "" {
 		return host
 	}
-	return "本机"
+	return i18n.T(lang, i18n.KeyHostLocal)
 }
 
-// humanDuration 把时长渲染成「1 分 30 秒」这样的中文，便于阅读错误提示。
-func humanDuration(d time.Duration) string {
+// humanDuration 把时长渲染成便于阅读的文本（中文「1 分 30 秒」/ 英文「1m 30s」）。
+func humanDuration(d time.Duration, lang i18n.Lang) string {
 	seconds := int(d.Round(time.Second) / time.Second)
 	switch {
 	case seconds <= 1:
-		return "1 秒"
+		return i18n.T(lang, i18n.KeyDurationSeconds, 1)
 	case seconds < 60:
-		return strconv.Itoa(seconds) + " 秒"
+		return i18n.T(lang, i18n.KeyDurationSeconds, seconds)
 	case seconds < 3600:
 		minutes := seconds / 60
 		rest := seconds % 60
 		if rest == 0 {
-			return strconv.Itoa(minutes) + " 分钟"
+			return i18n.T(lang, i18n.KeyDurationMinutes, minutes)
 		}
-		return strconv.Itoa(minutes) + " 分 " + strconv.Itoa(rest) + " 秒"
+		return i18n.T(lang, i18n.KeyDurationMinutesSeconds, minutes, rest)
 	default:
 		hours := seconds / 3600
 		minutes := (seconds % 3600) / 60
 		if minutes == 0 {
-			return strconv.Itoa(hours) + " 小时"
+			return i18n.T(lang, i18n.KeyDurationHours, hours)
 		}
-		return strconv.Itoa(hours) + " 小时 " + strconv.Itoa(minutes) + " 分"
+		return i18n.T(lang, i18n.KeyDurationHoursMinutes, hours, minutes)
 	}
+}
+
+// Lang 是对外暴露的语言判定：管理端页面与 API 用它，保证与登录页同一套优先级
+// 和同一个偏好 Cookie（`?lang=` 会顺带写回）。
+func (g *Gate) Lang(w http.ResponseWriter, r *http.Request) i18n.Lang {
+	return g.langFor(w, r)
+}
+
+// langFor 解析这次请求该用哪种语言，并把显式选择记进 Cookie。
+//
+// 优先级：`?lang=`（一次性写入 Cookie）> Cookie > Accept-Language > 环境变量 > 默认。
+// 环境变量交给 i18n.Detect（DSH_GATE_LANG > LC_ALL > LANG），方便在 systemd 单元里
+// 统一指定服务器默认语言。
+func (g *Gate) langFor(w http.ResponseWriter, r *http.Request) i18n.Lang {
+	if explicit := strings.TrimSpace(r.URL.Query().Get("lang")); explicit != "" {
+		lang := i18n.Normalize(explicit)
+		http.SetCookie(w, &http.Cookie{
+			Name:     LangCookie,
+			Value:    string(lang),
+			Path:     "/",
+			MaxAge:   365 * 24 * 3600,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   g.opts.CookieSecure,
+		})
+		return lang
+	}
+	if c, err := r.Cookie(LangCookie); err == nil && strings.TrimSpace(c.Value) != "" {
+		return i18n.Normalize(c.Value)
+	}
+	if lang, ok := i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")); ok {
+		return lang
+	}
+	return i18n.Detect("", os.Getenv)
 }

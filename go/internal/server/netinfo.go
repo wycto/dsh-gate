@@ -9,6 +9,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -138,4 +139,57 @@ func authority(address string, port int) string {
 		return fmt.Sprintf("[%s]:%d", address, port)
 	}
 	return fmt.Sprintf("%s:%d", address, port)
+}
+
+// TrustedHosts 组装传给 dsh 的 --trusted-host 列表。
+//
+// dsh 的 `/api` 浏览器信任栅栏只接受三种 authority：回环地址、dsh 自己绑定的
+// 地址、以及被显式点名的 trustedHosts。反向代理把浏览器的 Host 原样递过去，
+// 所以「用户从哪个地址访问网关」必须在这里点名。漏了会很难查：页面能打开
+// （`GET /` 是令牌交换，不过栅栏），而**每一个 XHR 与 WebSocket 都 403**，
+// 前端表现成「一直连接中」「工作区打开失败」——报错完全指不到真因。
+//
+// 三个来源：用户显式点名的、public-url 里的主机名、本机非回环地址与主机名。
+// public-url 的主机名刻意**不带端口**：dsh 把不带端口的条目解释成「该主机名
+// 的任意端口」，于是宿主端口映射（宿主机 12090 → 容器 3082）也不会漏。
+//
+// 单实例形态与管理端形态共用这一份——两边各自推导过一次，管理端那次漏了，
+// 于是同一套代码在单实例下好好的、在管理端下每个实例都连不上。
+func TrustedHosts(explicit []string, publicURL string) []string {
+	seen := map[string]bool{}
+	var hosts []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		hosts = append(hosts, value)
+	}
+	for _, host := range explicit {
+		add(host)
+	}
+	if name := hostOfURL(publicURL); name != "" {
+		add(authorityHost(name))
+	}
+	for _, address := range LocalAddresses() {
+		add(authorityHost(address))
+	}
+	if name := Hostname(); name != "" {
+		add(name)
+	}
+	return hosts
+}
+
+// hostOfURL 取出 URL 的主机名；空串或解析不出来时返回空串。
+func hostOfURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
