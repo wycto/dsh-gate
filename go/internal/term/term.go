@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrNotTerminal 表示输入不是交互式终端，无法安全地读取口令。
@@ -150,20 +151,76 @@ func feedMasked(input []byte, out io.Writer) ([]byte, bool, error) {
 //
 // 抽成纯函数是为了能测：这套「星号 + 退格 + 回车」的规则是本功能的全部行为，
 // 而终端在测试里拿不到。
+//
+// 按**字符**而不是字节处理：中文口令一个字是 3 个字节，逐字节打星号会让 8 个
+// 字显示成 24 个星号，退格也只删掉三分之一个字（把 UTF-8 截成非法序列，
+// 存进去就是一条谁也登不进去的乱码口令）。
 func maskedStep(line []byte, b byte) (value []byte, cancelled, done bool, echo string) {
 	switch b {
 	case '\n', '\r':
 		return line, false, true, "\n"
 	case 0x7f, 0x08: // 退格 / Delete
-		if len(line) == 0 {
+		value = dropLastRune(line)
+		if len(value) == len(line) {
 			return line, false, false, ""
 		}
-		return line[:len(line)-1], false, false, "\b \b"
+		return value, false, false, "\b \b"
 	case 0x03: // Ctrl-C
 		return nil, true, false, "\n"
 	default:
-		return append(line, b), false, false, "*"
+		value = append(line, b)
+		// 一个字符的后续字节还没到齐时先不打星号，凑齐了整个字符才打一个。
+		if !tailIsCompleteRune(value) {
+			return value, false, false, ""
+		}
+		return value, false, false, "*"
 	}
+}
+
+// tailIsCompleteRune 判断 b 的末尾是不是一个完整字符（而不是半个 UTF-8 序列）。
+func tailIsCompleteRune(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	start := len(b) - 1
+	for start >= 0 && start >= len(b)-utf8.UTFMax && !utf8.RuneStart(b[start]) {
+		start--
+	}
+	if start < 0 {
+		return true // 找不到开头字节，按完整处理，交给上层校验
+	}
+	return utf8.FullRune(b[start:])
+}
+
+// dropLastRune 删掉末尾的一个完整字符；末尾只是半个字符时先丢掉那半个。
+func dropLastRune(line []byte) []byte {
+	// 先清掉还没凑成完整字符的尾巴（逐字节读入时可能出现半截）。
+	if trimmed := trimPartialTail(line); len(trimmed) != len(line) {
+		return trimmed
+	}
+	_, size := utf8.DecodeLastRune(line)
+	if size <= 0 {
+		return line
+	}
+	return line[:len(line)-size]
+}
+
+// trimPartialTail 去掉末尾「不完整的 UTF-8 字符」，返回剩下的部分。
+// 末尾是完整字符（或本来就是合法编码）时原样返回。
+func trimPartialTail(b []byte) []byte {
+	if len(b) == 0 || utf8.Valid(b) {
+		return b
+	}
+	// 往前最多找 UTFMax 个字节，看是不是「开头字节 + 不够数的续字节」。
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			return b
+		}
+	}
+	return b
 }
 
 // readLineUnbuffered 逐字节读到换行为止。

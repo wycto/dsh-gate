@@ -42,12 +42,8 @@ func manageCommand(args []string) int {
 		return 2
 	}
 	switch args[0] {
-	case "run":
-		return portalRunCommand(args[1:])
 	case "user":
 		return portalUser(args[1:])
-	case "instance":
-		return portalInstance(args[1:])
 	case "grant":
 		return portalGrant(args[1:])
 	case "-h", "--help", "help":
@@ -119,6 +115,18 @@ func roleLabel(role portal.Role) string {
 	return tr(i18n.KeyRoleUser)
 }
 
+// accountTypeLabel 是账号列表里的「类型」文案：超级管理员、管理员、普通用户。
+//
+// 超级管理员不由角色决定，而是「表里 id 最小的账号」（最早注册的那个，见
+// Store.SuperAdminID），所以这里单独标出来——只显示「管理员」的话，看不出
+// 哪一个账号是改不动、删不掉的那个。页面上的徽标用的是同一句话。
+func accountTypeLabel(u portal.User, superID int64) string {
+	if superID != 0 && u.ID == superID {
+		return tr(i18n.KeyAdminSuperBadge)
+	}
+	return roleLabel(u.Role)
+}
+
 // statusLabel 把启用状态翻成当前语言。
 func statusLabel(enabled bool) string {
 	if enabled {
@@ -160,6 +168,7 @@ func portalUserAdd(args []string) int {
 	fs := flag.NewFlagSet("portal user add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	role := fs.String("role", string(portal.RoleUser), "角色：admin 或 user")
+	display := fs.String("display", "", "姓名（给人看，可以中文；留空回退账号名）")
 	randomMode := fs.Bool("random", false, "生成随机强口令并打印一次")
 	fromStdin := fs.Bool("password-stdin", false, "从标准输入读取口令")
 
@@ -189,7 +198,7 @@ func portalUserAdd(args []string) int {
 	}
 	defer store.Close()
 
-	if _, err := store.CreateUser(name, password, portal.Role(*role)); err != nil {
+	if _, err := store.CreateUserWithDisplay(name, password, portal.Role(*role), *display); err != nil {
 		if errors.Is(err, portal.ErrUserExists) {
 			return failKey(i18n.KeyCLIErrUserExists, name)
 		}
@@ -337,12 +346,13 @@ func portalUserList(args []string) int {
 		return 0
 	}
 	sayKey(os.Stdout, i18n.KeyCLIUserListHeader, dbPath, len(users))
+	superID, _ := store.SuperAdminID()
 	for _, u := range users {
 		status := tr(i18n.KeyCLIStatusEnabled)
 		if u.Disabled {
 			status = tr(i18n.KeyCLIStatusDisabled)
 		}
-		fmt.Printf(tr(i18n.KeyCLIUserRow)+"\n", u.Name, roleLabel(u.Role), status,
+		fmt.Printf(tr(i18n.KeyCLIUserRow)+"\n", u.Name, accountTypeLabel(u, superID), status,
 			u.CreatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	return 0
@@ -390,74 +400,20 @@ func portalStoreError(err error) int {
 	return failKey(i18n.KeyAdminErrActionFailed, err.Error())
 }
 
-// portalInstance 实现 `dsh-gate manage instance`。
-func portalInstance(args []string) int {
-	if len(args) == 0 {
-		sayKey(os.Stderr, i18n.KeyCLIPortalInstHelp)
-		return 2
-	}
-	switch args[0] {
-	case "list":
-		return portalInstanceList(args[1:])
-	case "add":
-		return portalInstanceAdd(args[1:])
-	case "install":
-		return portalInstanceInstall(args[1:])
-	case "rename", "mv":
-		return portalInstanceRename(args[1:])
-	case "rm", "remove":
-		return portalInstanceRemove(args[1:])
-	case "-h", "--help", "help":
-		sayKey(os.Stdout, i18n.KeyCLIPortalInstHelp)
-		return 0
-	default:
-		return usageKey(i18n.KeyCLIUnknownPortalSub, args[0])
-	}
-}
-
-func portalInstanceList(args []string) int {
-	fs := flag.NewFlagSet("portal instance list", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	dbPath, err := parsePortalFlags(fs, args)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return usageKey(i18n.KeyCLIUnknownPortalSub, err.Error())
-	}
-	store, code := openPortal(dbPath)
-	if code != 0 {
-		return code
-	}
-	defer store.Close()
-
-	instances, err := store.ListInstances()
-	if err != nil {
-		return failKey(i18n.KeyAdminErrActionFailed, err.Error())
-	}
-	if len(instances) == 0 {
-		sayKey(os.Stdout, i18n.KeyCLIInstListEmpty)
-		return 0
-	}
-	sayKey(os.Stdout, i18n.KeyCLIInstListHeader, len(instances))
-	for _, inst := range instances {
-		fmt.Printf(tr(i18n.KeyCLIInstRow)+"\n", inst.Name, inst.ID, inst.DshHome,
-			fmt.Sprintf("%d", inst.DshPort), statusLabel(inst.Enabled))
-	}
-	return 0
-}
-
 func portalInstanceAdd(args []string) int {
 	fs := flag.NewFlagSet("portal instance add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	dshHome := fs.String("dsh-home", "", "该实例的 DSH_HOME（必填）")
+	dshHome := fs.String("dsh-home", "", "该实例的 DSH_HOME（留空 = dsh 默认的 ~/.dsh）")
 	workspace := fs.String("workspace", "", "该实例的工作目录")
 	owner := fs.String("owner", "", "默认拥有者（登录名，可空）")
 	port := fs.Int("port", 0, "dsh 回环端口（0 = 自动分配）")
+	dshPort := fs.Int("dsh-port", 0, "dsh 回环端口（同 --port，推荐写法）")
 	onDemand := fs.Bool("on-demand", false, "不在管理端启动时拉起（用户点击进入时才拉）")
+	startModeFlag := fs.String("start-mode", "", "启动方式：auto / ondemand（优先于 --on-demand）")
 	idleTimeout := fs.Int("idle-timeout", 0, "空闲回收秒数（0 = 不回收）")
-	installMode := fs.String("install-mode", "", "dsh 安装方式：npx / git / pnpm（留空为 npx）")
-	installDir := fs.String("install-dir", "", "dsh 安装目录（git 方式放源码，pnpm 方式放包）")
+	installMode := fs.String("install-mode", "", "dsh 安装方式：npx / git / local / pnpm（留空为 npx）")
+	installDir := fs.String("install-dir", "", "dsh 安装目录（git 放源码，pnpm 放包，local 填已构建好的源码仓库根目录）")
+	dshVersion := fs.String("dsh-version", "", "要装的 dsh 版本或 dist-tag（如 0.2.2-alpha.2、next；留空跟随 latest）")
 	configDir := fs.String("config-dir", "", "配置目录（留空沿用 --dsh-home）")
 	listenHost := fs.String("listen-host", "", "dsh 监听地址（留空为 127.0.0.1）")
 
@@ -471,9 +427,8 @@ func portalInstanceAdd(args []string) int {
 	if fs.NArg() != 1 {
 		return usageKey(i18n.KeyCLIUsageInstanceName)
 	}
-	if strings.TrimSpace(*dshHome) == "" {
-		return usageKey(i18n.KeyCLIUsageInstanceHome)
-	}
+	// 实例目录留空是合法输入：落到 dsh 自己的默认目录（~/.dsh 展开后的绝对
+	// 路径），由 portal.CreateInstance 的默认值逻辑补上。这里不再拒绝。
 	name := fs.Arg(0)
 
 	store, code := openPortal(dbPath)
@@ -486,14 +441,43 @@ func portalInstanceAdd(args []string) int {
 	if err != nil {
 		return usageKey(i18n.KeyAdminErrActionFailed, err.Error())
 	}
+	version, err := dshproc.ValidateDshVersion(*dshVersion)
+	if err != nil {
+		return usageKey(i18n.KeyAdminErrActionFailed, err.Error())
+	}
+	// 钉版本是 npm 包的说法，源码方式（分支构建 / 本地源码）不受它管；两个都填 =
+	// 有一栏不会被用上。在这里拦下，别等 `dsh install` 跑到一半才报（与 /admin
+	// 创建实例同一句判断）。
+	if (mode == portal.InstallModeGit || mode == portal.InstallModeLocal) && version != "" {
+		how := "它跑的是你本地那份源码，版本由那个目录决定"
+		if mode == portal.InstallModeGit {
+			how = "它装的是仓库分支/标签，用 --git-ref 指定"
+		}
+		return usageKey(i18n.KeyAdminErrActionFailed,
+			fmt.Sprintf("%s（--install-mode %s）不认 --dsh-version %q：%s；"+
+				"要把版本钉到 npm 包上，请把 --install-mode 换成 npx 或 pnpm", mode.Label(), mode, version, how))
+	}
 	startMode := portal.StartModeAuto
 	if *onDemand {
 		startMode = portal.StartModeOnDemand
 	}
+	if strings.TrimSpace(*startModeFlag) != "" {
+		switch strings.TrimSpace(*startModeFlag) {
+		case portal.StartModeAuto, portal.StartModeOnDemand:
+			startMode = strings.TrimSpace(*startModeFlag)
+		default:
+			return usageKey(i18n.KeyAdminErrActionFailed, "启动方式只能是 auto 或 ondemand")
+		}
+	}
+	chosenPort := *port
+	if *dshPort > 0 {
+		chosenPort = *dshPort
+	}
 	inst := portal.Instance{
 		Name: name, DshHome: *dshHome, Workspace: *workspace,
-		DshPort: *port, OnDemand: *onDemand, IdleTimeoutS: *idleTimeout,
+		DshPort: chosenPort, OnDemand: *onDemand, IdleTimeoutS: *idleTimeout,
 		InstallMode: string(mode), InstallDir: strings.TrimSpace(*installDir),
+		DshVersion: version,
 		ConfigDir:  strings.TrimSpace(*configDir),
 		ListenHost: strings.TrimSpace(*listenHost),
 		StartMode:  startMode,
@@ -512,15 +496,16 @@ func portalInstanceAdd(args []string) int {
 	return 0
 }
 
-// portalInstanceInstall 实现 `dsh-gate manage instance install <名字>`。
+// portalInstanceInstall 实现 `dsh-gate dsh install <名字>`。
 //
 // 与页面不同，CLI 是同步跑的：命令行的用户本来就在等，进度直接打在终端上更直观。
 // 装好后把启动命令写回实例记录（页面那条路走的是同一个 dshproc.InstallDSH）。
 func portalInstanceInstall(args []string) int {
 	fs := flag.NewFlagSet("portal instance install", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	installMode := fs.String("install-mode", "", "安装方式：npx / git / pnpm（留空沿用实例记录的设置）")
-	installDir := fs.String("install-dir", "", "安装目录（留空沿用实例记录的设置）")
+	installMode := fs.String("install-mode", "", "安装方式：npx / git / local / pnpm（留空沿用实例记录的设置）")
+	installDir := fs.String("install-dir", "", "安装目录（留空沿用实例记录的设置；local 填已构建好的源码仓库根目录）")
+	dshVersion := fs.String("dsh-version", "", "dsh 版本或 dist-tag（如 0.2.2-alpha.2、next；留空沿用实例记录的设置）")
 	registry := fs.String("npm-registry", "", "拉包用的 npm 源；留空自动")
 	gitURL := fs.String("git-url", "", "git 方式的源码仓库（留空用官方仓库）")
 	gitRef := fs.String("git-ref", "", "git 方式要检出的分支或标签")
@@ -552,8 +537,20 @@ func portalInstanceInstall(args []string) int {
 		return usageKey(i18n.KeyAdminErrActionFailed, err.Error())
 	}
 	dir := firstNonEmpty(*installDir, inst.InstallDir)
-	if dir == "" && mode != portal.InstallModeNpx {
+	// 本地源码方式没有可推导的默认目录：它必须指向用户已 clone + 构建好的源码。
+	// 推成 <DSH_HOME>/install 只会在安装时报「那里没有 package.json」。
+	if mode == portal.InstallModeLocal && dir == "" {
+		return usageKey(i18n.KeyAdminErrActionFailed,
+			"本地源码方式（--install-mode local）要用 --install-dir 指向 clone 下来、"+
+				"已执行过 pnpm install 与 pnpm run build 的仓库根目录")
+	}
+	if dir == "" && mode != portal.InstallModeNpx && mode != portal.InstallModeLocal {
 		dir = filepath.Join(inst.DshHome, "install")
+	}
+	// 版本与目录同一个取法：命令行给了用命令行的，没给用实例记录里钉住的。
+	version := firstNonEmpty(*dshVersion, inst.DshVersion)
+	if _, err := dshproc.ValidateDshVersion(version); err != nil {
+		return usageKey(i18n.KeyAdminErrActionFailed, err.Error())
 	}
 
 	// 与页面同一条路径：先备齐 Node / pnpm，再按方式装。这里同步等结果，
@@ -585,6 +582,7 @@ func portalInstanceInstall(args []string) int {
 		Registry: *registry,
 		GitURL:   *gitURL,
 		GitRef:   *gitRef,
+		Version:  version,
 		NodeBin:  nodeBin,
 		PnpmBin:  pnpmBin,
 	})
@@ -595,6 +593,9 @@ func portalInstanceInstall(args []string) int {
 	inst.DshCmd = result.Command
 	inst.InstallMode = string(mode)
 	inst.InstallDir = result.Dir
+	// 版本一并写回：装的是哪个版本要留在记录里，下次自动探测启动命令（没装成
+	// 可执行文件、走 npx 那条）才知道该拿哪一个，而不是悄悄回到 latest。
+	inst.DshVersion = version
 	if err := store.UpdateInstance(*inst); err != nil {
 		return failKey(i18n.KeyAdminErrActionFailed, err.Error())
 	}
@@ -612,44 +613,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func portalInstanceRemove(args []string) int {
-	fs := flag.NewFlagSet("portal instance rm", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	dbPath, err := parsePortalFlags(fs, args)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		return usageKey(i18n.KeyCLIUnknownPortalSub, err.Error())
-	}
-	if fs.NArg() != 1 {
-		return usageKey(i18n.KeyCLIUsageInstanceName)
-	}
-	ref := fs.Arg(0)
-
-	store, code := openPortal(dbPath)
-	if code != 0 {
-		return code
-	}
-	defer store.Close()
-
-	inst, err := resolveInstance(store, ref)
-	if err != nil {
-		return failKey(i18n.KeyCLIErrInstanceNotExit, ref)
-	}
-	if err := store.DeleteInstance(inst.ID); err != nil {
-		return failKey(i18n.KeyAdminErrActionFailed, err.Error())
-	}
-	sayKey(os.Stdout, i18n.KeyCLIInstDeleted, inst.Name)
-	return 0
-}
-
-// portalInstanceRename 实现 `dsh-gate manage instance rename <旧名或 id> <新名>`。
-//
-// 为什么值得一条命令：实例名是**展示名**——它出现在管理台的授权矩阵、实例列表
-// 与用户的「我的实例」里，而对外路径用的是不透明 id。没有改名这条路时，名字一旦
-// 起错（比如起了一串自己都认不出的英文），唯一的补救是删掉重建，而删除会连带丢掉
-// 授权与那台 dsh 的登记关系。改名只动展示名：id 不变，所以授权与已有会话都不受影响。
 func portalInstanceRename(args []string) int {
 	fs := flag.NewFlagSet("portal instance rename", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

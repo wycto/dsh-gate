@@ -1,4 +1,4 @@
-// dsh 的三种安装方式。
+// dsh 的四种安装方式。
 //
 // 官方给了三条路，管理台让用户自己选——它们对机器与网络的要求不同，没有哪一
 // 条在所有场景下都最好：
@@ -12,14 +12,19 @@
 //	InstallPnpm —— pnpm add -g @deepseek-ai/dsh（或装到实例自己的目录）
 //	              装成一份真实可执行文件，之后启动不再走 npx 的版本检查，冷启
 //	              动更快，也便于固定版本。
+//	InstallLocal —— 用户自己 clone 并构建好的源码目录（官方 README 的
+//	              `pnpm dsh web`）。网关不 clone、不装依赖、不构建，只生成
+//	              指向那个目录的启动命令——clone 与构建都可能因为网络、私有
+//	              镜像、离线环境而失败，交给用户自己的工具链最稳。
 //
-// 三者最终都归结为一条「启动命令」（Instance.DshCmd）：supervisor 会展开它并
+// 四者最终都归结为一条「启动命令」（Instance.DshCmd）：supervisor 会展开它并
 // 接上 web --host --port。所以安装方式的差别只在「怎么把那条命令准备好」，
 // 不在运行时。
 package dshproc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,6 +46,8 @@ const (
 	InstallGit InstallMode = "git"
 	// InstallPnpm 用 pnpm 装一份可执行文件。
 	InstallPnpm InstallMode = "pnpm"
+	// InstallLocal 用用户自己 clone 并构建好的源码目录，网关只负责启动。
+	InstallLocal InstallMode = "local"
 )
 
 // ParseInstallMode 把文本解析成安装方式；空串按默认（npx）处理。
@@ -52,8 +59,10 @@ func ParseInstallMode(text string) (InstallMode, error) {
 		return InstallGit, nil
 	case string(InstallPnpm):
 		return InstallPnpm, nil
+	case string(InstallLocal):
+		return InstallLocal, nil
 	default:
-		return "", fmt.Errorf("不认识的安装方式 %q（可选：npx、git、pnpm）", text)
+		return "", fmt.Errorf("不认识的安装方式 %q（可选：npx、git、pnpm、local）", text)
 	}
 }
 
@@ -62,6 +71,8 @@ func (m InstallMode) Label() string {
 	switch m {
 	case InstallGit:
 		return "从源码构建（git clone + pnpm build）"
+	case InstallLocal:
+		return "本地源码（手工 clone + build）"
 	case InstallPnpm:
 		return "pnpm 安装"
 	default:
@@ -72,7 +83,7 @@ func (m InstallMode) Label() string {
 // Valid 表示这是不是一个已支持的安装方式。
 func (m InstallMode) Valid() bool {
 	switch m {
-	case InstallNpx, InstallGit, InstallPnpm:
+	case InstallNpx, InstallGit, InstallPnpm, InstallLocal:
 		return true
 	}
 	return false
@@ -83,7 +94,9 @@ type InstallRequest struct {
 	// Mode 是安装方式。
 	Mode InstallMode
 	// Dir 是安装目录。git 方式会 clone 到 <Dir>/deepseek-harness；
-	// pnpm 方式把包装进 <Dir>/dsh。npx 方式不用它（留空即可）。
+	// pnpm 方式把包装进 <Dir>/dsh；local 方式把它当源码目录——填 clone 下来的
+	// 仓库根目录，或像 git 方式一样填它的父目录（<Dir>/deepseek-harness）；
+	// npx 方式不用它（留空即可）。
 	Dir string
 	// DshHome 是实例的 DSH_HOME（写进命令的环境变量，见 InstallResult.Env）。
 	DshHome string
@@ -93,6 +106,10 @@ type InstallRequest struct {
 	GitURL string
 	// GitRef 是要检出的分支或标签（空表示仓库默认分支）。
 	GitRef string
+	// Version 是要装的 dsh 版本或 dist-tag（`0.2.2-alpha.2` / `next` / `alpha`），
+	// 空表示跟随 latest。只有走 npm 包的两种方式用它（npx / pnpm）；源码方式
+	// （git 认 GitRef，local 认用户自己构建的那份源码）不认它。
+	Version string
 	// NodeBin 是应当前置进 PATH 的 Node bin 目录（空表示用系统 Node）。
 	NodeBin string
 	// PnpmBin 是应当前置进 PATH 的 pnpm bin 目录（空表示用系统 pnpm）。
@@ -110,9 +127,10 @@ type InstallResult struct {
 	Mode InstallMode
 	// Command 是装好之后的 dsh 启动命令前缀（不带 web 子命令；supervisor
 	// 会自己接上 web --host --port）。例如：
-	//   npx  -> "npx --yes @deepseek-ai/dsh"
-	//   git  -> "node /path/deepseek-harness/apps/cli/lib/bin.js"
-	//   pnpm -> "/path/dsh/node_modules/.bin/dsh"
+	//   npx   -> "npx --yes @deepseek-ai/dsh"
+	//   git   -> "node /path/deepseek-harness/apps/cli/lib/bin.js"
+	//   pnpm  -> "/path/dsh/node_modules/.bin/dsh"
+	//   local -> "pnpm --dir '/path/deepseek-harness' run dsh"
 	Command string
 	// Dir 是安装目录（npx 方式为空）。
 	Dir string
@@ -142,6 +160,22 @@ func InstallDSH(ctx context.Context, log *slog.Logger, req InstallRequest) (Inst
 	if !req.Mode.Valid() {
 		return InstallResult{}, fmt.Errorf("不认识的安装方式 %q", req.Mode)
 	}
+	if _, err := ValidateDshVersion(req.Version); err != nil {
+		return InstallResult{}, err
+	}
+	if isSourceMode(req.Mode) && strings.TrimSpace(req.Version) != "" {
+		// 明说而不是忽略：静默按默认分支装完，用户会以为自己拿到的是那个版本。
+		// 报错要带上「怎么清掉钉住的版本」：实例记录里钉住的版本会跟着每一次安装，
+		// 不写清这一步就会卡死在「想换成源码方式却装不动」。
+		how := "它跑的是你本地那份源码，版本由那个目录决定。"
+		if req.Mode == InstallGit {
+			how = "它装的是仓库分支/标签，用 --git-ref <分支或标签> 指定。"
+		}
+		return InstallResult{}, fmt.Errorf("%s不认 dsh 版本 %q（那是 npm 包的说法）：%s"+
+			`确实要用这个方式，先把钉住的版本清掉：dsh-gate dsh edit <名字> --dsh-version ""，`+
+			"或在管理台把这一实例的「dsh 版本」留空后保存",
+			req.Mode.Label(), req.Version, how)
+	}
 	switch req.Mode {
 	case InstallNpx:
 		return installViaNpx(ctx, log, req)
@@ -149,8 +183,15 @@ func InstallDSH(ctx context.Context, log *slog.Logger, req InstallRequest) (Inst
 		return installViaGit(ctx, log, req)
 	case InstallPnpm:
 		return installViaPnpm(ctx, log, req)
+	case InstallLocal:
+		return installViaLocal(ctx, log, req)
 	}
 	return InstallResult{}, fmt.Errorf("不认识的安装方式 %q", req.Mode)
+}
+
+// isSourceMode 表示这种方式跑的是源码目录，不认 npm 包版本。
+func isSourceMode(mode InstallMode) bool {
+	return mode == InstallGit || mode == InstallLocal
 }
 
 // installViaNpx 用官方 npx 命令：不预装任何东西，交给 EnsureDSH 冒烟验证。
@@ -160,7 +201,8 @@ func installViaNpx(ctx context.Context, log *slog.Logger, req InstallRequest) (I
 			"请安装 Node.js（https://nodejs.org/），或改用其他安装方式")
 	}
 	// 把自备运行时的 bin 目录交下去：机器上没有系统级 npx 时，npx 就在那里。
-	res, err := EnsureDSHWithBin(ctx, log, req.Registry, req.NodeBin)
+	// 版本一并交下去：钉住时 EnsureDSHVersion 只试那一个版本，不会退回别的版本。
+	res, err := EnsureDSHVersion(ctx, log, req.Registry, req.NodeBin, req.Version)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -271,6 +313,142 @@ func installViaGit(ctx context.Context, log *slog.Logger, req InstallRequest) (I
 	}, nil
 }
 
+// installViaLocal 用用户自己准备好的源码目录，网关只生成启动命令。
+//
+// 为什么不 clone 也不构建：这两步对网络与工具链的要求最高（私有镜像、代理、
+// git LFS、node-gyp），也正是「从源码安装总是失败」最常见的环节。用户在自己的
+// 终端里克隆、装依赖、构建，成功率高得多；网关只需要知道**哪个目录**、**用哪条
+// 命令**把它拉起来。所以这里一条命令都不跑，只做三件只读的核对：
+//
+//  1. 目录里有 package.json，且声明了 dsh 脚本（官方 Run from source 就是
+//     `pnpm dsh web`；没有这个脚本，pnpm 起不来）；
+//  2. 依赖装过（node_modules 存在）——没装的话启动时才报错，不如现在说清；
+//  3. pnpm 与 node 在不在（本机 PATH 或管理端自备的运行时里）。
+//
+// 版本探测是**尽力而为**：取不到就留空，不影响安装成功——版本只是展示信息，
+// 用户既然手工构建，那个目录里是哪一版本来就该由他自己说了算。
+func installViaLocal(ctx context.Context, log *slog.Logger, req InstallRequest) (InstallResult, error) {
+	if strings.TrimSpace(req.Dir) == "" {
+		return InstallResult{}, errors.New("本地源码方式需要指定源码目录：填 clone 下来的仓库根目录" +
+			"（例如 <安装目录>/deepseek-harness）")
+	}
+	repoDir, err := localRepoDir(req.Dir)
+	if err != nil {
+		return InstallResult{}, err
+	}
+	if !packageHasScript(repoDir, "dsh") {
+		return InstallResult{}, fmt.Errorf("%s 的 package.json 里没有 dsh 脚本：本地源码方式按官方 "+
+			"Run from source 的 `pnpm dsh web` 启动，这个目录可能不是 deepseek-harness 仓库"+
+			"（或上游改了脚本名）。请核对源码目录；要自定义启动命令，请改用 --dsh-cmd", repoDir)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "node_modules")); err != nil {
+		return InstallResult{}, fmt.Errorf("源码目录还没有装依赖（%s 不存在）：请先在该目录执行 "+
+			"pnpm install 与 pnpm run build，再回来点「安装/重装」", filepath.Join(repoDir, "node_modules"))
+	}
+	node := lookPathAny("node", "node.exe")
+	if node == "" && req.NodeBin == "" {
+		return InstallResult{}, errors.New("找不到 node：本地源码方式用 pnpm dsh 启动，需要 Node.js 20+；" +
+			"请安装 Node.js（https://nodejs.org/）")
+	}
+	if lookPathAny("pnpm", "pnpm.cmd") == "" && req.PnpmBin == "" {
+		return InstallResult{}, errors.New("找不到 pnpm：本地源码方式用 pnpm dsh 启动，需要 pnpm；" +
+			"可用 npm install -g pnpm 安装，或改用 npx 方式")
+	}
+
+	// 用绝对路径的情形只有一种：pnpm 是管理端自备的（不在 PATH 上）。其余情况
+	// 写裸名，由 supervisor 启动时按 PATH 解析——目录被搬走也还能用。
+	pnpmExe := resolveToolPath(req, "pnpm")
+	command := quoteArg(pnpmExe) + " --dir " + quoteArg(repoDir) + " run dsh"
+
+	version := probeLocalVersion(ctx, installEnv(req), pnpmExe, repoDir)
+	log.Info("本地源码方式已就绪", "dir", repoDir, "command", command, "version", version)
+	return InstallResult{
+		Mode:    InstallLocal,
+		Command: command,
+		// 回填 req.Dir（见 InstallResult 的说明）：用户填的可能是仓库根，也可能
+		// 是它的父目录，回填解析后的 repoDir 会让下次重装把两种写法混在一起。
+		Dir:     req.Dir,
+		Version: version,
+		Env:     map[string]string{},
+		Log: []string{
+			"使用本地源码目录：" + repoDir,
+			"不 clone、不装依赖、不构建（都由你手工完成）",
+			"启动命令：" + command,
+		},
+	}, nil
+}
+
+// localRepoDir 找出源码仓库的根目录：Dir 本身，或像 git 方式那样放在
+// <Dir>/deepseek-harness 下。两种写法都认，用户不必记住哪个方式把仓库放哪。
+func localRepoDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	for _, candidate := range []string{dir, filepath.Join(dir, gitRepoDirName)} {
+		if fileExists(filepath.Join(candidate, "package.json")) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("在 %s 里没找到 package.json：本地源码方式要指向 clone 下来的仓库根目录"+
+		"（git 方式 clone 的位置是 <安装目录>/%s）。请先在该目录执行 git clone、pnpm install 与 "+
+		"pnpm run build，再回来点「安装/重装」", dir, gitRepoDirName)
+}
+
+// packageHasScript 判断 package.json 里有没有某个 npm 脚本。
+//
+// 只读、容错：文件读不出来或解析失败都当作「没有」，由调用方给出带目录名的
+// 明确报错，而不是把一个 JSON 语法错误抛给用户。
+func packageHasScript(dir, script string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		return false
+	}
+	_, ok := pkg.Scripts[script]
+	return ok
+}
+
+// probeLocalVersion 跑一次 `pnpm --dir <repo> run --silent dsh --version` 取版本。
+//
+// --silent 是必须的：pnpm 默认会先打一行 `$ node ...` 的脚本横幅，取第一行就会
+// 把那条命令当成版本号。超时给得比普通工具探测宽——pnpm 要解析 workspace、再
+// 用 tsx 跑源码，冷启动比直接执行构建产物慢。失败返回空串：版本只是展示信息。
+func probeLocalVersion(ctx context.Context, env []string, pnpm, repoDir string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, localVersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, pnpm, "--dir", repoDir, "run", "--silent", "dsh", "--version")
+	applyProbeAttrs(cmd)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return firstLine(strings.TrimSpace(string(out)))
+}
+
+// localVersionTimeout 是本地源码版本探测的上限：pnpm + tsx 冷启动够用，又不至于
+// 让一次「安装」卡太久（取不到版本不影响安装成功）。
+const localVersionTimeout = 60 * time.Second
+
+// quoteArg 把参数写成 SplitCommand 眼里的一个字面量。
+//
+// 命令会被原样存进实例记录，之后由 SplitCommand 拆开直接 exec（不经 shell）。
+// 反斜杠在引号外是转义符，而 Windows 路径全是反斜杠——裸写会被拆成一个不存在
+// 的假路径。含空白、引号或反斜杠时套单引号：单引号内一切按字面量处理，两个平台
+// 都成立；不含这些字符的（命令名）保持原样，存出来的命令更好读。
+func quoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(arg, " \t\n\r'\"\\") {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+
 // installViaPnpm 用 pnpm 装一份 dsh 可执行文件。
 //
 // 装到实例自己的目录（<Dir>/dsh）而不是全局：管理端可能管着多个实例，各自的
@@ -290,11 +468,18 @@ func installViaPnpm(ctx context.Context, log *slog.Logger, req InstallRequest) (
 	}
 
 	log.Info("正在用 pnpm 安装 dsh", "dir", prefix, "registry", req.Registry)
-	args := []string{"add", dshPackage, "--dir", prefix}
+	spec := packageSpec(req.Version)
+	args := []string{"add", spec, "--dir", prefix}
 	args = append(args, allowBuildArgs()...)
 	out, err := runInstallStep(ctx, log, req, prefix, pnpmInstallTimeout, "pnpm", args...)
 	if err != nil {
-		return InstallResult{}, fmt.Errorf("pnpm 安装 dsh 失败：%w。原始输出：%s", err, tailText(out, 300))
+		guidance := ""
+		if strings.TrimSpace(req.Version) != "" {
+			// 钉住的版本在源上不存在是这里最常见的失败，光回一句「安装失败」查不到原因。
+			guidance = "。指定的版本可能不存在：核对一下 `npm view " + dshPackage +
+				" dist-tags`（标签）或 `npm view " + dshPackage + " versions --json`（版本号）"
+		}
+		return InstallResult{}, fmt.Errorf("pnpm 安装 dsh 失败：%w。原始输出：%s%s", err, tailText(out, 300), guidance)
 	}
 
 	// pnpm 把可执行文件放在 node_modules/.bin 下（Windows 是 .cmd）。
@@ -311,7 +496,7 @@ func installViaPnpm(ctx context.Context, log *slog.Logger, req InstallRequest) (
 		Dir:     req.Dir,
 		Version: version,
 		Env:     map[string]string{},
-		Log:     []string{"pnpm add " + dshPackage, "可执行文件：" + bin},
+		Log:     []string{"pnpm add " + spec, "可执行文件：" + bin},
 	}, nil
 }
 
@@ -335,6 +520,7 @@ func runInstallStep(ctx context.Context, log *slog.Logger, req InstallRequest,
 	}
 	exe := resolveToolPath(req, name)
 	cmd := exec.CommandContext(stepCtx, exe, args...)
+	applyProbeAttrs(cmd)
 	cmd.Dir = dir
 	cmd.Env = installEnv(req)
 

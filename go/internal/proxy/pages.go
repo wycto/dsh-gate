@@ -160,6 +160,22 @@ func renderAuthRequired(detail string, dshPort int) string {
 	return page("DSH 要求重新登录", message, detail, 0, "")
 }
 
+// StoppedPage 返回「实例已被停止」页面处理器。
+//
+// 为什么单独一张、而不是复用等待页：等待页每 2 秒自动刷新，等于浏览器替用户
+// 把「启动」按了一遍又一遍——刚点完停止的实例会被自己那个还开着的标签页重新
+// 拉起来。这一页不刷新，也直说下一步该做什么。
+func StoppedPage(name string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		message := "这个实例已经被停止，网关不会因为它收到请求就自作主张地把它重新拉起。"
+		if name != "" {
+			message = "实例「" + name + "」已经被停止。网关不会因为它收到请求就自作主张地重新拉起。"
+		}
+		writePage(w, http.StatusServiceUnavailable,
+			page("实例已停止", message+"要再用它，请回管理台点「启动」。", "", 0, ""))
+	})
+}
+
 // renderUpstreamDown 返回「dsh 连不上」页面。
 func renderUpstreamDown(w http.ResponseWriter, err error) {
 	detail := ""

@@ -4,15 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
 // TestInstallSelfToBinDirCopiesAndReplaces 锁住命令拷贝的三条行为：
 // 首次拷进去、内容一致时不重复拷、内容变了要覆盖。
 func TestInstallSelfToBinDirCopiesAndReplaces(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 不走 PATH 目录拷贝")
-	}
 	dir := t.TempDir()
 
 	path, changed, err := installSelfToBinDir(dir)
@@ -22,14 +20,14 @@ func TestInstallSelfToBinDirCopiesAndReplaces(t *testing.T) {
 	if !changed {
 		t.Error("首次拷贝应报告发生了改动")
 	}
-	if filepath.Base(path) != serviceName {
-		t.Errorf("落点 = %q，期望文件名 %s", path, serviceName)
+	if want := filepath.Base(binTarget(dir)); filepath.Base(path) != want {
+		t.Errorf("落点 = %q，期望文件名 %s", path, want)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("拷贝结果不存在: %v", err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("拷贝结果不可执行，权限 = %v", info.Mode().Perm())
 	}
 	if _, changed, err := installSelfToBinDir(dir); err != nil || changed {
@@ -65,6 +63,29 @@ func TestInstallSelfToBinDirEmptyDirSkips(t *testing.T) {
 	path, changed, err := installSelfToBinDir("")
 	if err != nil || changed || path != "" {
 		t.Fatalf("空目录应什么都不做，得到 path=%q changed=%v err=%v", path, changed, err)
+	}
+}
+
+// TestBinDirDefault 锁住两个平台的默认安装目录。
+//
+// Windows 必须是 %LOCALAPPDATA%\dsh-gate\bin：计划任务指向这份拷贝，用户把
+// zip 解压目录删掉也不该影响开机自启；Linux / macOS 仍是 /usr/local/bin。
+func TestBinDirDefault(t *testing.T) {
+	got := binDirDefault()
+	if runtime.GOOS == "windows" {
+		if got == "" {
+			t.Fatal("Windows 上必须有默认安装目录")
+		}
+		if filepath.Base(got) != "bin" || filepath.Base(filepath.Dir(got)) != serviceName {
+			t.Errorf("Windows 默认目录 = %q，期望 ...\\%s\\bin", got, serviceName)
+		}
+		if base := os.Getenv("LOCALAPPDATA"); base != "" && !strings.HasPrefix(strings.ToLower(got), strings.ToLower(base)) {
+			t.Errorf("Windows 默认目录 = %q，应在 LOCALAPPDATA(%q) 之下", got, base)
+		}
+		return
+	}
+	if got != defaultBinDir {
+		t.Errorf("默认安装目录 = %q，期望 %q", got, defaultBinDir)
 	}
 }
 

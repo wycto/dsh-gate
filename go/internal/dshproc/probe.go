@@ -216,11 +216,52 @@ func WaitPort(ctx context.Context, addr string, poll time.Duration) error {
 	}
 }
 
+// WaitPortFree 等待 addr 上的 TCP 端口不再有人监听。
+//
+// WaitPort 的反方向，用在「停掉一个接管来的 dsh」之后：那种进程不归网关管，
+// 没有子进程句柄也没有退出通知，端口停止监听是唯一能确认「它真的走了」的信号。
+// 返回 nil 表示端口已经空了；返回 ctx 的错误表示到时间还占着。
+func WaitPortFree(ctx context.Context, addr string, poll time.Duration) error {
+	if poll <= 0 {
+		poll = 200 * time.Millisecond
+	}
+	addr = dialableAddr(addr)
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		if !Busy(addr, poll) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// dialableAddr 把「监听写法」的地址换成拨得动的地址。
+//
+// 0.0.0.0、:: 与空主机表达的是「所有网卡」，拿去当**连接目标**却可能连不上；
+// 而「端口空了没有」正是靠能不能连上来判断的，判断错了就会把还在跑的实例说成
+// 已经停了。这里统一换成回环，其它具体地址（例如显式绑到局域网网卡）原样保留。
+func dialableAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "*":
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
+}
+
 // SplitToken 从 dsh 启动输出的一行里抽出启动令牌。
 //
 // dsh 打印的是一行形如
 //
-//	dsh web: http://192.168.1.20:3082/?token=6f1c…
+//	dsh web: http://192.168.1.20:12020/?token=6f1c…
 //
 // 这里不依赖那行前缀（不同版本措辞可能变），只找 `token=` 后面那一段。
 // 返回空串表示这行里没有令牌。

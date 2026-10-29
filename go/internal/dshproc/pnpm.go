@@ -78,6 +78,7 @@ func EnsurePnpmWithBin(ctx context.Context, log *slog.Logger, stateDir, registry
 	defer cancel()
 
 	cmd := exec.CommandContext(installCtx, npm, "install", "--global", "pnpm", "--prefix", prefix)
+	applyProbeAttrs(cmd)
 	env := npmEnv(os.Environ(), registry)
 	if extraBin != "" {
 		// npm 脚本的 shebang 是 `#!/usr/bin/env node`，PATH 里要有 node。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,47 @@ func TestChildEnvCarriesRegistry(t *testing.T) {
 	both.SetResolvedCommand(Resolution{Command: "npx --yes pkg", Registry: RegistryMirror})
 	if env := strings.Join(both.childEnv(), "\n"); !strings.Contains(env, "npm_config_registry=https://npm.example.com") {
 		t.Errorf("自动换源盖掉了用户点名的源: %s", env)
+	}
+}
+
+// TestChildEnvHomeIsInstanceWorkspace dsh 的「选择工作区目录」弹窗从宿主家目录开始
+// （DSH 用 os.homedir() 解析默认路径，没有配置项可改）。网关以服务方式跑在无头机器上，
+// 进程家目录是 /root，于是每个实例点「选择工作区」都落在 /root。所以 HOME 必须指向
+// 实例自己的工作目录，弹窗默认就在该实例的工作区里。
+func TestChildEnvHomeIsInstanceWorkspace(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+
+	withWorkspace := New(Options{Host: "127.0.0.1", Port: 1, Home: t.TempDir(), Workspace: workspace})
+	if got := envValue(withWorkspace.childEnv(), "HOME"); got != workspace {
+		t.Errorf("HOME 应为实例工作目录 %q，实际 %q", workspace, got)
+	}
+
+	// 没有配工作目录时不动 HOME：沿用网关自己的家目录，不替用户猜。
+	noWorkspace := New(Options{Host: "127.0.0.1", Port: 1, Home: t.TempDir()})
+	if got := envValue(noWorkspace.childEnv(), "HOME"); got != os.Getenv("HOME") {
+		t.Errorf("未配工作目录时不该改动 HOME：期望 %q，实际 %q", os.Getenv("HOME"), got)
+	}
+
+	// HOME 只出现一次：网关进程自己的那条必须被替换掉，而不是并存两份。
+	env := withWorkspace.childEnv()
+	var count int
+	for _, item := range env {
+		if strings.HasPrefix(item, "HOME=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("HOME 只应出现一次，实际 %d 次", count)
+	}
+
+	// npm 缓存必须留在网关侧：HOME 改到工作目录后，npm 的 _npx / _cacache 默认
+	// 跟着 HOME 走，会出现在用户的工作区里，把「选择工作区」的列表搞脏。
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("读不到网关家目录: %v", err)
+	}
+	if want := filepath.Join(home, ".npm"); envValue(env, "npm_config_cache") != want {
+		t.Errorf("npm 缓存应固定为 %q，实际 %q", want, envValue(env, "npm_config_cache"))
 	}
 }
 

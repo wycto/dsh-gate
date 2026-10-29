@@ -1,11 +1,12 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package dshproc
 
-// findPID 在非 Linux 平台上一律返回 0。
+// findPID 在剩下的平台上一律返回 0。
 //
-// 拿端口占用进程的 PID 在这些平台上需要调用 lsof/netstat 之类的外部命令，
-// 或者走各系统的专有 API；前者会被精简过的容器镜像卡住，后者的代码量与
-// 平台矩阵都不划算。PID 只用于「check」命令里的一句诊断提示，拿不到就写
-// 「未知」，不影响端口探测与接管逻辑。
+// Linux 走 /proc，macOS 走 lsof，Windows 走 iphlpapi（见 probe_pid_windows.go）。
+// 再往下的平台（*BSD 之类）要拿到同样的信息得调各系统专有 API，代码量与
+// 平台矩阵都不划算。PID 用于两件事：「check」里的一句诊断提示，以及停掉
+// 「接管来的、网关没有子进程句柄的」那个 dsh。拿不到就写「未知」，并在停止
+// 时如实报错——不会假装停成功了。
 func findPID(port int) int { return 0 }

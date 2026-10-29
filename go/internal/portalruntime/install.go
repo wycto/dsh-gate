@@ -160,6 +160,8 @@ type InstallOptions struct {
 	// GitURL / GitRef 用于 git 方式。
 	GitURL string
 	GitRef string
+	// Version 是要装的 dsh 版本或 dist-tag（npx / pnpm 方式）；空表示跟随 latest。
+	Version string
 	// StateDir 是管理端状态目录（用于找自备的 Node / pnpm）。
 	StateDir string
 	// Logger 收日志。
@@ -176,6 +178,11 @@ func (rt *Runtime) StartInstall(inst portal.Instance, opts InstallOptions) (Inst
 	}
 	if !opts.Mode.Valid() {
 		return InstallJob{}, fmt.Errorf("不认识的安装方式 %q", opts.Mode)
+	}
+	// 版本名在这里就验掉：往下走要先下载 Node、再跑几分钟的冒烟，最后才在
+	// dshproc 里说「这个字符不允许」，用户白等一轮。
+	if _, err := dshproc.ValidateDshVersion(opts.Version); err != nil {
+		return InstallJob{}, err
 	}
 
 	// 同一个实例已经在装：直接把它当前的状态给回去，不并排跑第二次。
@@ -223,8 +230,9 @@ func (rt *Runtime) runInstall(inst portal.Instance, opts InstallOptions, job *in
 	} else if bin != "" {
 		nodeBin = bin
 	}
-	if opts.Mode == dshproc.InstallGit || opts.Mode == dshproc.InstallPnpm {
-		// 把自备 Node 的 bin 目录交下去：没有系统级 npm 时，npm 就在那里。
+	if opts.Mode == dshproc.InstallGit || opts.Mode == dshproc.InstallPnpm || opts.Mode == dshproc.InstallLocal {
+		// 把自备 Node 的 bin 目录交下去：没有系统级 npm/pnpm 时，它们就在那里。
+		// 本地源码方式同样要 pnpm——启动命令就是 `pnpm dsh web`。
 		if bin, err := dshproc.EnsurePnpmWithBin(rt.installCtx(), logger, opts.StateDir, opts.Registry, nodeBin); err != nil {
 			job.appendLog("自备 pnpm 失败：" + err.Error())
 		} else if bin != "" {
@@ -241,6 +249,7 @@ func (rt *Runtime) runInstall(inst portal.Instance, opts InstallOptions, job *in
 		Registry: opts.Registry,
 		GitURL:   opts.GitURL,
 		GitRef:   opts.GitRef,
+		Version:  opts.Version,
 		NodeBin:  nodeBin,
 		PnpmBin:  pnpmBin,
 	})
@@ -264,6 +273,9 @@ func (rt *Runtime) runInstall(inst portal.Instance, opts InstallOptions, job *in
 	inst.DshCmd = result.Command
 	inst.InstallMode = string(opts.Mode)
 	inst.InstallDir = result.Dir
+	// 版本回写：安装面板上临时改过版本时，记录要跟实际装的那一份一致——否则下次
+	// 重装又把上一次钉住的旧值带回来，用户已经在页面上填过新的了。
+	inst.DshVersion = opts.Version
 	if err := rt.opts.Store.UpdateInstance(inst); err != nil {
 		job.appendLog("写入实例记录失败：" + err.Error())
 		job.update(func(j *InstallJob) {

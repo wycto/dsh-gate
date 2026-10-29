@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-
 	"strings"
 
 	"github.com/wycto/dsh-gate/internal/config"
@@ -57,23 +56,22 @@ func modelCommand(args []string) int {
 
 // printModelUsage 打印 model 用法。
 func printModelUsage(w *os.File) {
-	fmt.Fprint(w, `用法: dsh-gate model <list|key|provider|default> [参数] [选项]
+	fmt.Fprint(w, `用法: dsh-gate model <list|key|provider|default> --instance <实例名|id> [参数] [选项]
 
-在 DSH 装不了插件（模型设置页用不了）时，用它配置服务商、密钥与默认模型。
-写的是 DSH 自己的设置文件，改动前会自动备份，改完会回读校验。
+在 DSH 装不了插件（模型设置页用不了）时，用它配置某个实例的服务商、密钥与默认模型。
+写的是该实例自己 DSH_HOME 下的设置文件，改动前会自动备份，改完会回读校验。
 
-  dsh-gate model list                                   看当前配置
-  dsh-gate model key set DEEPSEEK_API_KEY --stdin       写密钥（从标准输入读）
-  dsh-gate model key list                              看已配置哪些密钥名
-  dsh-gate model provider add my-gw --base-url https://…/v1 --model qwen3-max
-  dsh-gate model provider remove my-gw                 删掉一个自定义服务商
-  dsh-gate model default deepseek-official deepseek-chat  设默认服务商与模型
+实例用 --instance 指定（dsh-gate dsh list 查看）；模型配置是「每个实例各一份」的。
+
+  dsh-gate model list --instance 演示实例
+  dsh-gate model key set DEEPSEEK_API_KEY --stdin --instance 演示实例
+  dsh-gate model key list --instance 演示实例
+  dsh-gate model provider add my-gw --base-url https://…/v1 --model qwen3-max --instance 演示实例
+  dsh-gate model provider remove my-gw --instance 演示实例
+  dsh-gate model default deepseek-official deepseek-chat --instance 演示实例
 
 官方 DeepSeek 是 DSH 自带的路由（deepseek-official），不需要 provider add，
-只要配好密钥再把它设成默认即可：
-
-  dsh-gate model key set DEEPSEEK_API_KEY --stdin
-  dsh-gate model default deepseek-official deepseek-chat
+只要配好密钥再把它设成默认即可。
 
 选项:
 `)
@@ -81,20 +79,29 @@ func printModelUsage(w *os.File) {
 
 // modelOptions 是 model 各子命令共用的输入。
 type modelOptions struct {
+	Instance string
+	StateDir string
+	DB       string
+	// DSHHome 是显式指定目录的兼容入口（脚本/测试用）；正常应当用 Instance。
 	DSHHome string
 }
 
 // registerModelFlags 注册共用选项。
 func registerModelFlags(fs *flag.FlagSet, opts *modelOptions) {
-	fs.StringVar(&opts.DSHHome, "dsh-home", "", "dsh 实例目录（默认 ~/.dsh，与 run 的同名选项一致）")
+	fs.StringVar(&opts.Instance, "instance", "", "dsh 实例名或 id（必填；dsh-gate dsh list 查看）")
+	fs.StringVar(&opts.Instance, "i", "", "同 --instance")
+	fs.StringVar(&opts.StateDir, "state-dir", "", "网关状态目录（找 portal.db 用；默认 ~/.dsh-gate）")
+	fs.StringVar(&opts.DB, "db", "", "管理端数据库路径（默认 <状态目录>/portal.db）")
+	fs.StringVar(&opts.DSHHome, "dsh-home", "", "直接指定 dsh 实例目录（兼容/高级用法，优先于 --instance）")
 }
 
-// resolved 返回 dsh 家目录（展开 ~）。
-func (o modelOptions) resolved() string {
-	if strings.TrimSpace(o.DSHHome) == "" {
-		return config.ExpandPath("~/.dsh")
+// home 返回要操作的 dsh 家目录：显式 --dsh-home 优先，否则按 --instance 从管理端库解析。
+func (o modelOptions) home() (string, error) {
+	if strings.TrimSpace(o.DSHHome) != "" {
+		return config.ExpandPath(o.DSHHome), nil
 	}
-	return config.ExpandPath(o.DSHHome)
+	home, _, err := instanceHomeFromFlag(o.Instance, o.StateDir, o.DB)
+	return home, err
 }
 
 // modelListCommand 打印当前的服务商、密钥名与默认模型。
@@ -109,7 +116,10 @@ func modelListCommand(args []string) int {
 		}
 		return 2
 	}
-	home := opts.resolved()
+	home, err := opts.home()
+	if err != nil {
+		return usageError("%v", err)
+	}
 	settingsPath, credentialsPath := dshsettings.Paths(home)
 
 	fmt.Printf("dsh 实例目录  %s\n", home)
@@ -189,7 +199,10 @@ func modelKeyCommand(args []string) int {
 		}
 		return 2
 	}
-	home := opts.resolved()
+	home, err := opts.home()
+	if err != nil {
+		return usageError("%v", err)
+	}
 
 	switch sub {
 	case "list":
@@ -250,15 +263,46 @@ func modelKeyCommand(args []string) int {
 // 不用「完全不回显」的读法：用户在终端里看不到任何反馈，会以为程序没在等输入
 // （实测反馈就是「输入了但屏幕上什么都没有」）。星号既是反馈，也不泄露内容。
 // 拿不到原始模式（非终端、或平台未适配）时退回完全不回显的写法。
-func readSecretMasked() (string, error) {
-	if raw, err := term.ReadPasswordMasked(os.Stdin, os.Stdout, ""); err == nil {
+func readSecretMasked(prompt string) (string, error) {
+	if raw, err := term.ReadPasswordMasked(os.Stdin, os.Stdout, prompt); err == nil {
 		return strings.TrimSpace(string(raw)), nil
 	}
-	raw, err := term.ReadPassword(os.Stdin, os.Stdout, "")
+	raw, err := term.ReadPassword(os.Stdin, os.Stdout, prompt)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+// readNewPassword 问两遍新口令，两遍都用星号回显；不一致就在原地重问。
+//
+// 为什么要两遍：口令是**看不见**的，敲错一个字符当场不会有人发现，要等到下次
+// 登录才暴露——那时人已经离开终端了。第一次就输错还会把管理端锁在一个谁也进
+// 不去的状态里，只能上机器重设。两遍比对是唯一能在当场发现手滑的办法。
+//
+// 为什么要星号：完全不回显时终端停在提示语后面一动不动，用户不知道程序到底
+// 在不在等输入（实测反馈就是「输入了但屏幕上什么都没有」）。星号既给反馈，
+// 也只泄露长度。
+//
+// 不一致只重问口令这两行，不把整个向导推倒重来（install 的向导一旦 continue
+// 会把前面所有问题再问一遍，因为 visited 只记命令行给过的项）。
+// Ctrl-C 由下面的读取层转成 ErrInterrupted 向上抛，这里不当成「再来一次」。
+func readNewPassword(firstPrompt, secondPrompt string) (string, error) {
+	for {
+		first, err := readSecretMasked(firstPrompt)
+		if err != nil {
+			return "", err
+		}
+		second, err := readSecretMasked(secondPrompt)
+		if err != nil {
+			return "", err
+		}
+		if first != second {
+			fmt.Println("  两次输入的口令不一致，请重试。")
+			continue
+		}
+		return first, nil
+	}
 }
 
 // readSecret 取密钥：优先标准输入，其次命令行（仅用于脚本化场景）。
@@ -304,7 +348,10 @@ func modelProviderCommand(args []string) int {
 		}
 		return 2
 	}
-	home := opts.resolved()
+	home, err := opts.home()
+	if err != nil {
+		return usageError("%v", err)
+	}
 
 	switch sub {
 	case "list":
@@ -386,25 +433,29 @@ func modelDefaultCommand(args []string) int {
 	if len(names) != 2 {
 		return usageError("用法: dsh-gate model default <服务商> <模型>\n例如: dsh-gate model default deepseek-official deepseek-chat")
 	}
-	path, err := dshsettings.SetDefaultModel(opts.resolved(), names[0], names[1])
+	home, err := opts.home()
+	if err != nil {
+		return usageError("%v", err)
+	}
+	path, err := dshsettings.SetDefaultModel(home, names[0], names[1])
 	if err != nil {
 		return fatal("写入默认模型失败: %v", err)
 	}
 	fmt.Printf("已写入 %s：默认模型 = %s / %s\n", path, names[0], names[1])
 	if names[0] == dshsettings.DeepSeekOfficial {
-		if has, _ := dshsettings.HasKey(opts.resolved(), dshsettings.DeepSeekKeyEnv); !has {
+		if has, _ := dshsettings.HasKey(home, dshsettings.DeepSeekKeyEnv); !has {
 			fmt.Printf("\n提醒：还没写入官方密钥，先执行：\n  dsh-gate model key set %s --stdin\n",
 				dshsettings.DeepSeekKeyEnv)
 		}
 	}
-	printModelReloadHint(opts.resolved())
+	printModelReloadHint(home)
 	return 0
 }
 
 // printModelReloadHint 说明何时生效、以及备份在哪。
 func printModelReloadHint(dshHome string) {
 	settingsPath, credentialsPath := dshsettings.Paths(dshHome)
-	fmt.Println("提示：DSH 在下次请求时读到新设置；没生效就重启实例（dsh-gate restart <实例名>）。")
+	fmt.Println("提示：DSH 在下次请求时读到新设置；没生效就重启该实例（dsh-gate dsh restart <实例名>）。")
 	var backups []string
 	for _, path := range []string{settingsPath, credentialsPath} {
 		if fileExists(dshsettings.BackupPath(path)) {

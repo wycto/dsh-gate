@@ -27,7 +27,7 @@ func TestSetResolvedCommandTakesEffectAfterStart(t *testing.T) {
 	}
 
 	fake := writeFakeDSH(t)
-	supervisor.SetResolvedCommand(Resolution{Command: fake + " web"})
+	supervisor.SetResolvedCommand(Resolution{Command: quoteCommandArg(fake) + " web"})
 
 	args, err := supervisor.buildCommand(context.Background())
 	if err != nil {

@@ -266,7 +266,7 @@ func serviceInstall(opts serviceOptions) error {
 			"plist 已经写好，可以手动加载：\n"+
 			"  launchctl bootstrap %s %s\n"+
 			"  launchctl load -w %s\n"+
-			"（不影响使用：dsh-gate run --background 也能把网关跑起来）",
+			"（不影响使用：dsh-gate start 也能把管理端跑起来）",
 			err, output, domain, path, path)
 	}
 	if output, err := runServiceCommand("launchctl", "enable", domain+"/"+launchdLabel); err != nil {
@@ -315,6 +315,42 @@ func serviceUninstall(serviceOptions) error {
 	return nil
 }
 
+// serviceUnitInstalled 报告 LaunchAgent 是否已安装。
+func serviceUnitInstalled() bool {
+	path, err := agentPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+func launchDomain() string { return "gui/" + currentUID() + "/" + launchdLabel }
+
+// serviceStart 让 launchd 启动管理端。
+func serviceStart() error {
+	if output, err := runServiceCommand("launchctl", "kickstart", launchDomain()); err != nil {
+		return fmt.Errorf("launchctl kickstart 失败: %w\n%s", err, output)
+	}
+	return nil
+}
+
+// serviceStop 让 launchd 停掉管理端。
+func serviceStop() error {
+	if output, err := runServiceCommand("launchctl", "kill", "SIGTERM", launchDomain()); err != nil {
+		return fmt.Errorf("launchctl kill 失败: %w\n%s", err, output)
+	}
+	return nil
+}
+
+// serviceRestart 重启 launchd 托管的管理端。
+func serviceRestart() error {
+	if output, err := runServiceCommand("launchctl", "kickstart", "-k", launchDomain()); err != nil {
+		return fmt.Errorf("launchctl kickstart -k 失败: %w\n%s", err, output)
+	}
+	return nil
+}
+
 // serviceStatus 报告 launchd 里的状态。
 func serviceStatus() int {
 	path, err := agentPath()
@@ -348,15 +384,19 @@ func serviceStatus() int {
 }
 
 // serviceInstalledHint 是安装成功后的提示。
-func serviceInstalledHint() string {
+//
+// 参数里的 Tray 只有 Windows 用得着：macOS 上托管的是 LaunchAgent 本身，托盘是
+// 另一个平台的概念。
+func serviceInstalledHint(serviceOptions) string {
 	return fmt.Sprintf(`已安装并启动 LaunchAgent（登录时自动运行）
 
   配置文件    ~/Library/LaunchAgents/%s.plist
   日志        ~/Library/Logs/%s.log
   实时看日志  log stream --predicate 'process == "dsh-gate"'
   立即重启    launchctl kickstart -k gui/%s/%s
+  dsh-gate stop / start / restart   停止、启动、重启整个管理端
   dsh-gate service uninstall   只取消开机自启（它管的是这一个服务单元）
-  dsh-gate uninstall <实例名|all>  停掉指定实例；--service 取消自启、--purge 删数据
+  dsh-gate uninstall      停止并删除所有实例，最后卸载管理端服务（会问是否删数据）
 
 `, launchdLabel, serviceName, currentUID(), launchdLabel)
 }
@@ -364,7 +404,7 @@ func serviceInstalledHint() string {
 // launchingUser 返回「这次操作真正属于哪个用户」。
 //
 // 为什么不能直接用 os.Getuid()：用户为了把 dsh-gate 装进 /usr/local/bin 很自然地
-// 会 `sudo dsh-gate setup`（我们自己的提示里也这么建议），而那时 euid 是 0，于是
+// 会用 sudo 跑安装向导（旧版提示里也这么建议），而那时 euid 是 0，于是
 // launchd 的 domain 变成 **gui/0**——这个 domain 根本不存在，bootstrap 必然失败：
 //
 //	Bootstrap failed: 125: Domain does not support specified action

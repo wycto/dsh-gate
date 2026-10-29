@@ -299,6 +299,9 @@ func isLoopbackRequest(r *http.Request) bool {
 // renderLogin 渲染登录页。
 func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, message string) {
 	lang := g.langFor(w, r)
+	theme := g.Theme(w, r)
+	scheme := g.Scheme(w, r)
+	style := g.Style(w, r)
 	data := struct {
 		Title    string
 		Subtitle string
@@ -309,15 +312,35 @@ func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, m
 		Version  string
 		Action   string
 		L        i18n.LoginStrings
+		// 配色：Theme 为空表示跟随系统（模板据此决定要不要写 data-theme）；
+		// Scheme 永远有值（色相没有「跟随系统」这一态），模板无条件写 data-scheme。
+		Theme       string
+		ThemeLabel  string
+		Themes      []ThemeOption
+		Scheme      string
+		SchemeLabel string
+		Schemes     []ThemeOption
+		Style       string
+		StyleLabel  string
+		Styles      []ThemeOption
 	}{
-		Title:    g.opts.Title,
-		Subtitle: g.opts.Subtitle,
-		Error:    message,
-		Next:     safeNext(r.URL.Query().Get("next")),
-		Host:     displayHost(r, lang),
-		Version:  g.version(),
-		Action:   PathLogin,
-		L:        i18n.Login(lang),
+		Title:       g.opts.Title,
+		Subtitle:    g.opts.Subtitle,
+		Error:       message,
+		Next:        safeNext(r.URL.Query().Get("next")),
+		Host:        displayHost(r, lang),
+		Version:     g.version(),
+		Action:      PathLogin,
+		L:           i18n.Login(lang),
+		Theme:       string(theme),
+		ThemeLabel:  i18n.T(lang, i18n.KeyThemeLabel),
+		Themes:      ThemeOptions(r, theme, lang),
+		Scheme:      string(scheme),
+		SchemeLabel: i18n.T(lang, i18n.KeySchemeLabel),
+		Schemes:     SchemeOptions(r, scheme, lang),
+		Style:       string(style),
+		StyleLabel:  i18n.T(lang, i18n.KeyStyleLabel),
+		Styles:      StyleOptions(r, style, lang),
 	}
 	if r.Method == http.MethodPost {
 		data.Username = strings.TrimSpace(r.PostFormValue("username"))

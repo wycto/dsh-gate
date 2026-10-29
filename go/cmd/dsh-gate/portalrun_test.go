@@ -47,6 +47,9 @@ func (s *stubSupervisor) PID() int                       { return 1 }
 func (s *stubSupervisor) Managed() bool                  { return true }
 func (s *stubSupervisor) NativeURL() string              { return "" }
 
+// StopAdopted 假监督者不接管外部进程，只需要满足接口。
+func (s *stubSupervisor) StopAdopted(context.Context) error { return nil }
+
 // TestPortalRunEndToEnd 是管理端的「最小可用闭环」验收：登录 → 我的实例 → 点进实例 →
 // 令牌交接 → 拿到 dsh 的页面。整条链路只用了两个进程内的假件（假 dsh + 假监督者）。
 func TestPortalRunEndToEnd(t *testing.T) {

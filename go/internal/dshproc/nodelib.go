@@ -58,6 +58,7 @@ func installMissingLibrary(ctx context.Context, log *slog.Logger, library string
 	defer cancel()
 
 	cmd := exec.CommandContext(installCtx, manager, args...)
+	applyProbeAttrs(cmd)
 	// 关掉一切交互：这一步发生在网关启动流程里，没有终端可以回答问题。
 	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C")
 	output, err := cmd.CombinedOutput()

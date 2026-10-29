@@ -616,6 +616,7 @@ func smokeNodeRuntime(ctx context.Context, binDir string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, nodeNPXPath(binDir), "--version")
+	applyProbeAttrs(cmd)
 	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {

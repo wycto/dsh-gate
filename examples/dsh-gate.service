@@ -1,17 +1,19 @@
-# 由 dsh-gate service 生成。改动后请执行 systemctl daemon-reload。
+# 由 dsh-gate service unit 生成。改动后请执行 systemctl daemon-reload。
 #
-# 想换端口或实例目录：systemctl edit dsh-gate.service，写一个 [Service] ExecStart= 覆盖即可。
+# 想换端口或状态目录：systemctl edit dsh-gate.service，写一个 [Service] ExecStart= 覆盖即可。
 [Unit]
-Description=DSH 局域网网关（dsh-gate 0.2.0）
+Description=DSH 局域网网关（dsh-gate 0.4.0）
 Documentation=https://github.com/wycto/dsh-gate
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=wycto
-WorkingDirectory=/home/wycto
-ExecStart=/usr/local/bin/dsh-gate run --log-json --dsh-home /var/lib/dsh --port 3082
+User=user
+WorkingDirectory=/home/user
+# 服务管理的就是管理端本身；参数与 dsh-gate start 的同名选项一致。
+# 实例（dsh）由管理端按实例记录拉起，不写在 ExecStart 里。
+ExecStart=/usr/local/bin/dsh-gate start --foreground --host 0.0.0.0 --port 12020 --state-dir /home/user/.dsh-gate
 Restart=always
 RestartSec=5s
 TimeoutStopSec=30s

@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/wycto/dsh-gate/internal/dshproc"
 	"github.com/wycto/dsh-gate/internal/portal"
@@ -50,6 +51,9 @@ func (a *InstallerAdapter) StartInstall(ctx context.Context, inst portal.Instanc
 		Registry: a.Registry,
 		GitURL:   req.GitURL,
 		GitRef:   req.GitRef,
+		// 请求里没带版本就用实例上存的那个：页面上的「安装/重装」按钮不重填版本，
+		// 但用户先前钉过的那一个必须照旧生效。
+		Version:  installVersion(req.Version, inst.DshVersion),
 		StateDir: a.StateDir,
 	})
 	if err != nil {
@@ -88,6 +92,15 @@ func (a *InstallerAdapter) ToolInstallStatus(ctx context.Context, tool string) (
 		return portal.ToolJob{}, false
 	}
 	return a.Runtime.ToolInstallStatus(tool)
+}
+
+// installVersion 决定这次安装用哪个版本：请求里点名优先，其次实例上存的，都空
+// 则跟随 latest。
+func installVersion(requested, stored string) string {
+	if value := strings.TrimSpace(requested); value != "" {
+		return value
+	}
+	return strings.TrimSpace(stored)
 }
 
 // toEnvStatus 把 dshproc 的检测报告翻成管理台类型。
@@ -148,3 +161,43 @@ func toJobStatus(job InstallJob) portal.JobStatus {
 
 // 编译期断言：适配器必须满足管理台接口。
 var _ portal.Installer = (*InstallerAdapter)(nil)
+
+// LifespanAdapter 让 Runtime 满足 portal.Lifespan（管理台的启动 / 停止 / 重启）。
+//
+// 单独一个适配器而不是给 Runtime 加方法：Runtime 的方法收的是 portal.Instance，
+// 与 portal.Lifespan 的签名恰好一致，但把它直接当接口用会让「管理台需要什么」
+// 与「运行时能做什么」永久绑死。中间隔一层，将来管理台要的启停语义变了（比如
+// 加超时参数）不必动运行时。
+type LifespanAdapter struct {
+	Runtime *Runtime
+}
+
+// InstanceStatus 查某实例当前的运行状态。
+func (a *LifespanAdapter) InstanceStatus(inst portal.Instance) portal.InstanceStatus {
+	st := a.Runtime.Status(inst.ID)
+	return portal.InstanceStatus{
+		Running: st.Running,
+		Ready:   st.Ready,
+		PID:     st.PID,
+		Managed: st.Managed,
+		Error:   st.Error,
+	}
+}
+
+// StartInstance 启动单个实例。
+func (a *LifespanAdapter) StartInstance(ctx context.Context, inst portal.Instance) error {
+	return a.Runtime.StartInstance(ctx, inst)
+}
+
+// StopInstance 停止单个实例。
+func (a *LifespanAdapter) StopInstance(ctx context.Context, inst portal.Instance) error {
+	return a.Runtime.StopInstance(ctx, inst.ID)
+}
+
+// RestartInstance 用最新配置重启单个实例。
+func (a *LifespanAdapter) RestartInstance(ctx context.Context, inst portal.Instance) error {
+	return a.Runtime.RestartInstance(ctx, inst)
+}
+
+// 编译期断言：适配器必须满足管理台接口。
+var _ portal.Lifespan = (*LifespanAdapter)(nil)

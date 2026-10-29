@@ -3,6 +3,7 @@
 package dshproc
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 )
@@ -28,6 +29,34 @@ func kill(cmd *exec.Cmd) error {
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 }
 
+// terminatePID 请一个「不是网关启动」的进程退出（SIGTERM）。
+//
+// 与 terminate 的关键区别：这里只发给**那一个进程**，不发进程组。接管来的
+// dsh 多半是用户在自己终端里跑的，它的进程组就是那个终端的——对组发信号会
+// 连带打死他的 shell 和同组的一切。网关不拥有那个组，就没权动它。
+func terminatePID(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	err := syscall.Kill(pid, syscall.SIGTERM)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil // 进程已经不在，这正是我们要的结果
+	}
+	return err
+}
+
+// killPID 强制结束那一个进程（不带负号，理由同 terminatePID）。
+func killPID(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	err := syscall.Kill(pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
+
 // applyProcessAttrs 让 dsh 子进程独立成组（Setpgid）。
 //
 // 这是组信号的前置条件：npx 启动的 node 孙进程与直接子进程同组，整组才能
@@ -36,3 +65,7 @@ func kill(cmd *exec.Cmd) error {
 func applyProcessAttrs(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
+
+// applyProbeAttrs 在 Unix 上什么都不用做：探测子进程本来就跟着当前终端走，
+// 没有「新开一个窗口」这回事（Windows 上才有，见 process_windows.go）。
+func applyProbeAttrs(cmd *exec.Cmd) {}

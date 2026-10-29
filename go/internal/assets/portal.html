@@ -3,55 +3,18 @@
   管理端首页：「我的实例」。
 
   与登录页同样的约束：全部样式内联，无任何外部请求（无 CDN、无外链字体、无图片），
-  断网也能完整显示；语言由服务端注入，页面自身不做翻译。
+  断网也能完整显示；语言与配色都由服务端注入，页面自身不做翻译、也不用脚本判断
+  深浅色（<html data-theme> 缺省即跟随系统）。
 -->
-<html lang="{{.Lang}}">
+<html lang="{{.Lang}}"{{if .Theme}} data-theme="{{.Theme}}"{{end}} data-scheme="{{.Scheme}}" data-style="{{.Style}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>{{.Title}}</title>
 <style>
-:root{
-  /* 与管理台同一套 macOS 令牌：桌面壁纸 + 浮在壁纸上的窗口。 */
-  --desktop-1:#12121a;
-  --desktop-2:#1b1b26;
-  --window:rgba(44,44,50,.62);
-  --titlebar:rgba(58,58,66,.52);
-  --content:rgba(34,34,40,.34);
-  --card:rgba(255,255,255,.05);
-  --card-2:rgba(255,255,255,.08);
-  --line:rgba(255,255,255,.10);
-  --line-strong:rgba(255,255,255,.20);
-  --text:#f5f5f7;
-  --muted:#a1a1aa;
-  --faint:#71717a;
-  --accent:#0a84ff;
-  --accent-2:#5e5ce6;
-  --ok:#30d158;
-  --radius-window:14px;
-  --radius-card:12px;
-  --radius-control:7px;
-  --shadow-window:0 40px 90px -40px rgba(0,0,0,.95),0 1px 0 rgba(255,255,255,.10) inset;
-  --ease:cubic-bezier(.32,.72,.24,1);
-}
-@media (prefers-color-scheme: light){
-  :root{
-    --desktop-1:#c9d8f0;--desktop-2:#e8dff5;
-    --window:rgba(248,248,250,.74);
-    --titlebar:rgba(236,236,240,.62);
-    --content:rgba(255,255,255,.42);
-    --card:rgba(0,0,0,.035);--card-2:rgba(0,0,0,.06);
-    --line:rgba(0,0,0,.10);--line-strong:rgba(0,0,0,.20);
-    --text:#1d1d1f;--muted:#6e6e73;--faint:#8e8e93;
-    --accent:#007aff;--accent-2:#5856d6;--ok:#34c759;
-    --shadow-window:0 30px 70px -40px rgba(30,40,80,.45),0 1px 0 rgba(255,255,255,.9) inset;
-  }
-}
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  :root{--window:#1c1c20;--titlebar:#26262a;--content:#1a1a1e}
-  @media (prefers-color-scheme: light){:root{--window:#f5f5f7;--titlebar:#ececf0;--content:#fbfbfd}}
-}
+/* 配色令牌（4 方案 × 明暗）来自共享文件 theme.css，与管理台 / 登录页同一份。 */
+{{template "dsh-theme" .}}
 
 *{box-sizing:border-box}
 ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent);color:var(--text)}
@@ -69,26 +32,19 @@ body{
 }
 .bg{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none;
     background:linear-gradient(165deg,var(--desktop-1),var(--desktop-2))}
-.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:.72;
+.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:var(--aurora-op);
          animation:drift 30s ease-in-out infinite alternate;will-change:transform}
 .bg span:nth-child(1){width:52vw;height:52vw;left:-14vw;top:-20vw;
-  background:radial-gradient(circle at 45% 45%,#3b5bdb,transparent 66%)}
+  background:radial-gradient(circle at 45% 45%,var(--aurora-1),transparent 66%)}
 .bg span:nth-child(2){width:44vw;height:44vw;right:-12vw;top:-6vw;animation-delay:-8s;
-  background:radial-gradient(circle at 55% 45%,#8b3dff,transparent 66%)}
+  background:radial-gradient(circle at 55% 45%,var(--aurora-2),transparent 66%)}
 .bg span:nth-child(3){width:56vw;height:56vw;left:14vw;bottom:-34vw;animation-delay:-16s;
-  background:radial-gradient(circle at 50% 50%,#0e7490,transparent 70%)}
-.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:.4;
-  background:radial-gradient(circle at 50% 50%,#db2777,transparent 68%)}
+  background:radial-gradient(circle at 50% 50%,var(--aurora-3),transparent 70%)}
+.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:calc(var(--aurora-op) * .66);
+  background:radial-gradient(circle at 50% 50%,var(--aurora-4),transparent 68%)}
 @keyframes drift{
   from{transform:translate3d(0,0,0) scale(1)}
   to{transform:translate3d(2vw,2.5vh,0) scale(1.06)}
-}
-@media (prefers-color-scheme: light){
-  .bg span{opacity:.5}
-  .bg span:nth-child(1){background:radial-gradient(circle at 45% 45%,#7aa2ff,transparent 66%)}
-  .bg span:nth-child(2){background:radial-gradient(circle at 55% 45%,#c4a4ff,transparent 66%)}
-  .bg span:nth-child(3){background:radial-gradient(circle at 50% 50%,#7de3e0,transparent 70%)}
-  .bg span:nth-child(4){background:radial-gradient(circle at 50% 50%,#ffb3d1,transparent 68%)}
 }
 
 .window{
@@ -110,8 +66,8 @@ body{
 .tb-left{display:flex;align-items:center;gap:8px;justify-self:start;min-width:0}
 .tb-right{display:flex;align-items:center;gap:8px;justify-self:end;min-width:0}
 .titlebar .title{justify-self:center;white-space:nowrap;margin:0;font-size:.95em;font-weight:600}
-.titlebar .mark{width:22px;height:22px;flex:none;padding:4px;border-radius:6px;color:#fff;
-  background:linear-gradient(160deg,#4f9dff,#7c5cff);
+.titlebar .mark{width:22px;height:22px;flex:none;padding:4px;border-radius:6px;color:var(--accent-ink);
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));
   box-shadow:0 1px 0 rgba(255,255,255,.35) inset}
 .titlebar .who{color:var(--muted);font-size:.78em;white-space:nowrap;
   display:inline-flex;align-items:center;gap:6px}
@@ -122,11 +78,6 @@ a.plain{display:inline-flex;align-items:center;padding:4px 9px;border-radius:6px
   color:var(--muted);text-decoration:none;transition:background-color .15s var(--ease),color .15s var(--ease)}
 a.plain:hover{color:var(--text);background:var(--card-2)}
 a.plain:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.traffic{display:flex;align-items:center;gap:8px;margin-left:6px;pointer-events:none}
-.traffic i{width:12px;height:12px;border-radius:50%;box-shadow:0 0 0 .5px rgba(0,0,0,.25) inset}
-.traffic i:nth-child(1){background:#ff5f57}
-.traffic i:nth-child(2){background:#febc2e}
-.traffic i:nth-child(3){background:#28c840}
 
 .window-body{flex:1;display:flex;flex-direction:column;min-height:0;
   background:linear-gradient(180deg,rgba(255,255,255,.035),transparent 220px),var(--content)}
@@ -147,16 +98,16 @@ main{
 @media (hover:hover){
   .card:hover{background:var(--card-2);border-color:var(--line-strong);transform:translateY(-2px)}
 }
-.card .appicon{width:56px;height:56px;border-radius:13px;display:grid;place-items:center;color:#fff;
-  background:linear-gradient(160deg,#4f9dff,#7c5cff);
-  box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 22px -12px rgba(79,157,255,.75)}
+.card .appicon{width:56px;height:56px;border-radius:13px;display:grid;place-items:center;color:var(--accent-ink);
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));
+  box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 10px 22px -12px color-mix(in srgb,var(--accent-2) 60%,transparent)}
 .card .appicon svg{width:30px;height:30px}
 .card .name{font-size:.96em;font-weight:600;overflow-wrap:anywhere;margin-top:2px}
 .card .id{color:var(--faint);font-size:.76em;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace}
 .card .go{
   margin-top:10px;display:inline-flex;align-items:center;justify-content:center;gap:6px;
   width:100%;height:32px;padding:0 14px;border-radius:var(--radius-control);text-decoration:none;
-  font-size:.88em;font-weight:500;color:#fff;
+  font-size:.88em;font-weight:500;color:var(--accent-ink);
   background:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 70%,#000);
   box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 1px 2px rgba(0,0,0,.2);
   transition:filter .14s var(--ease),transform .1s var(--ease);
@@ -170,8 +121,43 @@ main{
   padding:clamp(26px,2.4vw,42px);color:var(--muted);font-size:.92em;text-align:center;
   background:var(--card);
 }
+/* ---------------- 布局风格（<html data-style>，与管理台共用同一偏好）----------
+   console 默认：居中的大图标网格（现在的样子）。
+   overview：卡片变宽行、图标缩小靠左，一屏看更多「名字 + 入口」。
+   split：卡片收成单列，靠左窄栏排布，右侧留白给将来的详情用。 */
+:root[data-style="overview"] .cards{grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))}
+:root[data-style="overview"] .card{flex-direction:row;align-items:center;text-align:left;
+  padding:14px clamp(14px,1.2vw,18px);gap:14px}
+:root[data-style="overview"] .card .appicon{width:40px;height:40px;border-radius:10px}
+:root[data-style="overview"] .card .appicon svg{width:22px;height:22px}
+:root[data-style="overview"] .card .name{flex:1;min-width:0;margin-top:0}
+:root[data-style="overview"] .card .id{display:none}
+:root[data-style="overview"] .card .go{width:auto;margin-top:0;flex:none}
+:root[data-style="split"] main{max-width:760px;margin:0}
+:root[data-style="split"] .cards{grid-template-columns:1fr;gap:10px}
+:root[data-style="split"] .card{flex-direction:row;align-items:center;text-align:left;
+  padding:12px 16px;gap:12px}
+:root[data-style="split"] .card .appicon{width:34px;height:34px;border-radius:9px}
+:root[data-style="split"] .card .appicon svg{width:19px;height:19px}
+:root[data-style="split"] .card .name{flex:1;min-width:0;margin-top:0}
+:root[data-style="split"] .card .id{display:none}
+:root[data-style="split"] .card .go{width:auto;margin-top:0;flex:none;padding:0 12px}
 footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
        color:var(--faint);font-size:.76em;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+/* 页脚配色切换：三枚胶囊（明暗 / 方案 / 布局），每枚是几个普通链接，点一下带
+   ?theme= / ?scheme= 重新请求，服务端写 Cookie 并按新配色渲染。整组靠
+   margin-left:auto 贴在页脚右端：它是偏好设置，不该跟「进入实例」抢注意力。 */
+.switchers{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+.themeswitch{display:flex;gap:1px;padding:2px;
+  border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:.95em}
+.themeswitch a{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;
+  color:var(--muted);text-decoration:none;white-space:nowrap;
+  transition:background-color .15s var(--ease),color .15s var(--ease)}
+.themeswitch a:hover{color:var(--text);background:var(--card-2)}
+.themeswitch a[aria-current="true"]{color:var(--accent-ink);
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));
+  box-shadow:0 1px 0 rgba(255,255,255,.28) inset}
+.themeswitch a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 @media (max-width:900px){
   body{padding:0}
   .window{min-height:100svh;border-radius:0;border-left:0;border-right:0}
@@ -179,10 +165,19 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
             grid-template-columns:auto 1fr auto;gap:8px}
   .titlebar .title{justify-self:start;font-size:.92em}
   .titlebar .who{display:none}
-  .traffic{display:none}
   nav.tools{font-size:.78em}
   main{padding:14px}
   .cards{grid-template-columns:1fr;gap:12px}
+  /* 窄屏回落：手机上一律用居中大图标卡（console 形态），
+     行式布局在 390px 宽里会把名字挤成两行。 */
+  :root[data-style] main{max-width:1500px;margin:0 auto}
+  :root[data-style] .card{flex-direction:column;align-items:center;text-align:center;
+    padding:clamp(18px,1.5vw,24px) 16px 16px;gap:8px}
+  :root[data-style] .card .appicon{width:56px;height:56px;border-radius:13px}
+  :root[data-style] .card .appicon svg{width:30px;height:30px}
+  :root[data-style] .card .name{margin-top:2px;font-size:.96em}
+  :root[data-style] .card .id{display:block}
+  :root[data-style] .card .go{width:100%;margin-top:10px}
 }
 @media (prefers-reduced-motion:reduce){
   *{transition-duration:.001ms !important;animation-duration:.001ms !important}
@@ -205,7 +200,6 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     <a class="plain" href="{{.OtherLangHref}}">{{.OtherLang}}</a>
     <a class="plain" href="{{.SignOutHref}}">{{.SignOut}}</a>
   </nav>
-    <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
   </div>
 </header>
 <div class="window-body">
@@ -227,7 +221,19 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   {{end}}
 </main>
 
-<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}</footer>
+<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}
+  <div class="switchers">
+    <nav class="themeswitch" aria-label="{{.ThemeLabel}}">
+      {{range .Themes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+    <nav class="themeswitch" aria-label="{{.SchemeLabel}}">
+      {{range .Schemes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+    <nav class="themeswitch" aria-label="{{.StyleLabel}}">
+      {{range .Styles}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+  </div>
+</footer>
 </div>
 </body>
 </html>

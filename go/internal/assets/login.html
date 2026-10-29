@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN"{{if .Theme}} data-theme="{{.Theme}}"{{end}} data-scheme="{{.Scheme}}" data-style="{{.Style}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -8,102 +8,14 @@
 <title>{{.Title}}</title>
 <style>
   /* =====================================================================
-     dsh-gate 登录页
-     全部样式内联，无任何外部请求：无 CDN、无外链字体、无外部图片、无
-     favicon 引用。断网 / 无外网的服务器上也能完整显示。
-     两套配色：默认深色，prefers-color-scheme: light 时切浅色。
+     dsh-gate 登录页。左栏介绍与小守卫，右栏登录卡。全部样式与脚本内联，
+     无任何外部请求：无 CDN、无外链字体、无图片引用。断网 / 无外网的服务器
+     上也能完整显示。
+     配色（方案 × 明暗）来自共享令牌 theme.css，与管理台 / 我的实例同一份；
+     用哪套由服务端决定：<html data-scheme> 总在，data-theme 缺省即跟随系统。
+     页脚的切换控件是普通链接，不需要脚本。
      ===================================================================== */
-
-  :root {
-    color-scheme: dark;
-
-    /* 背景与卡片 */
-    --bg: #080a11;
-    --bg-tint: #0d111b;
-    --card: rgba(20, 26, 38, .72);
-    --line: rgba(255, 255, 255, .11);
-    --line-soft: rgba(255, 255, 255, .06);
-    --line-top: rgba(255, 255, 255, .22);
-    --hover-fill: rgba(255, 255, 255, .07);
-
-    /* 文本 */
-    --text: #e9edf6;   /* 正文，对 --bg 对比度 ≈ 17:1 */
-    --muted: #98a1b4;  /* 次要文本，对卡片 ≈ 7.3:1 */
-    --faint: #808a9e;  /* 弱化文本，对卡片 ≈ 5.0:1 */
-
-    /* 输入区 */
-    --field: rgba(255, 255, 255, .04);
-    --field-hover: rgba(255, 255, 255, .065);
-    --field-focus: rgba(255, 255, 255, .07);
-
-    /* 主色 */
-    --accent: #5b8cff;
-    --ring: 0 0 0 3px rgba(91, 140, 255, .26);
-    --btn-a: #3a6ee8;
-    --btn-b: #2a55c4;
-    --btn-text: #ffffff;
-    --btn-glow: rgba(58, 110, 232, .55);
-
-    /* 标识图形 */
-    --mark-a: #7aa8ff;
-    --mark-b: #4fd6c4;
-
-    /* 极光层 */
-    --aurora-1: #1d4ed8;
-    --aurora-2: #0e7f8f;
-    --aurora-3: #4c3fb5;
-    --aurora-op: .5;
-    --grid-line: rgba(255, 255, 255, .035);
-
-    /* 状态色 */
-    --danger: #ff9090;
-    --danger-bg: rgba(255, 94, 94, .10);
-    --danger-line: rgba(255, 94, 94, .30);
-
-    --radius: 20px;
-    --ease: cubic-bezier(.22, .75, .25, 1);
-  }
-
-  @media (prefers-color-scheme: light) {
-    :root {
-      color-scheme: light;
-
-      --bg: #e9edf5;
-      --bg-tint: #f6f8fc;
-      --card: rgba(255, 255, 255, .82);
-      --line: rgba(16, 24, 48, .13);
-      --line-soft: rgba(16, 24, 48, .07);
-      --line-top: rgba(255, 255, 255, .95);
-      --hover-fill: rgba(16, 24, 48, .05);
-
-      --text: #131a2b;   /* 正文，对白卡片 ≈ 15.6:1 */
-      --muted: #59637a;  /* 对白卡片 ≈ 6.0:1 */
-      --faint: #5b6478;  /* 对白卡片 ≈ 5.7:1 */
-
-      --field: #f3f5fb;
-      --field-hover: #eef1f8;
-      --field-focus: #ffffff;
-
-      --accent: #2f5ada;
-      --ring: 0 0 0 3px rgba(47, 90, 218, .18);
-      --btn-a: #3b6ae4;
-      --btn-b: #2a52c6;
-      --btn-glow: rgba(43, 82, 198, .40);
-
-      --mark-a: #3563e0;
-      --mark-b: #0f9c88;
-
-      --aurora-1: #93b4ff;
-      --aurora-2: #a5e6da;
-      --aurora-3: #c9c0ff;
-      --aurora-op: .55;
-      --grid-line: rgba(16, 24, 48, .04);
-
-      --danger: #b4232b;
-      --danger-bg: rgba(214, 45, 45, .07);
-      --danger-line: rgba(190, 30, 40, .26);
-    }
-  }
+{{template "dsh-theme" .}}
 
   *, *::before, *::after { box-sizing: border-box; }
 
@@ -111,14 +23,15 @@
 
   body {
     margin: 0;
-    /* 视口单位而非 min-height: 100%：html 高度为 auto 时百分比高度不生效，
-       页面撑不满视口，卡片会顶在上面而不是垂直居中。svh 以手机的小视口
-       （地址栏还挂着时）为准，地址栏收放时高度不跳。 */
     min-height: 100vh;
     min-height: 100svh;
     display: grid;
     place-items: center;
-    background: var(--bg);
+    background:
+      radial-gradient(62% 52% at 16% 12%, var(--aurora-1) -10%, transparent 62%),
+      radial-gradient(52% 55% at 86% 26%, var(--aurora-2) -14%, transparent 62%),
+      radial-gradient(58% 52% at 62% 104%, var(--aurora-3) -18%, transparent 64%),
+      linear-gradient(168deg, var(--bg-tint), var(--bg) 62%);
     color: var(--text);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     font-size: clamp(.9375rem, .9rem + .18vw, 1rem);
@@ -132,107 +45,214 @@
     padding-bottom: calc(clamp(1rem, 4vw, 2.5rem) + env(safe-area-inset-bottom));
   }
 
-  /* ---------------- 背景：极光光斑 + 栅格 ---------------- */
-
-  .aurora {
+  /* 细栅格铺底（原来极光层的 mask 网格，改为整页淡网格） */
+  body::before {
+    content: "";
     position: fixed;
     inset: 0;
     z-index: 0;
-    overflow: hidden;
     pointer-events: none;
-    background: linear-gradient(180deg, var(--bg-tint), var(--bg) 62%);
-  }
-
-  .blob {
-    position: absolute;
-    display: block;
-    border-radius: 50%;
-    filter: blur(78px);
-    opacity: var(--aurora-op);
-    will-change: transform;
-  }
-
-  .blob-1 {
-    width: 62vmax; height: 62vmax;
-    left: -20vmax; top: -24vmax;
-    background: var(--aurora-1);
-    animation: drift-1 38s ease-in-out infinite;
-  }
-
-  .blob-2 {
-    width: 54vmax; height: 54vmax;
-    right: -18vmax; top: 6vmax;
-    background: var(--aurora-2);
-    animation: drift-2 46s ease-in-out infinite;
-  }
-
-  .blob-3 {
-    width: 48vmax; height: 48vmax;
-    left: 14vmax; bottom: -24vmax;
-    background: var(--aurora-3);
-    animation: drift-3 54s ease-in-out infinite;
-  }
-
-  .aurora::after {
-    content: "";
-    position: absolute;
-    inset: 0;
     background-image:
       linear-gradient(var(--grid-line) 1px, transparent 1px),
       linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
     background-size: 46px 46px;
-    -webkit-mask-image: radial-gradient(ellipse 92% 74% at 50% 36%, #000 8%, transparent 78%);
-    mask-image: radial-gradient(ellipse 92% 74% at 50% 36%, #000 8%, transparent 78%);
+    -webkit-mask-image: radial-gradient(ellipse 96% 80% at 50% 32%, #000 6%, transparent 80%);
+    mask-image: radial-gradient(ellipse 96% 80% at 50% 32%, #000 6%, transparent 80%);
   }
 
-  @keyframes drift-1 {
-    0%   { transform: translate3d(0, 0, 0) scale(1); }
-    50%  { transform: translate3d(14vw, 9vh, 0) scale(1.16); }
-    100% { transform: translate3d(-7vw, 15vh, 0) scale(.92); }
+  /* ---------------- 舞台：左介绍 + 右登录卡 ---------------- */
+
+  .wrap { position: relative; z-index: 1; width: 100%; max-width: 1020px; }
+
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(320px, .92fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem);
+    align-items: center;
   }
 
-  @keyframes drift-2 {
-    0%   { transform: translate3d(0, 0, 0) scale(.95); }
-    50%  { transform: translate3d(-13vw, 12vh, 0) scale(1.12); }
-    100% { transform: translate3d(6vw, -6vh, 0) scale(1); }
+  /* ---------------- 左栏：介绍 ---------------- */
+
+  .pitch { display: flex; flex-direction: column; gap: clamp(1rem, 2.4vw, 1.5rem); min-width: 0; }
+
+  .brand { display: flex; align-items: center; gap: .9rem; }
+
+  .mark {
+    width: clamp(46px, 8vw, 54px);
+    height: clamp(46px, 8vw, 54px);
+    display: grid;
+    place-items: center;
+    border-radius: 15px;
+    background: linear-gradient(158deg, var(--hover-fill), rgba(255, 255, 255, .02));
+    border: 1px solid var(--line-soft);
+    transition: transform .35s var(--ease), box-shadow .35s var(--ease);
   }
 
-  @keyframes drift-3 {
-    0%   { transform: translate3d(0, 0, 0) scale(1.05); }
-    50%  { transform: translate3d(11vw, -11vh, 0) scale(.9); }
-    100% { transform: translate3d(-9vw, -3vh, 0) scale(1.08); }
+  .mark:hover { transform: translateY(-3px) rotate(-4deg); box-shadow: 0 16px 30px -18px rgba(0, 0, 0, .8); }
+
+  .mark svg { width: 62%; height: auto; display: block; }
+
+  .brand-text { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+
+  .title {
+    margin: 0;
+    font-size: clamp(1.35rem, 1.1rem + 1.6vw, 1.9rem);
+    font-weight: 680;
+    letter-spacing: -.01em;
+    line-height: 1.25;
   }
 
-  @keyframes pop-in {
-    from { opacity: 0; transform: translateY(-6px); }
-    to   { opacity: 1; transform: translateY(0); }
+  .subtitle { margin: 0; color: var(--muted); font-size: .95rem; line-height: 1.5; }
+
+  .lede {
+    margin: 0;
+    max-width: 34em;
+    color: var(--muted);
+    font-size: clamp(.95rem, .9rem + .3vw, 1.06rem);
+    line-height: 1.7;
   }
 
-  /* ---------------- 布局 ---------------- */
+  .lede strong { color: var(--text); font-weight: 600; }
 
-  .shell {
+  .feats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+
+  .feats li {
+    display: flex; align-items: flex-start; gap: .75rem;
+    padding: .72rem .85rem;
+    border: 1px solid var(--line-soft);
+    border-radius: 14px;
+    background: linear-gradient(180deg, var(--hover-fill), transparent);
+    color: var(--muted);
+    font-size: .92rem;
+    line-height: 1.55;
+    transition: transform .25s var(--ease), border-color .25s var(--ease),
+                background-color .25s var(--ease), color .25s var(--ease);
+  }
+
+  .feats li:hover {
+    transform: translateX(6px);
+    border-color: var(--line);
+    background: var(--hover-fill);
+    color: var(--text);
+  }
+
+  .feats .ico {
+    flex: none; width: 34px; height: 34px; display: grid; place-items: center;
+    border-radius: 10px; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+    transition: transform .25s var(--ease);
+  }
+
+  .feats li:hover .ico { transform: scale(1.1) rotate(-6deg); }
+
+  .feats .ico svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---------------- 小守卫（宠物） ----------------
+     蹲在登录卡顶边（绝对定位挂在 .shell 上，不进 .card——卡片有
+     overflow:hidden 会把它裁掉）。气泡在它的左边，同一水平线。 */
+
+  .guardian {
+    position: absolute; z-index: 3;
+    top: -70px; right: 10px;
+    display: flex; flex-direction: row-reverse; align-items: flex-start; gap: .55rem;
+    user-select: none; -webkit-user-select: none;
+    transition: transform .35s var(--ease);
+  }
+
+  .beast { position: relative; width: 84px; height: 84px; flex: none; cursor: default; }
+
+  .beast svg { width: 100%; height: 100%; display: block; overflow: visible;
+    filter: drop-shadow(0 10px 16px rgba(0, 0, 0, .35)); }
+
+  /* 待机：呼吸 + 眨眼 + 摇尾 */
+  .beast .body-grp { animation: breathe 3.6s ease-in-out infinite; transform-origin: 60px 92px; }
+  .beast .eyes { animation: blink 4.6s infinite; transform-origin: 60px 52px; }
+  .beast .tail { animation: wag 2.6s ease-in-out infinite; transform-origin: 92px 84px; }
+
+  @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025, .98); } }
+  @keyframes blink {
+    0%, 91%, 100% { transform: scaleY(1); }
+    93%, 96% { transform: scaleY(.08); }
+  }
+  @keyframes wag { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(14deg); } }
+
+  /* 状态部件：默认只露常规眼 */
+  .beast .p-typing, .beast .p-peek, .beast .p-sad, .beast .p-submit { display: none; }
+
+  /* 输入中：轻快弹跳 + 瞳孔左右瞄 */
+  .guardian[data-state="typing"] .beast .body-grp { animation: hop .9s ease-in-out infinite; }
+  @keyframes hop { 0%, 100% { transform: translateY(0); } 45% { transform: translateY(-5px); } }
+  .guardian[data-state="typing"] .beast .p-typing { display: block; }
+  .guardian[data-state="typing"] .beast .eyes { display: none; }
+
+  /* 遮眼（口令可见）：爪子捂眼 + 指缝偷看 */
+  .guardian[data-state="peek"] .beast .p-peek { display: block; }
+  .guardian[data-state="peek"] .beast .eyes { display: none; }
+  .guardian[data-state="peek"] .beast .body-grp { animation: sway 1.4s ease-in-out infinite; }
+  @keyframes sway { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(3deg); } }
+
+  /* 沮丧（失败）：耳朵耷拉 + 泪滴 */
+  .guardian[data-state="sad"] .beast .ear-l { transform: rotate(-26deg); transform-origin: 38px 30px; }
+  .guardian[data-state="sad"] .beast .ear-r { transform: rotate(26deg); transform-origin: 82px 30px; }
+  .guardian[data-state="sad"] .beast .ear-l, .guardian[data-state="sad"] .beast .ear-r { transition: transform .5s var(--ease); }
+  .guardian[data-state="sad"] .beast .p-sad { display: block; }
+  .guardian[data-state="sad"] .beast .eyes { display: none; }
+  .guardian[data-state="sad"] .beast .body-grp { animation: none; transform: translateY(3px); }
+  .guardian[data-state="sad"] .beast .tail { animation: none; transform: rotate(-18deg); transform-origin: 92px 84px; transition: transform .5s var(--ease); }
+
+  /* 核对中：紧张 w 嘴 + 汗滴 */
+  .guardian[data-state="submit"] .beast .p-submit { display: block; }
+  .guardian[data-state="submit"] .beast .mouth { display: none; }
+  .guardian[data-state="submit"] .beast .body-grp { animation: shiver .28s linear infinite; }
+  @keyframes shiver { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-1.4px); } 75% { transform: translateX(1.4px); } }
+
+  /* 对话气泡：在宠物左边，角尖朝右下指向它 */
+  .bubble {
     position: relative;
-    z-index: 1;
-    width: 100%;
-    max-width: 400px;
-    display: flex;
-    flex-direction: column;
-    gap: clamp(.875rem, 3vw, 1.25rem);
+    margin: 14px 0 0;
+    padding: .55rem .85rem;
+    border: 1px solid var(--line);
+    border-radius: 14px 14px 4px 14px;
+    background: var(--window);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    backdrop-filter: blur(14px) saturate(140%);
+    color: var(--muted);
+    font-size: .85rem;
+    line-height: 1.45;
+    max-width: 17em;
+    box-shadow: 0 12px 26px -18px rgba(0, 0, 0, .8);
   }
+
+  .bubble span { display: block; }
+
+  .bubble.pop { animation: bubble-pop .28s var(--ease) both; }
+
+  @keyframes bubble-pop { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+
+  /* ---------------- 右栏：登录卡 ---------------- */
+
+  .shell { position: relative; z-index: 1; width: 100%; max-width: 400px; justify-self: end; }
 
   .card {
     position: relative;
-    padding: clamp(1.25rem, 6vw, 2rem);
-    background: var(--card);
+    padding: clamp(1.35rem, 6vw, 2rem);
+    background: var(--window);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: 0 30px 70px -32px rgba(0, 0, 0, .85), 0 2px 10px rgba(0, 0, 0, .35);
     -webkit-backdrop-filter: blur(18px) saturate(140%);
     backdrop-filter: blur(18px) saturate(140%);
     overflow: hidden;
+    transition: transform .35s var(--ease), box-shadow .35s var(--ease), border-color .35s var(--ease);
   }
 
-  /* 玻璃顶边高光 + 顶部辉光 */
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+    box-shadow: 0 40px 84px -34px rgba(0, 0, 0, .9), 0 2px 10px rgba(0, 0, 0, .35);
+  }
+
   .card::before {
     content: "";
     position: absolute;
@@ -247,59 +267,28 @@
     top: -70px; left: 50%;
     width: 150%; height: 150px;
     transform: translateX(-50%);
-    background: radial-gradient(closest-side, rgba(91, 140, 255, .22), transparent);
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 20%, transparent), transparent);
     pointer-events: none;
   }
 
-  /* ---------------- 标识区 ---------------- */
+  .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; margin-bottom: clamp(1.1rem, 4vw, 1.5rem); }
 
-  .brand {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: .5rem;
-    margin-bottom: clamp(1.25rem, 5vw, 1.75rem);
+  .card-head h2 { margin: 0; font-size: 1.12rem; font-weight: 640; letter-spacing: .01em; }
+
+  .card-head .door {
+    width: 30px; height: 30px; display: grid; place-items: center;
+    border-radius: 9px; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
   }
 
-  .mark {
-    width: clamp(48px, 15vw, 56px);
-    height: clamp(48px, 15vw, 56px);
-    display: grid;
-    place-items: center;
-    border-radius: 16px;
-    background: linear-gradient(158deg, var(--hover-fill), rgba(255, 255, 255, .02));
-    border: 1px solid var(--line-soft);
-  }
-
-  .mark svg { width: 62%; height: auto; display: block; }
-
-  .title {
-    margin: 0;
-    font-size: clamp(1.125rem, 1.02rem + 1.05vw, 1.375rem);
-    font-weight: 640;
-    letter-spacing: .01em;
-    line-height: 1.3;
-  }
-
-  .subtitle {
-    margin: 0;
-    max-width: 26em;
-    color: var(--muted);
-    font-size: .9375rem;
-    line-height: 1.5;
-  }
-
-  /* ---------------- 错误提示 ---------------- */
+  .card-head .door svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
   .error {
-    display: flex;
-    align-items: flex-start;
-    gap: .55rem;
+    display: flex; align-items: flex-start; gap: .55rem;
     margin: 0 0 clamp(1rem, 4vw, 1.25rem);
     padding: .7rem .85rem;
-    font-size: .875rem;
-    line-height: 1.5;
+    font-size: .875rem; line-height: 1.5;
     color: var(--danger);
     background: var(--danger-bg);
     border: 1px solid var(--danger-line);
@@ -308,40 +297,23 @@
   }
 
   .error::before {
-    content: "";
-    flex: none;
-    width: .5rem;
-    height: .5rem;
-    margin-top: .45rem;
-    border-radius: 50%;
-    background: currentColor;
+    content: ""; flex: none; width: .5rem; height: .5rem; margin-top: .45rem;
+    border-radius: 50%; background: currentColor;
   }
+
+  @keyframes pop-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
 
   /* ---------------- 表单 ---------------- */
 
-  .form {
-    display: flex;
-    flex-direction: column;
-    gap: clamp(.875rem, 3vw, 1.125rem);
-  }
+  .form { display: flex; flex-direction: column; gap: clamp(.875rem, 3vw, 1.125rem); }
 
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: .4rem;
-  }
+  .field { display: flex; flex-direction: column; gap: .4rem; }
 
-  .field > label {
-    font-size: .8125rem;
-    font-weight: 600;
-    letter-spacing: .02em;
-    color: var(--muted);
-  }
+  .field > label { font-size: .8125rem; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
 
   .control { position: relative; }
 
-  input[type="text"],
-  input[type="password"] {
+  input[type="text"], input[type="password"] {
     width: 100%;
     padding: .72rem .875rem;
     font: inherit;
@@ -350,7 +322,7 @@
     color: var(--text);
     background: var(--field);
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 10px;
     -webkit-appearance: none;
     appearance: none;
     transition: background-color .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease);
@@ -370,20 +342,12 @@
   }
 
   .toggle {
-    position: absolute;
-    top: 50%;
-    right: .3rem;
+    position: absolute; top: 50%; right: .3rem;
     transform: translateY(-50%);
-    width: 2.25rem;
-    height: 2.25rem;
-    display: grid;
-    place-items: center;
-    padding: 0;
-    font: inherit;
-    color: var(--muted);
-    background: transparent;
-    border: 0;
-    border-radius: 9px;
+    width: 2.25rem; height: 2.25rem;
+    display: grid; place-items: center;
+    padding: 0; font: inherit; color: var(--muted);
+    background: transparent; border: 0; border-radius: 9px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
@@ -392,11 +356,7 @@
 
   .toggle:hover { color: var(--text); background: var(--hover-fill); }
 
-  .toggle:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-    color: var(--text);
-  }
+  .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; color: var(--text); }
 
   .toggle svg { width: 1.25rem; height: 1.25rem; display: block; }
 
@@ -406,54 +366,38 @@
 
   .toggle[aria-pressed="true"] .icon-off { opacity: 1; }
 
-  .toggle path,
-  .toggle circle {
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.7;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+  .toggle path, .toggle circle {
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
   }
 
   .submit {
     width: 100%;
     margin-top: .25rem;
     padding: .8rem 1rem;
-    font: inherit;
-    font-weight: 600;
-    letter-spacing: .03em;
-    color: var(--btn-text);
+    font: inherit; font-weight: 600; letter-spacing: .03em;
+    color: var(--accent-ink);
     background: linear-gradient(180deg, var(--btn-a), var(--btn-b));
     border: 0;
-    border-radius: 12px;
+    border-radius: 10px;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
-    box-shadow: 0 10px 22px -12px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .18);
+    box-shadow: 0 10px 22px -12px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .28);
     transition: transform .12s var(--ease), filter .2s var(--ease), box-shadow .2s var(--ease), opacity .2s var(--ease);
   }
 
   .submit:hover {
     filter: brightness(1.07);
-    box-shadow: 0 14px 26px -12px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .22);
+    transform: translateY(-1px);
+    box-shadow: 0 16px 28px -14px var(--btn-glow), inset 0 1px 0 rgba(255, 255, 255, .32);
   }
 
-  .submit:active {
-    transform: translateY(1px);
-    filter: brightness(.97);
-  }
+  .submit:active { transform: translateY(1px); filter: brightness(.97); }
 
   .submit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  .submit:disabled {
-    opacity: .62;
-    cursor: progress;
-    filter: none;
-    transform: none;
-    box-shadow: none;
-  }
-
-  /* ---------------- 提示与页脚 ---------------- */
+  .submit:disabled { opacity: .62; cursor: progress; filter: none; transform: none; box-shadow: none; }
 
   .hint {
     margin: clamp(1rem, 4vw, 1.25rem) 0 0;
@@ -463,7 +407,7 @@
   }
 
   .foot {
-    margin: 0;
+    margin: clamp(1.25rem, 3vw, 1.75rem) 0 0;
     text-align: center;
     font-size: .75rem;
     letter-spacing: .01em;
@@ -471,6 +415,115 @@
   }
 
   .foot .sep { padding: 0 .35rem; opacity: .65; }
+
+  /* ---------------- 页脚配色切换 ----------------
+     两枚胶囊各是一组普通链接：明暗（跟系统 / 亮 / 暗）与方案（四种色相）。
+     点一下带 ?theme= / ?scheme= 重新请求，服务端写 Cookie 并按新配色渲染；
+     没有脚本，也不依赖 :has()。 */
+  .switchers {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .5rem;
+    margin-top: clamp(1rem, 2.6vw, 1.25rem);
+  }
+
+  .themeswitch {
+    display: flex;
+    gap: 1px;
+    width: max-content;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--card);
+    font-size: .75rem;
+    line-height: 1.4;
+  }
+
+  .themeswitch a {
+    display: inline-flex;
+    align-items: center;
+    padding: .2rem .6rem;
+    border-radius: 999px;
+    color: var(--muted);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: color .15s var(--ease), background-color .15s var(--ease);
+  }
+
+  .themeswitch a:hover { color: var(--text); background: var(--hover-fill); }
+
+  .themeswitch a[aria-current="true"] {
+    color: var(--accent-ink);
+    background: linear-gradient(180deg, var(--btn-a), var(--btn-b));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .24);
+  }
+
+  .themeswitch a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---------------- 窄屏：单列，登录卡在前 ----------------
+     单列时如果仍把介绍放在前面，手机上那几段文案会把整张登录卡挤到首屏之外
+     （连口令框都看不见，得先滚一屏才能登录）。所以视觉顺序改成
+     「品牌 → 登录卡 → 介绍」：进来先看见账号口令，介绍往下滚一点照样读得到。
+     只动视觉顺序：介绍里没有可聚焦元素，Tab 顺序与朗读顺序不受影响（仍按源码）。 */
+
+  @media (max-width: 860px) {
+    .stage {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: clamp(.9rem, 3vw, 1.25rem);
+    }
+
+    /* 拆掉 .pitch 这层盒子，让品牌、介绍、要点直接参与排序 */
+    .pitch { display: contents; }
+
+    .brand { order: 1; }
+    .shell { order: 2; justify-self: auto; width: 100%; max-width: 480px; margin: 76px auto 0; }
+    .lede { order: 3; }
+    .feats { order: 4; }
+
+    /* 宠物蹲在卡片顶边上、探出约 70px：上面的 margin 就是给它留的位置。 */
+    .feats li { padding: .6rem .7rem; }
+    .beast { width: 76px; height: 76px; }
+    .bubble { max-width: 13em; }
+  }
+
+  /* ---------------- 手机：再收紧一档 ----------------
+     常见机型 390×844：品牌 + 登录卡 + 页脚一屏能放下，不用滚。 */
+
+  @media (max-width: 640px) {
+    body {
+      padding: .85rem;
+      padding-left: calc(.85rem + env(safe-area-inset-left));
+      padding-right: calc(.85rem + env(safe-area-inset-right));
+      padding-bottom: calc(.85rem + env(safe-area-inset-bottom));
+    }
+
+    .mark { width: 44px; height: 44px; border-radius: 13px; }
+    .title { font-size: 1.3rem; }
+    .subtitle { font-size: .875rem; }
+
+    .shell { max-width: none; margin-top: 58px; }
+    .guardian { top: -52px; right: 0; gap: .4rem; }
+    .beast { width: 62px; height: 62px; }
+    .bubble { max-width: 14em; font-size: .78rem; padding: .4rem .6rem; }
+
+    .card { padding: 1.15rem 1.1rem; }
+    .card-head { margin-bottom: .9rem; }
+    .card-head .door { width: 26px; height: 26px; }
+    .form { gap: .8rem; }
+    .hint { margin-top: .9rem; }
+
+    .lede { font-size: .9375rem; line-height: 1.6; }
+    .feats { gap: .45rem; }
+    .feats li { padding: .5rem .6rem; font-size: .875rem; }
+    .feats .ico { width: 30px; height: 30px; }
+    .feats .ico svg { width: 16px; height: 16px; }
+
+    .switchers { margin-top: .9rem; }
+    .foot { font-size: .72rem; }
+  }
 
   /* ---------------- 动效降级 ---------------- */
 
@@ -482,159 +535,181 @@
       scroll-behavior: auto !important;
     }
   }
-
-  /* ---------------- macOS 登录界面 ----------------
-     系统登录界面：壁纸 + 居中用户头像 + 玻璃卡片。只覆盖观感，
-     结构与密码显隐脚本保持原样。 */
-  :root {
-    --accent: #0a84ff;
-    --btn-a: #0a84ff;
-    --btn-b: #0a84ff;
-    --btn-glow: rgba(10, 132, 255, .55);
-  }
-  @media (prefers-color-scheme: light) {
-    :root { --accent: #007aff; --btn-a: #007aff; --btn-b: #007aff; }
-  }
-  body {
-    background:
-      radial-gradient(60% 50% at 20% 18%, #3b5bdb 0%, transparent 66%),
-      radial-gradient(55% 55% at 82% 24%, #8b3dff 0%, transparent 66%),
-      radial-gradient(60% 60% at 60% 96%, #0e7490 0%, transparent 70%),
-      linear-gradient(165deg, #12121a, #1b1b26);
-  }
-  @media (prefers-color-scheme: light) {
-    body {
-      background:
-        radial-gradient(60% 50% at 20% 18%, #7aa2ff 0%, transparent 66%),
-        radial-gradient(55% 55% at 82% 24%, #c4a4ff 0%, transparent 66%),
-        radial-gradient(60% 60% at 60% 96%, #7de3e0 0%, transparent 70%),
-        linear-gradient(165deg, #c9d8f0, #e8dff5);
-    }
-  }
-  .card {
-    border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, .12);
-    background: rgba(44, 44, 50, .55);
-    -webkit-backdrop-filter: blur(40px) saturate(180%);
-    backdrop-filter: blur(40px) saturate(180%);
-    box-shadow: 0 40px 90px -40px rgba(0, 0, 0, .95), 0 1px 0 rgba(255, 255, 255, .10) inset;
-  }
-  @media (prefers-color-scheme: light) {
-    .card { background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .10); }
-  }
-  .mark {
-    background: linear-gradient(160deg, #4f9dff, #7c5cff);
-    border-color: transparent;
-    border-radius: 14px;
-    color: #fff;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .35) inset,
-                0 12px 26px -14px rgba(79, 157, 255, .85);
-  }
-  .title {
-    background: none;
-    -webkit-text-fill-color: currentColor;
-    color: var(--text);
-    font-weight: 600;
-    letter-spacing: -.01em;
-  }
-  input[type="text"], input[type="password"] {
-    border-radius: 7px;
-    border: 1px solid rgba(255, 255, 255, .12);
-    background: rgba(0, 0, 0, .28);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, .15) inset;
-  }
-  @media (prefers-color-scheme: light) {
-    input[type="text"], input[type="password"] {
-      background: rgba(255, 255, 255, .78);
-      border-color: rgba(0, 0, 0, .10);
-    }
-  }
-  input[type="text"]:focus, input[type="password"]:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(10, 132, 255, .30);
-  }
-  .submit {
-    border-radius: 7px;
-    background: var(--accent);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .28) inset, 0 1px 2px rgba(0, 0, 0, .2);
-    letter-spacing: 0;
-  }
-  .submit:hover {
-    filter: brightness(1.07);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .28) inset, 0 2px 6px rgba(0, 0, 0, .2);
-  }
 </style>
 </head>
-<body>
+<body{{if .Error}} data-error="1"{{end}}>
 
-<div class="aurora" aria-hidden="true">
-  <span class="blob blob-1"></span>
-  <span class="blob blob-2"></span>
-  <span class="blob blob-3"></span>
-</div>
+<div class="wrap">
+  <div class="stage">
 
-<main class="shell">
+    <section class="pitch">
+      <header class="brand">
+        <span class="mark">
+          <svg viewBox="0 0 44 44" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="gateMark" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="var(--mark-a)"></stop>
+                <stop offset="1" stop-color="var(--mark-b)"></stop>
+              </linearGradient>
+            </defs>
+            <path d="M22 4.2 38 12.9v14.4L22 36 6 27.3V12.9z" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linejoin="round"></path>
+            <circle cx="22" cy="19.4" r="3.7" fill="url(#gateMark)"></circle>
+            <path d="M14.2 29.4 22 24.3l7.8 5.1" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"></path>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <h1 class="title">{{.Title}}</h1>
+          {{if .Subtitle}}<p class="subtitle">{{.Subtitle}}</p>{{end}}
+        </span>
+      </header>
 
-  <section class="card">
-    <header class="brand">
-      <span class="mark">
-        <svg viewBox="0 0 44 44" aria-hidden="true" focusable="false">
-          <defs>
-            <linearGradient id="gateMark" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="var(--mark-a)"></stop>
-              <stop offset="1" stop-color="var(--mark-b)"></stop>
-            </linearGradient>
-          </defs>
-          <path d="M22 4.2 38 12.9v14.4L22 36 6 27.3V12.9z" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linejoin="round"></path>
-          <circle cx="22" cy="19.4" r="3.7" fill="url(#gateMark)"></circle>
-          <path d="M14.2 29.4 22 24.3l7.8 5.1" fill="none" stroke="url(#gateMark)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" opacity=".9"></path>
-        </svg>
-      </span>
-      <h1 class="title">{{.Title}}</h1>
-      {{if .Subtitle}}<p class="subtitle">{{.Subtitle}}</p>{{end}}
-    </header>
+      <p class="lede"><strong>{{.L.Feat1}}</strong></p>
 
-    {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+      <ul class="feats">
+        <li>
+          <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2 19 6v6c0 4.6-3.1 7.6-7 8.8-3.9-1.2-7-4.2-7-8.8V6z"></path><path d="M9.2 12.2l2 2 3.8-4.2"></path></svg></span>
+          <span>{{.L.Feat2}}</span>
+        </li>
+        <li>
+          <span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg></span>
+          <span>{{.L.Feat3}}</span>
+        </li>
+      </ul>
+    </section>
 
-    <form class="form" id="login-form" method="post" action="{{.Action}}">
-      <input type="hidden" name="next" value="{{.Next}}">
+    <main class="shell">
 
-      <div class="field">
-        <label for="username">{{.L.Username}}</label>
-        <input id="username" name="username" type="text" value="{{.Username}}" autocomplete="username"
-               autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="{{.L.UsernamePlaceholder}}" required autofocus>
-      </div>
-
-      <div class="field">
-        <label for="password">{{.L.Password}}</label>
-        <div class="control">
-          <input id="password" name="password" type="password" autocomplete="current-password"
-                 placeholder="{{.L.PasswordPlaceholder}}" required>
-          <button type="button" class="toggle" id="pw-toggle" aria-label="{{.L.ShowPassword}}" aria-pressed="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <g class="icon-on">
-                <path d="M2.5 12S6.2 5.8 12 5.8 21.5 12 21.5 12 17.8 18.2 12 18.2 2.5 12 2.5 12Z"></path>
-                <circle cx="12" cy="12" r="3"></circle>
+      <div class="guardian" id="guardian" data-state="idle"
+           data-msg-idle="{{.L.PetIdle}}" data-msg-typing="{{.L.PetTyping}}"
+           data-msg-peek="{{.L.PetPeek}}" data-msg-sad="{{.L.PetSad}}"
+           data-msg-submit="{{.L.PetSubmit}}">
+        <div class="beast" aria-hidden="true">
+          <svg viewBox="0 0 120 120" focusable="false">
+            <!-- 尾巴 -->
+            <path class="tail" d="M92 84c10-2 14-10 12-18-1-4 4-5 6-1 4 12-4 24-17 27z" fill="var(--fur-dark)"></path>
+            <g class="body-grp">
+              <!-- 耳朵（沮丧时耷拉） -->
+              <path class="ear ear-l" d="M34 34c-2-12 4-18 12-14l6 10z" fill="var(--fur-dark)"></path>
+              <path class="ear ear-r" d="M86 34c2-12-4-18-12-14l-6 10z" fill="var(--fur-dark)"></path>
+              <!-- 身体 -->
+              <ellipse cx="60" cy="76" rx="34" ry="32" fill="var(--fur)"></ellipse>
+              <ellipse cx="60" cy="86" rx="20" ry="17" fill="var(--fur-belly)" opacity=".9"></ellipse>
+              <!-- 黄铜小盾（守门身份） -->
+              <path d="M60 82c5 0 9 1.4 9 1.4v6c0 5-4.4 8.2-9 9.6-4.6-1.4-9-4.6-9-9.6v-6s4-1.4 9-1.4z" fill="var(--brass)" stroke="var(--brass-dark)" stroke-width="1.4"></path>
+              <path d="M56.4 88.4l2.6 2.6 4.8-5" fill="none" stroke="var(--accent-ink)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity=".85"></path>
+              <!-- 常规眼 -->
+              <g class="eyes">
+                <circle cx="48" cy="56" r="5.6" fill="#fff"></circle>
+                <circle cx="72" cy="56" r="5.6" fill="#fff"></circle>
+                <circle cx="48.8" cy="56.6" r="2.6" fill="#152219"></circle>
+                <circle cx="72.8" cy="56.6" r="2.6" fill="#152219"></circle>
               </g>
-              <g class="icon-off">
-                <path d="M9.6 6.3A9.3 9.3 0 0 1 12 6.1c5.8 0 9.5 5.9 9.5 5.9a17.6 17.6 0 0 1-3.1 3.8"></path>
-                <path d="M6.5 8.2A16.9 16.9 0 0 0 2.5 12S6.2 17.9 12 17.9a9.2 9.2 0 0 0 3.4-.7"></path>
-                <path d="M4.2 4.2 19.8 19.8"></path>
+              <!-- 输入中：眼睛左右瞄 + 腮红 -->
+              <g class="p-typing">
+                <circle cx="48" cy="56" r="5.6" fill="#fff"></circle>
+                <circle cx="72" cy="56" r="5.6" fill="#fff"></circle>
+                <circle cx="45.6" cy="55.4" r="2.6" fill="#152219">
+                  <animate attributeName="cx" values="45.6;50.6;45.6" dur="1.6s" repeatCount="indefinite"></animate>
+                </circle>
+                <circle cx="69.6" cy="55.4" r="2.6" fill="#152219">
+                  <animate attributeName="cx" values="69.6;74.6;69.6" dur="1.6s" repeatCount="indefinite"></animate>
+                </circle>
+                <ellipse cx="40" cy="64" rx="4" ry="2.4" fill="#e8896b" opacity=".5"></ellipse>
+                <ellipse cx="80" cy="64" rx="4" ry="2.4" fill="#e8896b" opacity=".5"></ellipse>
               </g>
-            </svg>
-          </button>
+              <!-- 偷看：爪子捂眼 -->
+              <g class="p-peek">
+                <circle cx="46" cy="58" r="7.4" fill="var(--fur)"></circle>
+                <circle cx="74" cy="58" r="7.4" fill="var(--fur)"></circle>
+                <path d="M41.6 57.6h8.8M69.6 57.6h8.8" stroke="var(--fur-dark)" stroke-width="1.6" stroke-linecap="round"></path>
+                <path d="M52 50q8 4 16 0" fill="none" stroke="#152219" stroke-width="2" stroke-linecap="round"></path>
+              </g>
+              <!-- 沮丧：闭眼弧线 + 泪 -->
+              <g class="p-sad">
+                <path d="M43.4 57.6q4.6 4 9.2 0M67.4 57.6q4.6 4 9.2 0" fill="none" stroke="#152219" stroke-width="2.2" stroke-linecap="round"></path>
+                <path d="M78 62c1.6 3 .4 5.4-1.6 5.4S74.8 65 76.4 62z" fill="#7cc7e8">
+                  <animate attributeName="opacity" values="1;.2;1" dur="1.8s" repeatCount="indefinite"></animate>
+                </path>
+              </g>
+              <!-- 核对中：紧张 w 嘴 + 汗滴 -->
+              <g class="p-submit">
+                <path d="M55 66q2.5-2.4 5 0 2.5 2.4 5 0" fill="none" stroke="#152219" stroke-width="2" stroke-linecap="round"></path>
+                <path d="M92 44c2.4 4.4.6 7.6-1.8 7.6S87.8 48.4 90.2 44z" fill="#8fd0ea">
+                  <animateTransform attributeName="transform" type="translate" values="0 0;0 5;0 0" dur="1.1s" repeatCount="indefinite"></animateTransform>
+                </path>
+              </g>
+              <!-- 嘴（常规微笑） -->
+              <path class="mouth" d="M56 64q4 3.6 8 0" fill="none" stroke="#152219" stroke-width="2" stroke-linecap="round"></path>
+            </g>
+          </svg>
         </div>
+        <p class="bubble" id="pet-bubble" aria-live="polite"><span id="pet-msg">{{.L.PetIdle}}</span></p>
       </div>
 
-      <button type="submit" class="submit" id="submit-btn"><span id="submit-label">{{.L.Submit}}</span></button>
-    </form>
+      <section class="card">
+        <header class="card-head">
+          <h2>{{.L.Submit}}</h2>
+          <span class="door" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="5" y="3.5" width="14" height="17" rx="1.6"></rect><circle cx="15.4" cy="12" r="1.2" fill="currentColor" stroke="none"></circle></svg>
+          </span>
+        </header>
 
-    <p class="hint">{{.L.Hint}}</p>
-  </section>
+        {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 
-  <footer class="foot">{{.L.FooterPrefix}}<span class="sep">·</span>{{.Host}}<span class="sep">·</span>v{{.Version}}</footer>
+        <form class="form" id="login-form" method="post" action="{{.Action}}">
+          <input type="hidden" name="next" value="{{.Next}}">
 
-</main>
+          <div class="field">
+            <label for="username">{{.L.Username}}</label>
+            <input id="username" name="username" type="text" value="{{.Username}}" autocomplete="username"
+                   autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="{{.L.UsernamePlaceholder}}" required autofocus>
+          </div>
+
+          <div class="field">
+            <label for="password">{{.L.Password}}</label>
+            <div class="control">
+              <input id="password" name="password" type="password" autocomplete="current-password"
+                     placeholder="{{.L.PasswordPlaceholder}}" required>
+              <button type="button" class="toggle" id="pw-toggle" aria-label="{{.L.ShowPassword}}" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <g class="icon-on">
+                    <path d="M2.5 12S6.2 5.8 12 5.8 21.5 12 21.5 12 17.8 18.2 12 18.2 2.5 12 2.5 12Z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </g>
+                  <g class="icon-off">
+                    <path d="M9.6 6.3A9.3 9.3 0 0 1 12 6.1c5.8 0 9.5 5.9 9.5 5.9a17.6 17.6 0 0 1-3.1 3.8"></path>
+                    <path d="M6.5 8.2A16.9 16.9 0 0 0 2.5 12S6.2 17.9 12 17.9a9.2 9.2 0 0 0 3.4-.7"></path>
+                    <path d="M4.2 4.2 19.8 19.8"></path>
+                  </g>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" class="submit" id="submit-btn"><span id="submit-label">{{.L.Submit}}</span></button>
+        </form>
+
+        <p class="hint">{{.L.Hint}}</p>
+      </section>
+
+      <div class="switchers">
+        <nav class="themeswitch" aria-label="{{.ThemeLabel}}">
+          {{range .Themes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+        </nav>
+        <nav class="themeswitch" aria-label="{{.SchemeLabel}}">
+          {{range .Schemes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+        </nav>
+        <nav class="themeswitch" aria-label="{{.StyleLabel}}">
+          {{range .Styles}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+        </nav>
+      </div>
+
+      <footer class="foot">{{.L.FooterPrefix}}<span class="sep">·</span>{{.Host}}<span class="sep">·</span>v{{.Version}}</footer>
+
+    </main>
+
+  </div>
+</div>
 
 <script>
 (function () {
@@ -646,6 +721,57 @@
   var submit = document.getElementById("submit-btn");
   var submitLabel = document.getElementById("submit-label");
 
+  /* ---------------- 小守卫：状态机 ----------------
+     idle → typing（任一输入框有焦点且在敲）→ idle（停 1.6s）
+     口令可见 → peek；提交 → submit；服务端带错误回显 → sad。
+     只改 data-state 与气泡文字，动画全在 CSS。 */
+  var guardian = document.getElementById("guardian");
+  var msgEl = document.getElementById("pet-msg");
+  var bubble = document.getElementById("pet-bubble");
+  var state = "idle";
+  var idleTimer = 0;
+
+  function messageFor(name) {
+    return guardian.getAttribute("data-msg-" + name) || "";
+  }
+
+  function setState(name) {
+    if (name === state) { return; }
+    state = name;
+    guardian.setAttribute("data-state", name);
+    if (msgEl) { msgEl.textContent = messageFor(name); }
+    if (bubble) {
+      bubble.classList.remove("pop");
+      // 重排一次以重新触发 pop 动画
+      void bubble.offsetWidth;
+      bubble.classList.add("pop");
+    }
+  }
+
+  function backToIdleSoon() {
+    if (idleTimer) { clearTimeout(idleTimer); }
+    idleTimer = setTimeout(function () {
+      idleTimer = 0;
+      if (state === "typing") { setState("idle"); }
+    }, 1600);
+  }
+
+  function onActivity() {
+    if (password && password.type === "text" && document.activeElement === password) {
+      setState("peek");
+      return;
+    }
+    setState("typing");
+    backToIdleSoon();
+  }
+
+  if (form) {
+    form.addEventListener("input", onActivity);
+    form.addEventListener("focusin", function () {
+      if (state !== "sad" && state !== "submit") { onActivity(); }
+    });
+  }
+
   /* 显示 / 隐藏密码：只改 input 的 type，并同步无障碍状态 */
   if (toggle && password) {
     toggle.addEventListener("click", function () {
@@ -656,6 +782,12 @@
       var end = password.value.length;
       password.focus();
       try { password.setSelectionRange(end, end); } catch (e) { /* 某些浏览器对 password 类型不支持 */ }
+      if (show) {
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; }
+        setState("peek");
+      } else {
+        setState("idle");
+      }
     });
   }
 
@@ -665,8 +797,16 @@
       if (submit.disabled) { return; }
       submit.disabled = true;
       submit.setAttribute("aria-busy", "true");
-      submitLabel.textContent = "正在登录…";
+      submitLabel.textContent = "{{.L.SigningIn}}";
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0; }
+      setState("submit");
     });
+  }
+
+  /* 登录失败：服务端回显错误时重绘页面，小守卫立刻沮丧；
+     用户重新敲键就恢复（focusin / input 会接管）。 */
+  if (document.body.getAttribute("data-error")) {
+    setState("sad");
   }
 })();
 </script>

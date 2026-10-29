@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path"
 	"regexp"
 	"strings"
 )
@@ -88,4 +89,39 @@ func firstElementText(text, element string) string {
 		return ""
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// commandHostsTray 判断一条任务动作跑的是不是托盘程序。
+//
+// 只看第一个词（可执行文件）的名字：托盘形态与启动器形态是同一个包里的两个
+// 二进制（dsh-gate-tray.exe 与 dsh-gate.exe），后面还跟着 `tray` 子命令与一堆
+// 选项，整串匹配既脆又难读。
+//
+// 这件事必须靠命令而不是靠记忆：`dsh-gate start` 在托盘形态下不能再走
+// schtasks /Run——任务动作是个长驻进程，任务因此一直是「正在运行」，而它的
+// 多实例策略是 IgnoreNew，触发一次等于什么都没发生。
+func commandHostsTray(command string) bool {
+	program := firstCommandLineToken(command)
+	if program == "" {
+		return false
+	}
+	// 反斜杠先换成斜杠：这段解析跑在任何平台上都只会看到 Windows 的路径，
+	// 用 filepath 反而按当前平台的分隔符切，切不开。
+	base := strings.ToLower(path.Base(strings.ReplaceAll(program, `\`, "/")))
+	return strings.HasPrefix(base, "dsh-gate-tray")
+}
+
+// firstCommandLineToken 取命令行的第一个词（可能是带引号的路径）。
+func firstCommandLineToken(command string) string {
+	text := strings.TrimSpace(command)
+	if text == "" {
+		return ""
+	}
+	if strings.HasPrefix(text, `"`) {
+		if end := strings.Index(text[1:], `"`); end >= 0 {
+			return text[1 : end+1]
+		}
+		return strings.TrimPrefix(text, `"`)
+	}
+	return strings.Fields(text)[0]
 }

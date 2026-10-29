@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,9 +49,29 @@ func captureStdout(t *testing.T, fn func() int) (string, int) {
 	return <-done, code
 }
 
+// isolateRunDir 把运行登记目录隔离到临时目录。
+//
+// registry.DefaultDir 刻意固定为 ~/.dsh-gate/run（不跟随 --state-dir），因为
+// 「本机现在跑着哪个管理端」是机器级事实。于是开发机上只要真的开着管理端，
+// dsh rm / start / stop / restart 就会命中 localEndpoint，把请求转发给那个
+// 真实的管理端——它库里没有测试临时库的实例，删除必然报「找不到实例」。
+// 把 HOME 指到临时目录，登记目录跟着隔离，测试才只跟自己的临时库打交道。
+func isolateRunDir(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
+}
+
 // newPortalDB 造一个空的隔离管理端库路径。
+//
+// 同时隔离运行登记目录：否则本机开着管理端时，删除/启停这类会走本机控制 API
+// 的命令会被转发到真实管理端（见 isolateRunDir）。
 func newPortalDB(t *testing.T) string {
 	t.Helper()
+	isolateRunDir(t)
 	return filepath.Join(t.TempDir(), "portal.db")
 }
 
@@ -70,9 +91,9 @@ func TestExtractLang(t *testing.T) {
 		lang string
 		rest []string
 	}{
-		{[]string{"--lang", "en", "portal", "user", "list"}, "en", []string{"portal", "user", "list"}},
+		{[]string{"--lang", "en", "manage", "user", "list"}, "en", []string{"manage", "user", "list"}},
 		{[]string{"--lang=en", "status"}, "en", []string{"status"}},
-		{[]string{"portal", "user", "list"}, "", []string{"portal", "user", "list"}},
+		{[]string{"manage", "user", "list"}, "", []string{"manage", "user", "list"}},
 		{[]string{"--lang"}, "", []string{"--lang"}}, // 缺取值：原样留下，交给子命令报错
 	}
 	for _, c := range cases {
@@ -87,11 +108,11 @@ func TestPortalCLIUserLifecycle(t *testing.T) {
 	db := newPortalDB(t)
 	withStdin(t, "root-password-123\n")
 
-	if code := run([]string{"portal", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("建管理员应成功，退出码 %d", code)
 	}
 	withStdin(t, "alice-password-123\n")
-	if code := run([]string{"portal", "user", "add", "alice", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "add", "alice", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("建普通用户应成功，退出码 %d", code)
 	}
 
@@ -110,7 +131,7 @@ func TestPortalCLIUserLifecycle(t *testing.T) {
 	}
 
 	// 改角色。
-	if code := run([]string{"portal", "user", "role", "alice", "admin", "--db", db}); code != 0 {
+	if code := run([]string{"manage", "user", "role", "alice", "admin", "--db", db}); code != 0 {
 		t.Fatalf("改角色应成功，退出码 %d", code)
 	}
 	alice, _ = store.UserByName("alice")
@@ -119,20 +140,20 @@ func TestPortalCLIUserLifecycle(t *testing.T) {
 	}
 
 	// 停用 / 启用。
-	if code := run([]string{"portal", "user", "disable", "alice", "--db", db}); code != 0 {
+	if code := run([]string{"manage", "user", "disable", "alice", "--db", db}); code != 0 {
 		t.Fatalf("停用应成功，退出码 %d", code)
 	}
 	alice, _ = store.UserByName("alice")
 	if !alice.Disabled {
 		t.Fatal("alice 应已停用")
 	}
-	if code := run([]string{"portal", "user", "enable", "alice", "--db", db}); code != 0 {
+	if code := run([]string{"manage", "user", "enable", "alice", "--db", db}); code != 0 {
 		t.Fatalf("启用应成功，退出码 %d", code)
 	}
 
 	// 改口令：旧口令失效。
 	withStdin(t, "brand-new-password\n")
-	if code := run([]string{"portal", "user", "passwd", "alice", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "passwd", "alice", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("改口令应成功，退出码 %d", code)
 	}
 	if _, err := store.Authenticate("alice", "brand-new-password"); err != nil {
@@ -140,7 +161,7 @@ func TestPortalCLIUserLifecycle(t *testing.T) {
 	}
 
 	// 删除。
-	if code := run([]string{"portal", "user", "rm", "alice", "--db", db}); code != 0 {
+	if code := run([]string{"manage", "user", "rm", "alice", "--db", db}); code != 0 {
 		t.Fatalf("删除应成功，退出码 %d", code)
 	}
 	if _, err := store.UserByName("alice"); err == nil {
@@ -151,15 +172,15 @@ func TestPortalCLIUserLifecycle(t *testing.T) {
 func TestPortalCLILastAdminProtected(t *testing.T) {
 	db := newPortalDB(t)
 	withStdin(t, "root-password-123\n")
-	if code := run([]string{"portal", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("建管理员失败: %d", code)
 	}
 
 	// 降级 / 停用 / 删除唯一的管理员都必须失败（退出码 1），且状态不变。
 	for _, args := range [][]string{
-		{"portal", "user", "role", "root", "user", "--db", db},
-		{"portal", "user", "disable", "root", "--db", db},
-		{"portal", "user", "rm", "root", "--db", db},
+		{"manage", "user", "role", "root", "user", "--db", db},
+		{"manage", "user", "disable", "root", "--db", db},
+		{"manage", "user", "rm", "root", "--db", db},
 	} {
 		if code := run(args); code != 1 {
 			t.Errorf("%v 应被拒绝（退出码 1），实际 %d", args, code)
@@ -175,16 +196,16 @@ func TestPortalCLILastAdminProtected(t *testing.T) {
 func TestPortalCLIInstancesAndGrants(t *testing.T) {
 	db := newPortalDB(t)
 	withStdin(t, "root-password-123\n")
-	if code := run([]string{"portal", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("建管理员失败: %d", code)
 	}
 	withStdin(t, "alice-password-123\n")
-	if code := run([]string{"portal", "user", "add", "alice", "--db", db, "--password-stdin"}); code != 0 {
+	if code := run([]string{"manage", "user", "add", "alice", "--db", db, "--password-stdin"}); code != 0 {
 		t.Fatalf("建普通用户失败: %d", code)
 	}
 	home := filepath.Join(t.TempDir(), "dsh-alice")
 
-	if code := run([]string{"portal", "instance", "add", "alice-main", "--dsh-home", home, "--owner", "root", "--db", db}); code != 0 {
+	if code := run([]string{"dsh", "add", "alice-main", "--dsh-home", home, "--owner", "root", "--db", db}); code != 0 {
 		t.Fatalf("建实例应成功，退出码 %d", code)
 	}
 	store := openStore(t, db)
@@ -207,14 +228,14 @@ func TestPortalCLIInstancesAndGrants(t *testing.T) {
 	if _, err := store.Accessible(alice, inst.ID); err == nil {
 		t.Fatal("授权前 alice 不该能访问")
 	}
-	if code := run([]string{"portal", "grant", "add", "alice", "alice-main", "--db", db}); code != 0 {
+	if code := run([]string{"manage", "grant", "add", "alice", "alice-main", "--db", db}); code != 0 {
 		t.Fatalf("授权应成功，退出码 %d", code)
 	}
 	if _, err := store.Accessible(alice, inst.ID); err != nil {
 		t.Fatalf("授权后 alice 应可访问: %v", err)
 	}
 	// 取消授权时用不透明 id 再走一遍（两种写法都要认）。
-	if code := run([]string{"portal", "grant", "rm", "alice", inst.ID, "--db", db}); code != 0 {
+	if code := run([]string{"manage", "grant", "rm", "alice", inst.ID, "--db", db}); code != 0 {
 		t.Fatalf("取消授权应成功，退出码 %d", code)
 	}
 	if _, err := store.Accessible(alice, inst.ID); err == nil {
@@ -222,10 +243,10 @@ func TestPortalCLIInstancesAndGrants(t *testing.T) {
 	}
 
 	// 实例列表与删除。
-	if code := run([]string{"portal", "instance", "list", "--db", db}); code != 0 {
+	if code := run([]string{"dsh", "list", "--db", db}); code != 0 {
 		t.Fatalf("实例列表应成功，退出码 %d", code)
 	}
-	if code := run([]string{"portal", "instance", "rm", "alice-main", "--db", db}); code != 0 {
+	if code := run([]string{"dsh", "rm", "alice-main", "--db", db}); code != 0 {
 		t.Fatalf("删除实例应成功，退出码 %d", code)
 	}
 	if _, err := store.InstanceByName("alice-main"); err == nil {
@@ -241,12 +262,12 @@ func TestPortalCLIUsageErrors(t *testing.T) {
 	}{
 		{[]string{"portal"}, 2},                                          // 缺子命令
 		{[]string{"portal", "nope"}, 2},                                  // 未知子命令
-		{[]string{"portal", "user"}, 2},                                  // 缺 user 子命令
-		{[]string{"portal", "user", "add", "--db", db}, 2},               // 缺用户名
-		{[]string{"portal", "user", "role", "x", "root", "--db", db}, 2}, // 角色非法
-		{[]string{"portal", "instance", "add", "x", "--db", db}, 2},      // 缺 --dsh-home
-		{[]string{"portal", "instance", "rm", "--db", db}, 2},            // 缺实例名
-		{[]string{"portal", "grant"}, 2},                                 // 缺 grant 子命令
+		{[]string{"manage", "user"}, 2},                                  // 缺 user 子命令
+		{[]string{"manage", "user", "add", "--db", db}, 2},               // 缺用户名
+		{[]string{"manage", "user", "role", "x", "root", "--db", db}, 2}, // 角色非法
+		{[]string{"dsh", "add", "--db", db}, 2},                          // 缺实例名
+		{[]string{"dsh", "rm", "--db", db}, 2},                           // 缺实例名
+		{[]string{"manage", "grant"}, 2},                                 // 缺 grant 子命令
 		{[]string{"nope"}, 2},                                            // 顶层未知子命令
 	}
 	for _, c := range cases {
@@ -261,7 +282,7 @@ func TestPortalCLIEnglishOutput(t *testing.T) {
 	withStdin(t, "root-password-123\n")
 
 	out, code := captureStdout(t, func() int {
-		return run([]string{"--lang", "en", "portal", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"})
+		return run([]string{"--lang", "en", "manage", "user", "add", "root", "--role", "admin", "--db", db, "--password-stdin"})
 	})
 	if code != 0 {
 		t.Fatalf("建用户应成功，退出码 %d", code)
@@ -277,7 +298,7 @@ func TestPortalCLIEnglishOutput(t *testing.T) {
 	db2 := newPortalDB(t)
 	withStdin(t, "root-password-123\n")
 	out, code = captureStdout(t, func() int {
-		return run([]string{"--lang", "zh-CN", "portal", "user", "add", "root", "--role", "admin", "--db", db2, "--password-stdin"})
+		return run([]string{"--lang", "zh-CN", "manage", "user", "add", "root", "--role", "admin", "--db", db2, "--password-stdin"})
 	})
 	if code != 0 || !strings.Contains(out, "已创建") {
 		t.Errorf("默认应输出中文，实际退出码 %d、输出 %q", code, out)
@@ -285,7 +306,7 @@ func TestPortalCLIEnglishOutput(t *testing.T) {
 }
 
 func TestPortalCLIEnglishHelp(t *testing.T) {
-	out, code := captureStdout(t, func() int { return run([]string{"--lang", "en", "portal", "--help"}) })
+	out, code := captureStdout(t, func() int { return run([]string{"--lang", "en", "manage", "--help"}) })
 	if code != 0 {
 		t.Fatalf("portal --help 应回 0，实际 %d", code)
 	}
@@ -296,8 +317,38 @@ func TestPortalCLIEnglishHelp(t *testing.T) {
 		t.Errorf("英文帮助缺少子命令说明，实际 %q", out)
 	}
 
-	outZH, _ := captureStdout(t, func() int { return run([]string{"portal", "--help"}) })
+	outZH, _ := captureStdout(t, func() int { return run([]string{"manage", "--help"}) })
 	if !strings.Contains(outZH, "用法: dsh-gate manage") {
 		t.Errorf("中文帮助没出来，实际 %q", outZH)
+	}
+}
+
+// TestPortalCLIInstanceAddBlankHomeUsesDefault 验证 CLI 建实例时不给
+// --dsh-home 也能建成功，落到 dsh 的默认目录（展开后的绝对路径）。
+func TestPortalCLIInstanceAddBlankHomeUsesDefault(t *testing.T) {
+	db := newPortalDB(t)
+	home := portal.DefaultDshHome()
+	if home == "" {
+		t.Skip("本机取不到家目录，默认值不可用")
+	}
+
+	if code := run([]string{"dsh", "add", "blank-home", "--db", db}); code != 0 {
+		t.Fatalf("不给 --dsh-home 应能建实例，退出码 %d", code)
+	}
+
+	store, err := portal.Open(db)
+	if err != nil {
+		t.Fatalf("打开库失败: %v", err)
+	}
+	defer store.Close()
+	inst, err := store.InstanceByName("blank-home")
+	if err != nil {
+		t.Fatalf("实例应已创建: %v", err)
+	}
+	if inst.DshHome != home {
+		t.Errorf("实例目录应为 %q，实际 %q", home, inst.DshHome)
+	}
+	if strings.HasPrefix(inst.DshHome, "~") {
+		t.Errorf("落库的必须是展开后的绝对路径，实际 %q", inst.DshHome)
 	}
 }

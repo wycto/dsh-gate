@@ -40,6 +40,35 @@ const dshPackage = "@deepseek-ai/dsh"
 // 发布平台原生绑定无法启动，而 0.1.7-rc.2 与 0.1.5-rc.3 可正常启动。
 var fallbackVersions = []string{"0.1.7-rc.2", "0.1.5-rc.3"}
 
+// dshVersionPattern 是「版本或 dist-tag」允许的字符。
+//
+// 为什么要卡字符：这个值会被拼进启动命令（`npx --yes @deepseek-ai/dsh@<值>`）
+// 并原样存进实例记录，之后由 SplitCommand 拆开直接 exec。允许空格或引号就等于
+// 允许往 npx 的参数表里塞东西——比如 `1.0.0 --registry=http://evil` 会让网关从
+// 别人指定的源装包。字母数字与 . - + ~ ^ * 已经覆盖版本号、预发布号、构建元数据
+// 与 dist-tag（next / alpha）以及 `^1.2` `~0.2` 这类范围写法，够用。
+var dshVersionPattern = regexp.MustCompile(`^[0-9A-Za-z.*+~^-]+$`)
+
+// ValidateDshVersion 校验用户填的 dsh 版本 / dist-tag，返回去掉首尾空白的值；
+// 空串是合法值，表示「跟随 latest」。
+func ValidateDshVersion(text string) (string, error) {
+	value := strings.TrimSpace(text)
+	if value == "" {
+		return "", nil
+	}
+	if !dshVersionPattern.MatchString(value) {
+		return "", fmt.Errorf("dsh 版本 %q 不合法：只能包含字母、数字与 . - + ~ ^ *"+
+			"（版本号如 0.2.2-alpha.2，或 dist-tag 如 next、alpha）；留空表示跟随 latest", text)
+	}
+	// 以 - 开头单独再拦一次：字符集里有 -（0.2.1-rc.4 要用），但版本名永远不会
+	// 以它开头。而 `-` 开头的串在命令行里是选项的样子——这一串最终会拼进启动
+	// 命令并被拆开执行，长得像选项就该拒绝，不赌它这次是被拼在包名后面。
+	if strings.HasPrefix(value, "-") {
+		return "", fmt.Errorf("dsh 版本 %q 不合法：版本名或 dist-tag 不以 - 开头（如 0.2.2-alpha.2、next、alpha）；留空表示跟随 latest", text)
+	}
+	return value, nil
+}
+
 // nodeVersionPattern 从「v20.12.0」这类纯净版本文本里取主次版本。
 var nodeVersionPattern = regexp.MustCompile(`v?(\d+)\.(\d+)`)
 
@@ -116,8 +145,23 @@ func EnsureDSH(ctx context.Context, log *slog.Logger, registry string) (Resoluti
 // `#!/usr/bin/env node`，只把 npx 塞进命令行、不把它的 bin 目录放进 PATH，
 // 子进程照样找不到 node。
 func EnsureDSHWithBin(ctx context.Context, log *slog.Logger, registry, extraBin string) (Resolution, error) {
+	return EnsureDSHVersion(ctx, log, registry, extraBin, "")
+}
+
+// EnsureDSHVersion 与 EnsureDSHWithBin 相同，但把要装的 dsh 版本钉在 version。
+//
+// version 可以是版本号（`0.2.2-alpha.2`）或 dist-tag（`next`、`alpha`），空表示
+// 跟随 latest。**钉住时不再回退**：候选只有用户点名的那一个，装不上就直接报装不上。
+// 这是与「latest 跑不起来就退回实测可用版本」刻意相反的两条路——自动回退的前提是
+// 「用户没说要哪个版本，能跑就行」；用户已经点名了版本，悄悄换成另一个版本装上去，
+// 他会拿着一个自己以为没有装的版本在跑，比装不上更难查。
+func EnsureDSHVersion(ctx context.Context, log *slog.Logger, registry, extraBin, version string) (Resolution, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
+	}
+	pinned, err := ValidateDshVersion(version)
+	if err != nil {
+		return Resolution{}, err
 	}
 	npx := lookPathAny("npx", "npx.cmd")
 	if npx == "" && extraBin == "" {
@@ -130,7 +174,7 @@ func EnsureDSHWithBin(ctx context.Context, log *slog.Logger, registry, extraBin 
 		npx = filepath.Join(extraBin, "npx")
 	}
 
-	versions := append([]string{""}, fallbackVersions...)
+	versions := versionPlan(pinned)
 	registries := registryPlan(registry)
 
 	var (
@@ -148,31 +192,63 @@ func EnsureDSHWithBin(ctx context.Context, log *slog.Logger, registry, extraBin 
 		if i > 0 {
 			log.Warn("上一个 npm 源没有成功，改用镜像源重试", "registry", source)
 		}
-		for _, version := range versions {
-			command := npxCommand(npx, version, source)
+		for _, candidate := range versions {
+			command := npxCommand(npx, candidate, source)
 			output, err := smokeTestWithBin(ctx, command, source, extraBin)
 			if err == nil {
 				if i > 0 {
 					log.Info("dsh 已从镜像源拿到并验证通过", "registry", source, "command", redact(command))
 				}
-				if version != "" {
+				if pinned == "" && candidate != "" {
 					log.Info("最新版 dsh 在当前环境无法启动，已自动改用实测可用的固定版本（仍是官方 npx 命令，仅固定版本；上游修复后重启网关即恢复 latest）",
-						"version", version, "command", redact(command))
+						"version", candidate, "command", redact(command))
 				}
 				return Resolution{Command: command, Registry: source}, nil
 			}
 			lastOutput, lastErr = output, err
 			if isNetworkFailure(err, output) {
 				// 源不通是整源的问题，换版本没用：直接换下一个源。
-				log.Warn("这个源拉不动 dsh，准备换源", "registry", source, "version", version, "err", errText(err))
+				log.Warn("这个源拉不动 dsh，准备换源", "registry", source, "version", candidate, "err", errText(err))
 				sourceFailed = true
 				break
 			}
+			if pinned != "" {
+				// 钉住时没有下一个候选可试，说清楚「就是这个版本」。
+				log.Warn("指定版本冒烟未通过", "version", pinned, "command", redact(command), "err", errText(err))
+				continue
+			}
 			log.Warn("冒烟未通过，尝试实测可用的固定版本",
-				"version", version, "command", redact(command), "err", errText(err))
+				"version", candidate, "command", redact(command), "err", errText(err))
 		}
 	}
+	if pinned != "" {
+		return Resolution{}, pinnedGuidance(pinned, lastOutput, lastErr)
+	}
 	return Resolution{}, smokeGuidance(lastOutput, lastErr)
+}
+
+// versionPlan 给出要依次尝试的版本。空串表示 latest（npx 不写 @ 时就是 latest）。
+func versionPlan(pinned string) []string {
+	if pinned != "" {
+		return []string{pinned}
+	}
+	return append([]string{""}, fallbackVersions...)
+}
+
+// pinnedGuidance 是「用户点名要的版本装不上/跑不起来」的指引。
+//
+// 不复用 smokeGuidance 的运行时兼容分支：那些结论是按「网关自己挑的版本」写的，
+// 而这里第一个要排除的可能性是版本本身不存在（打错字、那个 dist-tag 在这个源上
+// 没有）。所以把原始报错原样交出去，并给出核对版本的命令。
+func pinnedGuidance(version, output string, err error) error {
+	text := strings.TrimSpace(output)
+	if text == "" && err != nil {
+		text = strings.TrimSpace(err.Error())
+	}
+	return fmt.Errorf("指定的 dsh 版本 %s 没能通过验证（%v）。原始输出（证据）：%s。"+
+		"先核对版本名：npm view %s dist-tags 看有哪些标签，npm view %s versions --json 看有哪些版本号；"+
+		"版本留空则跟随 latest",
+		version, errText(err), tailText(text, 300), dshPackage, dshPackage)
 }
 
 // registryPlan 给出要依次尝试的源。
@@ -184,6 +260,15 @@ func registryPlan(explicit string) []string {
 		return []string{explicit}
 	}
 	return []string{"", RegistryMirror}
+}
+
+// packageSpec 返回带版本的包名（`@deepseek-ai/dsh@next`）；version 为空时就是
+// 裸包名（npm 自己按 latest 解）。pnpm 安装用的是这个形式。
+func packageSpec(version string) string {
+	if version = strings.TrimSpace(version); version != "" {
+		return dshPackage + "@" + version
+	}
+	return dshPackage
 }
 
 // npxCommand 拼一条 npx 命令；version 为空表示 latest。
@@ -253,6 +338,7 @@ func smokeTestWithBin(ctx context.Context, command, registry, extraBin string) (
 	smokeCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(smokeCtx, args[0], args[1:]...)
+	applyProbeAttrs(cmd)
 	env := npmEnv(os.Environ(), registry)
 	if extraBin != "" {
 		env = setEnv(env, "PATH", prependPath(extraBin, envValue(env, "PATH")))

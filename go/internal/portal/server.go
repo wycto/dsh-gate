@@ -54,8 +54,15 @@ type ServerOptions struct {
 	// Installer 提供 dsh 环境检测与安装能力（管理台的「创建实例」用它）。
 	// 为 nil 时管理台不显示安装面板——单实例模式、或没接运行环境时就是这样。
 	Installer Installer
+	// Lifespan 提供单个实例的启停（管理台的启动 / 停止 / 重启按钮用它）。
+	// 为 nil 时不显示这些按钮：没有运行时句柄就没法真的去拉进程，
+	// 摆一个按了没反应的按钮比不摆更糟。
+	Lifespan Lifespan
 	// Logger 收日志；为 nil 时丢弃。
 	Logger *slog.Logger
+	// LocalToken 是本机控制 API 的共享密钥（CLI 从 <状态目录>/portal.token 读）。
+	// 为空表示不开放本机控制入口——单测与嵌入式使用时不需要它。
+	LocalToken string
 }
 
 // Server 是管理端的 HTTP 处理器。
@@ -64,6 +71,10 @@ type Server struct {
 	log       *slog.Logger
 	page      *template.Template
 	adminPage *template.Template
+	// liveScript 是管理台页面内联的自动刷新脚本，liveCSP 是放行它的完整
+	// Content-Security-Policy（script-src 里带着脚本内容的 sha256）。
+	liveScript template.JS
+	liveCSP    string
 
 	mu     sync.Mutex
 	mounts map[string]*mountproxy.Proxy
@@ -85,6 +96,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	liveScript, liveHash, err := assets.AdminLiveScript()
+	if err != nil {
+		return nil, err
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -92,6 +107,12 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	return &Server{
 		opts: opts, log: logger,
 		page: tmpl, adminPage: adminTmpl,
+		liveScript: template.JS(liveScript),
+		// 管理台与登录页的差别只有这三条：放行这一个脚本的哈希、让它访问
+		// 同源的实时状态接口，以及允许导航图标用的 data: 遮罩图（与登录页、
+		// 管理端首页同一份规则）。别的来源、别的脚本仍然是 default-src 'none'。
+		liveCSP: "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src '" + liveHash +
+			"'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		mounts: map[string]*mountproxy.Proxy{},
 	}, nil
 }
@@ -99,14 +120,25 @@ func NewServer(opts ServerOptions) (*Server, error) {
 // Handler 返回管理端的完整处理器：鉴权在最外层，未登录的请求根本进不到路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc(LocalAPIPath, s.handleLocalAPI)
 	mux.HandleFunc(APIMePath, s.handleAPIMe)
 	mux.HandleFunc(AdminStatePath, s.handleAdminJSON)
 	mux.HandleFunc(AdminActionPath, s.handleAdminJSON)
+	mux.HandleFunc(AdminLivePath, s.handleAdminJSON)
 	mux.HandleFunc(MountPrefix, s.handleMount)
 	mux.HandleFunc(AdminPath, s.handleAdmin)
 	mux.HandleFunc(AdminPath+"/", s.handleAdmin)
 	mux.HandleFunc("/", s.handleIndex)
-	return s.opts.Gate.Handler(mux)
+	// 本机控制 API 走 token 鉴权、不过登录门：它是给本机 CLI 用的，CLI 没有
+	// 管理员口令也会调它；拒绝非回环来源与错 token 都在处理函数里做。
+	guarded := s.opts.Gate.Handler(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == LocalAPIPath {
+			s.handleLocalAPI(w, r)
+			return
+		}
+		guarded.ServeHTTP(w, r)
+	})
 }
 
 // AdminEnabled 报告管理台是否可用。管理端自带管理台，因此恒为 true——
@@ -150,6 +182,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := s.lang(w, r)
+	theme := s.opts.Gate.Theme(w, r)
+	scheme := s.opts.Gate.Scheme(w, r)
+	style := s.opts.Gate.Style(w, r)
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, i18n.T(lang, i18n.KeyLoginErrMethod), http.StatusMethodNotAllowed)
@@ -193,6 +228,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		OtherLang     string
 		OtherLangHref string
 		SignOutHref   string
+		// 配色与布局（与登录页 / 管理台同一套模型：明暗三态 + 方案四选一 + 布局三选一）。
+		Theme       string
+		ThemeLabel  string
+		Themes      []auth.ThemeOption
+		Scheme      string
+		SchemeLabel string
+		Schemes     []auth.ThemeOption
+		Style       string
+		StyleLabel  string
+		Styles      []auth.ThemeOption
 	}{
 		Lang:          string(lang),
 		Title:         i18n.T(lang, i18n.KeyPortalTitle),
@@ -209,6 +254,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		OtherLang:     otherLangLabel(lang),
 		OtherLangHref: "?lang=" + string(otherLang(lang)),
 		SignOutHref:   auth.PathLogout,
+		Theme:         string(theme),
+		ThemeLabel:    i18n.T(lang, i18n.KeyThemeLabel),
+		Themes:        auth.ThemeOptions(r, theme, lang),
+		Scheme:        string(scheme),
+		SchemeLabel:   i18n.T(lang, i18n.KeySchemeLabel),
+		Schemes:       auth.SchemeOptions(r, scheme, lang),
+		Style:         string(style),
+		StyleLabel:    i18n.T(lang, i18n.KeyStyleLabel),
+		Styles:        auth.StyleOptions(r, style, lang),
 	}
 
 	body := &strings.Builder{}

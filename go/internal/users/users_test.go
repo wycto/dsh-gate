@@ -149,6 +149,35 @@ func TestStoreRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// 账号是机器接口（日志 / Cookie / 命令行 / 审计），限定 ASCII；姓名给人看，
+// 允许中文。两条规则各测各的，别互相靠。
+func TestValidateNameIsAsciiAccount(t *testing.T) {
+	for _, ok := range []string{"admin", "a", "Z9", "li.si", "wang_wu", "zhang-san", "ops.team_2"} {
+		if err := users.ValidateName(ok); err != nil {
+			t.Errorf("合法账号 %q 被拒: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "张三", "a b", "_lead", ".hidden", "-dash", "user@x", "用户admin", "ad\nmin"} {
+		if err := users.ValidateName(bad); err == nil {
+			t.Errorf("非法账号 %q 应被拒绝", bad)
+		}
+	}
+}
+
+func TestValidateDisplayNameAllowsChinese(t *testing.T) {
+	for _, ok := range []string{"", "  ", "张三", "魏 一", "李四（公司）", "O'Brien"} {
+		if err := users.ValidateDisplayName(ok); err != nil {
+			t.Errorf("合法姓名 %q 被拒: %v", ok, err)
+		}
+	}
+	if err := users.ValidateDisplayName(strings.Repeat("名", 65)); err == nil {
+		t.Error("过长姓名应被拒绝")
+	}
+	if err := users.ValidateDisplayName("坏\x00字符"); err == nil {
+		t.Error("含控制字符的姓名应被拒绝")
+	}
+}
+
 func TestValidatePasswordCountsRunes(t *testing.T) {
 	// 中文口令按字符数算长度，否则一个 4 字口令会被 UTF-8 字节数误判为「太长」，
 	// 而实际上它完全够用。

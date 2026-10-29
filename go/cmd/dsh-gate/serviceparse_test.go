@@ -15,11 +15,11 @@ Description=DSH 局域网网关
 Type=simple
 User=root
 WorkingDirectory=/root
-ExecStart=/usr/local/bin/dsh-gate run --log-json --dsh-home /www/wwwroot/dsh-test --name test --port 12081
+ExecStart=/usr/local/bin/dsh-gate start --foreground --host 0.0.0.0 --port 12081 --state-dir /srv/state
 Restart=always
 `
 	got := execStartFromUnit(unit)
-	want := "/usr/local/bin/dsh-gate run --log-json --dsh-home /www/wwwroot/dsh-test --name test --port 12081"
+	want := "/usr/local/bin/dsh-gate start --foreground --host 0.0.0.0 --port 12081 --state-dir /srv/state"
 	if got != want {
 		t.Errorf("ExecStart = %q，期望 %q", got, want)
 	}
@@ -37,8 +37,8 @@ func TestProgramArgumentsFromPlist(t *testing.T) {
     <key>ProgramArguments</key>
     <array>
       <string>/usr/local/bin/dsh-gate</string>
-      <string>run</string>
-      <string>--log-json</string>
+      <string>start</string>
+      <string>--foreground</string>
       <string>--name</string>
       <string>personal&amp;work</string>
     </array>
@@ -48,7 +48,7 @@ func TestProgramArgumentsFromPlist(t *testing.T) {
 </plist>
 `
 	got := programArgumentsFromPlist(plist)
-	want := "/usr/local/bin/dsh-gate run --log-json --name personal&work"
+	want := "/usr/local/bin/dsh-gate start --foreground --name personal&work"
 	if got != want {
 		t.Errorf("ProgramArguments = %q，期望 %q", got, want)
 	}

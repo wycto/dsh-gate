@@ -2,88 +2,38 @@
 <!--
   管理台：用户 CRUD、授权矩阵、审计。
 
-  刻意**不用 JavaScript**：所有操作都是普通表单 POST + 303 回跳（PRG）。
-  好处是页面可以沿用与登录页/管理端首页同一套严格 CSP（default-src 'none'），
-  也不会出现「脚本出错导致按钮点了没反应」这类问题；代价是每次操作刷新一次页面。
+  写操作**不用 JavaScript**：所有操作都是普通表单 POST + 303 回跳（PRG），
+  不会出现「脚本出错导致按钮点了没反应」这类问题。唯一的脚本是页面底部的
+  自动刷新：安装进程要跑十几分钟，逼用户手动刷新才能看到进度是不合理的。
+  它只轮询同源的 /_portal/api/admin/live，按 data-* 钩子改文本、class、hidden，
+  **不整页重载**——正在填的输入框、展开的折叠面板、选中的分页都不会被打断。
+  CSP 仍然很紧：default-src 'none'，只按 sha256 放行这一段脚本并允许同源 fetch
+  （导航图标的 data: 遮罩图沿用登录页那份例外）。
 
   内容多，所以分了五页（用户 / 实例授权 / 实例 / 运行环境 / 审计），导航是一块
   悬浮玻璃面板：宽屏固定在左侧、窄屏沉到底部。切页**依然没有脚本**——靠一组
   隐藏的单选钮 + :has() 纯 CSS 完成，点菜单不刷新；服务端用 ?tab= 记住当前页，
   表单提交（PRG）后仍回到提交前那一页。不支持 :has() 的老浏览器整体退回
   一页平铺（与改造前相同），导航自动隐藏。
+
+  语言与配色同样由服务端注入：<html data-theme> 缺省即跟随系统，页脚的配色
+  切换是三个普通链接（带 ?theme= 重新请求），也不需要脚本。
 -->
-<html lang="{{.Lang}}">
+<html lang="{{.Lang}}"{{if .Theme}} data-theme="{{.Theme}}"{{end}} data-scheme="{{.Scheme}}" data-style="{{.Style}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>{{.Title}}</title>
 <style>
-:root{
-  /* ---------- macOS 深色（默认）----------
-     整体是一扇「窗口」：标题栏、内容区、底部 Dock。窗口用系统材质（半透明 +
-     背景模糊），所以背后必须是一张壁纸——纯色底上模糊是看不出来的。 */
-  --desktop-1:#12121a;
-  --desktop-2:#1b1b26;
-  --window:rgba(44,44,50,.62);
-  --titlebar:rgba(58,58,66,.52);
-  --content:rgba(34,34,40,.34);
-  --card:rgba(255,255,255,.045);
-  --card-2:rgba(255,255,255,.07);
-  --field:rgba(0,0,0,.28);
-  --line:rgba(255,255,255,.10);
-  --line-strong:rgba(255,255,255,.20);
-  --text:#f5f5f7;
-  --muted:#a1a1aa;
-  --faint:#71717a;
-  --accent:#0a84ff;
-  --accent-2:#5e5ce6;
-  --ok:#30d158;
-  --warning:#ffd60a;
-  --danger:#ff453a;
-  --radius-window:14px;
-  --radius-card:12px;
-  --radius-control:7px;
-  --shadow-window:0 40px 90px -40px rgba(0,0,0,.95),
-                  0 1px 0 rgba(255,255,255,.10) inset;
-  --shadow-dock:0 26px 60px -24px rgba(0,0,0,.85),
-                0 1px 0 rgba(255,255,255,.18) inset;
-  --ease:cubic-bezier(.32,.72,.24,1);
-  --gap:clamp(14px,1.1vw,22px);
-}
-@media (prefers-color-scheme: light){
-  :root{
-    --desktop-1:#c9d8f0;
-    --desktop-2:#e8dff5;
-    --window:rgba(248,248,250,.74);
-    --titlebar:rgba(236,236,240,.62);
-    --content:rgba(255,255,255,.42);
-    --card:rgba(0,0,0,.035);
-    --card-2:rgba(0,0,0,.055);
-    --field:rgba(255,255,255,.75);
-    --line:rgba(0,0,0,.10);
-    --line-strong:rgba(0,0,0,.20);
-    --text:#1d1d1f;
-    --muted:#6e6e73;
-    --faint:#8e8e93;
-    --accent:#007aff;
-    --accent-2:#5856d6;
-    --ok:#34c759;
-    --warning:#ffcc00;
-    --danger:#ff3b30;
-    --shadow-window:0 30px 70px -40px rgba(30,40,80,.45),
-                    0 1px 0 rgba(255,255,255,.9) inset;
-    --shadow-dock:0 20px 46px -22px rgba(30,40,80,.45),
-                  0 1px 0 rgba(255,255,255,.9) inset;
-  }
-}
-/* 不支持背景模糊时把窗口调回不透明：半透明 + 不模糊 = 看不清字。 */
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  :root{--window:#1c1c20;--titlebar:#26262a;--content:#1a1a1e}
-  @media (prefers-color-scheme: light){:root{--window:#f5f5f7;--titlebar:#ececf0;--content:#fbfbfd}}
-}
+/* 配色令牌（4 方案 × 明暗，含派生色）来自共享文件 theme.css，三页同一份。
+   这里只留本页的版式与组件样式。 */
+{{template "dsh-theme" .}}
 
 *{box-sizing:border-box}
+/* 自动刷新靠 hidden 开关状态格子，而下面不少组件自带 display:flex/inline-flex
+   ——作者样式优先于 UA 的 [hidden]{display:none}，不加 !important 就藏不住。 */
+[hidden]{display:none !important}
 ::selection{background:color-mix(in srgb,var(--accent) 35%,transparent);color:var(--text)}
 *{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--line-strong) 80%,transparent) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}
@@ -97,43 +47,37 @@ body{
               "PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
   font-size:clamp(13px,.3vw + 12.4px,14.5px);line-height:1.5;
   min-height:100svh;display:flex;justify-content:center;align-items:stretch;
-  padding:clamp(14px,2.2vh,30px) clamp(16px,2.4vw,44px) calc(96px + env(safe-area-inset-bottom));
+  padding:clamp(14px,2.2vh,30px) clamp(16px,2.4vw,44px) calc(64px + env(safe-area-inset-bottom));
   position:relative;overflow-x:hidden;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
 }
 
 /* ---------------- 桌面壁纸 ----------------
-   macOS 的窗口是「浮在桌面上的」。壁纸用几团大而柔的色块模拟偏光渐变，
-   窗口的半透明材质才有东西可透。 */
+   窗口是「浮在桌面上的」：几团大而柔的色块模拟偏光渐变，窗口的半透明
+   材质才有东西可透。四团光斑的颜色来自方案令牌（--aurora-*），
+   换方案 / 换明暗自动跟着走。 */
 .bg{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none;
     background:linear-gradient(165deg,var(--desktop-1),var(--desktop-2))}
-.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:.72;
+.bg span{position:absolute;display:block;border-radius:50%;filter:blur(80px);opacity:var(--aurora-op);
          animation:drift 30s ease-in-out infinite alternate;will-change:transform}
 .bg span:nth-child(1){width:52vw;height:52vw;left:-14vw;top:-20vw;
-  background:radial-gradient(circle at 45% 45%,#3b5bdb,transparent 66%)}
+  background:radial-gradient(circle at 45% 45%,var(--aurora-1),transparent 66%)}
 .bg span:nth-child(2){width:44vw;height:44vw;right:-12vw;top:-6vw;animation-delay:-8s;
-  background:radial-gradient(circle at 55% 45%,#8b3dff,transparent 66%)}
+  background:radial-gradient(circle at 55% 45%,var(--aurora-2),transparent 66%)}
 .bg span:nth-child(3){width:56vw;height:56vw;left:14vw;bottom:-34vw;animation-delay:-16s;
-  background:radial-gradient(circle at 50% 50%,#0e7490,transparent 70%)}
-.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:.4;
-  background:radial-gradient(circle at 50% 50%,#db2777,transparent 68%)}
+  background:radial-gradient(circle at 50% 50%,var(--aurora-3),transparent 70%)}
+.bg span:nth-child(4){width:32vw;height:32vw;right:4vw;bottom:-18vw;animation-delay:-12s;opacity:calc(var(--aurora-op) * .66);
+  background:radial-gradient(circle at 50% 50%,var(--aurora-4),transparent 68%)}
 @keyframes drift{
   from{transform:translate3d(0,0,0) scale(1)}
   to{transform:translate3d(2vw,2.5vh,0) scale(1.06)}
-}
-@media (prefers-color-scheme: light){
-  .bg span{opacity:.5}
-  .bg span:nth-child(1){background:radial-gradient(circle at 45% 45%,#7aa2ff,transparent 66%)}
-  .bg span:nth-child(2){background:radial-gradient(circle at 55% 45%,#c4a4ff,transparent 66%)}
-  .bg span:nth-child(3){background:radial-gradient(circle at 50% 50%,#7de3e0,transparent 70%)}
-  .bg span:nth-child(4){background:radial-gradient(circle at 50% 50%,#ffb3d1,transparent 68%)}
 }
 
 /* ---------------- 窗口 ---------------- */
 .window{
   width:100%;max-width:1560px;
   display:flex;flex-direction:column;
-  min-height:calc(100svh - clamp(14px,2.2vh,30px) - 96px);
+  min-height:calc(100svh - clamp(14px,2.2vh,30px) - 64px);
   background:var(--window);
   border:1px solid var(--line);
   border-radius:var(--radius-window);
@@ -156,7 +100,8 @@ body{
 .tb-right{display:flex;align-items:center;gap:6px;justify-self:end;min-width:0}
 .titlebar .title{justify-self:center;white-space:nowrap}
 .titlebar .mark{width:22px;height:22px;flex:none;display:grid;place-items:center;
-  border-radius:6px;color:#fff;background:linear-gradient(160deg,#4f9dff,#7c5cff);
+  border-radius:6px;color:var(--accent-ink);
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));
   box-shadow:0 1px 0 rgba(255,255,255,.35) inset}
 .titlebar .mark svg{width:13px;height:13px}
 .titlebar .title{margin:0;font-size:.95em;font-weight:600;letter-spacing:-.005em}
@@ -170,13 +115,6 @@ a.plain{display:inline-flex;align-items:center;padding:4px 9px;border-radius:6px
   color:var(--muted);text-decoration:none;transition:background-color .15s var(--ease),color .15s var(--ease)}
 a.plain:hover{color:var(--text);background:var(--card-2)}
 a.plain:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-/* macOS 的窗口控制点：绿黄红。用户要求放在右上角，所以不做左上角的红绿灯；
-   它们只是装饰，不参与交互（aria-hidden + 无指针事件），避免出现点了没反应的假按钮。 */
-.traffic{display:flex;align-items:center;gap:8px;margin-left:8px;pointer-events:none}
-.traffic i{width:12px;height:12px;border-radius:50%;box-shadow:0 0 0 .5px rgba(0,0,0,.25) inset}
-.traffic i:nth-child(1){background:#ff5f57}
-.traffic i:nth-child(2){background:#febc2e}
-.traffic i:nth-child(3){background:#28c840}
 
 /* ---------------- 窗口内容 ---------------- */
 .window-body{flex:1;display:flex;flex-direction:column;min-height:0;
@@ -199,10 +137,10 @@ body:has(#tab-audit:checked) #panel-audit{display:block}
 /* ---------------- 底部 Dock ----------------
    macOS 的 Dock：居中、玻璃、悬停放大、当前页下方一个小圆点。 */
 .dock{
-  position:fixed;z-index:20;left:50%;bottom:calc(12px + env(safe-area-inset-bottom));
+  position:fixed;z-index:20;left:50%;bottom:calc(9px + env(safe-area-inset-bottom));
   transform:translateX(-50%);
   display:flex;align-items:flex-end;gap:2px;
-  padding:9px 11px;border-radius:22px;
+  padding:4px 6px;border-radius:15px;
   background:rgba(38,38,42,.42);
   border:1px solid rgba(255,255,255,.14);
   box-shadow:var(--shadow-dock);
@@ -210,33 +148,133 @@ body:has(#tab-audit:checked) #panel-audit{display:block}
   backdrop-filter:blur(40px) saturate(180%);
   max-width:calc(100vw - 24px);
 }
+/* Dock 的浅色底：同令牌一样写两份（显式亮色 / 系统亮色）。 */
+:root[data-theme="light"] .dock{background:rgba(250,250,252,.55);border-color:rgba(0,0,0,.10)}
 @media (prefers-color-scheme: light){
-  .dock{background:rgba(250,250,252,.55);border-color:rgba(0,0,0,.10)}
+  :root:not([data-theme="dark"]) .dock{background:rgba(250,250,252,.55);border-color:rgba(0,0,0,.10)}
 }
 .tab{
   position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;
-  gap:4px;width:clamp(64px,4.9vw,76px);padding:9px 5px 11px;
-  border-radius:14px;border:1px solid transparent;
-  color:var(--muted);font-size:.7em;font-weight:500;letter-spacing:.01em;
+  gap:1px;width:clamp(50px,4vw,58px);padding:4px 3px 6px;
+  border-radius:10px;border:1px solid transparent;
+  color:var(--muted);font-size:.62em;font-weight:500;letter-spacing:.01em;
   cursor:pointer;white-space:nowrap;text-align:center;
   transform-origin:bottom center;
   transition:transform .18s var(--ease),background-color .18s var(--ease),
              color .18s var(--ease),border-color .18s var(--ease);
 }
-.tab svg{width:26px;height:26px;flex:none}
+.tab svg{width:19px;height:19px;flex:none}
 .tab span{overflow:hidden;text-overflow:ellipsis;max-width:100%}
 /* Dock 的悬停放大：指针所在项放大，左右邻居跟着抬高一点，模仿 macOS 的放大效果。 */
 @media (hover:hover){
-  .tab:hover{transform:translateY(-5px) scale(1.14);color:var(--text);background:var(--card-2)}
+  .tab:hover{transform:translateY(-4px) scale(1.16);color:var(--text);background:var(--card-2)}
   .tab:hover + .tab{transform:translateY(-2px) scale(1.05)}
   .tab:has(+ .tab:hover){transform:translateY(-2px) scale(1.05)}
 }
-/* 选中项：底色 + 下方小圆点（macOS 正在运行的应用标记）。 */
-.tab-input:checked + .tab{color:var(--text);background:var(--card-2);
+/* 选中项：底色 + 下方小圆点（macOS 正在运行的应用标记）。
+   单选钮在 body 顶部、label 在三套导航里，相邻兄弟选择器够不着——
+   选中态一律走 body:has(#tab-x:checked) [for="tab-x"]，一条规则同时
+   点亮 Dock / 顶栏 / 侧栏里指向同一个钮的所有 label。 */
+body:has(#tab-instances:checked) .dock [for="tab-instances"],
+body:has(#tab-users:checked) .dock [for="tab-users"],
+body:has(#tab-grants:checked) .dock [for="tab-grants"],
+body:has(#tab-env:checked) .dock [for="tab-env"],
+body:has(#tab-audit:checked) .dock [for="tab-audit"]{color:var(--text);background:var(--card-2);
   border-color:var(--line-strong)}
-.tab-input:checked + .tab::after{content:"";position:absolute;bottom:2px;left:50%;
-  transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--accent)}
-.tab-input:focus-visible + .tab{outline:2px solid var(--accent);outline-offset:2px}
+body:has(#tab-instances:checked) .dock [for="tab-instances"]::after,
+body:has(#tab-users:checked) .dock [for="tab-users"]::after,
+body:has(#tab-grants:checked) .dock [for="tab-grants"]::after,
+body:has(#tab-env:checked) .dock [for="tab-env"]::after,
+body:has(#tab-audit:checked) .dock [for="tab-audit"]::after{content:"";position:absolute;bottom:1px;left:50%;
+  transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--accent)}
+body:has(#tab-instances:focus-visible) .dock [for="tab-instances"],
+body:has(#tab-users:focus-visible) .dock [for="tab-users"],
+body:has(#tab-grants:focus-visible) .dock [for="tab-grants"],
+body:has(#tab-env:focus-visible) .dock [for="tab-env"],
+body:has(#tab-audit:focus-visible) .dock [for="tab-audit"]{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------------- 布局风格（<html data-style>）：控制台 / 总览 / 分栏 ----------------
+   三种布局共用同一份 DOM：导航钮在 body 顶部（.tab-inputs 用 display:contents
+   不产生盒子），Dock、顶栏、侧栏是同一单选组的三张「脸」，data-style 决定
+   哪张脸可见、统计条与侧栏是否占位。布局切换本身零脚本。 */
+.tab-inputs{display:contents}
+/* 导航图标：一份 mask 三处复用，颜色跟 currentColor 走。 */
+.ico{display:inline-block;width:19px;height:19px;flex:none;background:currentColor;
+  -webkit-mask:var(--i) center / contain no-repeat;mask:var(--i) center / contain no-repeat}
+.ico-instances{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4.2 7.6 7.8 4.4 7.8-4.4"/><path d="M12 12v8.8"/></svg>')}
+.ico-users{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.4"/><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"/></svg>')}
+.ico-grants{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/><circle cx="12" cy="15" r="1.4" fill="black" stroke="none"/></svg>')}
+.ico-env{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5"/><path d="M12.5 15H17"/></svg>')}
+.ico-audit{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5h9L19 7.5v13H6z"/><path d="M14.5 3.5V8H19"/><path d="M9 12h6M9 15.5h6"/></svg>')}
+
+/* 默认（console）：只有 Dock；顶栏页签、侧栏、统计条都不占位。 */
+.topnav,.sidebar,.stats{display:none}
+.shell{display:block;min-width:0}
+
+/* 顶栏页签（overview 的脸）：贴在窗口标题栏下面的一排横向标签。 */
+.topnav{align-items:center;gap:2px;padding:0 clamp(10px,1.2vw,18px);
+  border-bottom:1px solid var(--line);background:var(--titlebar);
+  overflow-x:auto;scrollbar-width:none}
+.topnav::-webkit-scrollbar{display:none}
+.tn{display:inline-flex;align-items:center;gap:7px;padding:9px 13px;font-size:.86em;font-weight:500;
+  color:var(--muted);cursor:pointer;white-space:nowrap;border:1px solid transparent;border-bottom:none;
+  border-radius:8px 8px 0 0;margin-bottom:-1px;transition:color .14s var(--ease),background-color .14s var(--ease)}
+.tn .ico{width:15px;height:15px}
+@media (hover:hover){.tn:hover{color:var(--text);background:var(--card-2)}}
+body:has(#tab-instances:checked) .tn[for="tab-instances"],
+body:has(#tab-users:checked) .tn[for="tab-users"],
+body:has(#tab-grants:checked) .tn[for="tab-grants"],
+body:has(#tab-env:checked) .tn[for="tab-env"],
+body:has(#tab-audit:checked) .tn[for="tab-audit"]{color:var(--text);background:var(--card);
+  border-color:var(--line);box-shadow:inset 0 2px 0 var(--accent)}
+body:has(#tab-instances:focus-visible) .tn[for="tab-instances"],
+body:has(#tab-users:focus-visible) .tn[for="tab-users"],
+body:has(#tab-grants:focus-visible) .tn[for="tab-grants"],
+body:has(#tab-env:focus-visible) .tn[for="tab-env"],
+body:has(#tab-audit:focus-visible) .tn[for="tab-audit"]{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* 统计条：总览的四张卡；分栏下压成一行紧凑小卡。 */
+.stats{grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.stat{display:flex;flex-direction:column;gap:2px;padding:clamp(10px,1vw,15px);
+  border:1px solid var(--line);border-radius:var(--radius-card);background:var(--card)}
+.stat .k{font-size:.78em;color:var(--muted);font-weight:550}
+.stat .v{font-size:clamp(20px,1.8vw,26px);font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.stat .d{font-size:.74em;color:var(--faint)}
+:root[data-style="overview"] .topnav{display:flex}
+:root[data-style="overview"] .stats{display:grid}
+:root[data-style="overview"] .dock{display:none}
+
+/* 侧栏（split 的脸）：左列导航，右列面板。 */
+.sidebar{flex-direction:column;gap:2px;width:200px;flex:none;padding:6px 0 14px;
+  border-right:1px solid var(--line);position:sticky;top:0;align-self:flex-start;
+  max-height:calc(100svh - 190px)}
+.side-title{font-size:.72em;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+  padding:6px 14px 8px}
+.snav{display:flex;flex-direction:column;gap:2px}
+.sn{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:9px;
+  color:var(--muted);font-size:.9em;font-weight:500;cursor:pointer;white-space:nowrap;
+  border:1px solid transparent;transition:color .14s var(--ease),background-color .14s var(--ease)}
+.sn .ico{width:16px;height:16px}
+@media (hover:hover){.sn:hover{color:var(--text);background:var(--card-2)}}
+body:has(#tab-instances:checked) .sn[for="tab-instances"],
+body:has(#tab-users:checked) .sn[for="tab-users"],
+body:has(#tab-grants:checked) .sn[for="tab-grants"],
+body:has(#tab-env:checked) .sn[for="tab-env"],
+body:has(#tab-audit:checked) .sn[for="tab-audit"]{color:var(--text);background:var(--card-2);
+  border-color:var(--line-strong);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+body:has(#tab-instances:focus-visible) .sn[for="tab-instances"],
+body:has(#tab-users:focus-visible) .sn[for="tab-users"],
+body:has(#tab-grants:focus-visible) .sn[for="tab-grants"],
+body:has(#tab-env:focus-visible) .sn[for="tab-env"],
+body:has(#tab-audit:focus-visible) .sn[for="tab-audit"]{outline:2px solid var(--accent);outline-offset:-2px}
+:root[data-style="split"] .sidebar{display:flex}
+:root[data-style="split"] .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+:root[data-style="split"] .stat{flex-direction:row;align-items:baseline;gap:8px;padding:8px 12px}
+:root[data-style="split"] .stat .v{font-size:1.25em}
+:root[data-style="split"] .stat .d{margin-left:auto}
+:root[data-style="split"] .shell{display:flex;gap:clamp(14px,1.4vw,22px);align-items:flex-start}
+:root[data-style="split"] .shell>.panels{flex:1;min-width:0}
+:root[data-style="split"] .dock{display:none}
 
 /* ---------------- 面板卡片（macOS 分组列表风格） ---------------- */
 section{
@@ -255,7 +293,7 @@ section{
 }
 .sec-head{display:flex;align-items:center;gap:9px;margin:0 0 clamp(10px,.8vw,14px)}
 .sec-ico{display:grid;place-items:center;width:26px;height:26px;flex:none;border-radius:7px;
-  color:#fff;background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 92%,#fff),var(--accent-2));
+  color:var(--accent-ink);background:linear-gradient(160deg,var(--accent),var(--accent-2));
   box-shadow:0 1px 0 rgba(255,255,255,.3) inset}
 .sec-ico svg{width:15px;height:15px}
 .sec-head h2{margin:0;font-size:1em;font-weight:600;letter-spacing:-.004em}
@@ -273,23 +311,58 @@ tbody tr{transition:background-color .14s var(--ease)}
 tbody tr:last-child td{border-bottom:none}
 td{color:var(--text)}
 td:first-child{font-weight:550}
-.inst-name{display:block;white-space:nowrap;color:var(--accent);text-decoration:none;
-           width:fit-content}
+/* ---------------- 实例卡片 ---------------- */
+/* 实例列表是卡片网格，不是表格。旧版是 8 列固定列宽：右半边大片空白，
+   DSH_HOME 在 140px 的列里被折成两三行，操作列贴右浮动与整行基线不齐，
+   每行还被「保存配置」那条跨整行的折叠面板切成两截——列宽怎么调，都只是
+   换个地方折行。卡片把每台实例分成三层：卡头（名字 + 状态徽标，一眼看出
+   叫什么、在不在跑）、配置（短字段两列并排，路径独占整行）、动作（固定在
+   卡底，主行动在左、危险动作在右）。窗口变窄时是换列，不是折行。 */
+#panel-instances{overflow:visible}
+/* min() 兜住窄屏：最小列宽 390px 在手机上放不下，取「100%」就不横向溢出。 */
+.inst-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(390px,100%),1fr));
+           gap:clamp(10px,.9vw,14px);align-items:stretch}
+.inst-card{display:flex;flex-direction:column;gap:9px;min-width:0;
+           padding:clamp(12px,1vw,15px);border:1px solid var(--line);
+           border-radius:12px;background:var(--card-2);
+           box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+           transition:border-color .14s var(--ease),background-color .14s var(--ease)}
+@media (hover:hover){.inst-card:hover{border-color:var(--line-strong)}}
+/* 左缘一道竖条标运行状态：扫一眼就能分出哪台在跑、哪台卡在启动。 */
+.inst-card.is-ready{border-left:3px solid var(--ok)}
+.inst-card.is-starting{border-left:3px solid var(--warning)}
+.inst-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.inst-name{flex:1 1 auto;min-width:0;font-weight:600;font-size:1.02em;
+           color:var(--accent);text-decoration:none;overflow-wrap:anywhere}
 .inst-name:hover{text-decoration:underline}
-.inst-meta{display:flex;flex-wrap:wrap;gap:2px 14px;margin-top:4px;
-           max-width:min(400px,34vw);
-           font-weight:400;font-size:.84em;color:var(--muted);white-space:normal}
-.inst-meta .kv{display:inline-flex;gap:5px;align-items:baseline;min-width:0}
-.inst-meta .k{color:var(--faint);flex:none}
-.inst-meta .mono{color:var(--muted);font-size:1em;white-space:normal;overflow-wrap:anywhere}
+.inst-badges{display:flex;flex-wrap:wrap;gap:5px;flex:none}
+/* 配置：短字段（端口 / ID / 监听地址 / 启动方式 / 进程号）两列并排，
+   路径类独占整行。路径必须能整段读完——旧表里 DSH_HOME 挤在 140px 的
+   列里折成两三行，是整张表最难读的一处。 */
+.inst-meta{display:grid;grid-template-columns:1fr 1fr;gap:7px 16px;margin:0;
+           padding:0;font-size:.86em}
+.inst-meta .im{display:flex;flex-direction:column;gap:1px;min-width:0}
+.inst-meta .im.wide{grid-column:1/-1}
+.inst-meta dt{color:var(--faint);font-size:.92em;white-space:nowrap}
+.inst-meta dd{margin:0;min-width:0;color:var(--muted);overflow-wrap:anywhere}
+.inst-meta dd.mono{color:var(--muted);font-size:1em;white-space:normal}
+/* 启动失败与安装进度：一行内联说明，不另开一块区域。 */
+.inst-note{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0;
+           font-size:.82em;color:var(--muted);overflow-wrap:anywhere}
+/* 动作固定在卡底：主行动（进入 / 启停）在左，安装 / 编辑配置 / 删除的折叠
+   触发器靠右。inst-spacer 把两组推开，危险动作不至于紧挨着主行动。 */
+.inst-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;
+              margin-top:auto;padding-top:9px;border-top:1px solid var(--line)}
+.inst-actions form{display:flex;margin:0}
+.inst-actions .inst-spacer{flex:1 1 auto;min-width:0}
 td.actions{white-space:normal;text-align:right}
 td.actions form{display:inline-flex;gap:8px;align-items:center;margin:2px 0;flex-wrap:wrap;justify-content:flex-end}
-td.actions.wrap{max-width:min(440px,35vw)}
-td.actions.wrap input[type=text]{min-width:0;flex:0 1 160px;width:auto}
-td.actions.wrap select{flex:1 1 250px;min-width:0;max-width:none;width:auto}
 .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;font-size:.86em;color:var(--faint);
       white-space:nowrap}
 .path{white-space:normal;overflow-wrap:anywhere}
+/* 安装进度 / 启动失败那两行里带着命令与路径，套上 .mono 的 nowrap 会整行伸出
+   卡片、压到隔壁实例上。卡片是固定宽度的格子，这里必须允许任意位置折行。 */
+.inst-note.mono,.inst-note .mono{white-space:normal;overflow-wrap:anywhere}
 
 /* 列宽按面板钉死（与上一版同样的理由：自动布局会把空余宽度摊给内容少的列）。 */
 #panel-users table{table-layout:fixed}
@@ -303,21 +376,96 @@ td.actions.wrap select{flex:1 1 250px;min-width:0;max-width:none;width:auto}
 #panel-env th:nth-child(1){width:110px}
 #panel-env th:nth-child(2){width:190px}
 #panel-env th:nth-child(4){width:120px}
-#panel-instances table{table-layout:fixed}
-#panel-instances th:nth-child(1){width:280px}
-#panel-instances th:nth-child(2){width:100px}
-#panel-instances th:nth-child(4){width:72px}
-#panel-instances th:nth-child(5){width:92px}
-#panel-instances th:nth-child(6){width:112px}
-#panel-instances th:nth-child(7){width:360px}
-#panel-instances td.actions{display:flex;flex-direction:column;align-items:stretch;gap:8px;max-width:none}
-#panel-instances td.actions form{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin:0}
-#panel-instances td.actions form:has(input[type=text]){
-  display:grid;grid-template-columns:1fr auto;gap:8px}
-#panel-instances td.actions form:has(input[type=text]) input[type=text]{
-  grid-column:1/-1;width:100%;min-width:0;flex:none}
-#panel-instances td.actions form:has(input[type=text]) select{min-width:0;width:100%;flex:none}
-#panel-instances td.actions form:has(input[type=text]) button{justify-self:end}
+/* 「进入」是链接长得像按钮：与 button 同一套外观，用主色区分它是打开而不是提交。 */
+.inst-actions a.open-btn,#panel-instances .pop-panel a.open-btn{display:inline-flex;align-items:center;
+  color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));
+  border-radius:var(--radius-control);background:color-mix(in srgb,var(--accent) 12%,transparent);
+  padding:5px 13px;font-size:.9em;font-weight:500;white-space:nowrap;text-decoration:none;
+  transition:background-color .14s var(--ease),border-color .14s var(--ease)}
+.inst-actions a.open-btn:hover{background:color-mix(in srgb,var(--accent) 22%,transparent);
+  border-color:color-mix(in srgb,var(--accent) 65%,var(--line))}
+.inst-actions a.open-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+/* 一屏三张卡片时每张约 400px 宽，五个动作按默认间距与内边距会被挤成两行
+   （「删除」单独掉到第二行，卡片高度也不齐）。把间距和左右内边距各收一档，
+   五个动作就稳定排成一行；窄屏下这些值会被媒体查询覆盖成整宽按钮。 */
+.inst-actions{gap:5px}
+.inst-actions>form>button,.inst-actions>a.open-btn,.inst-actions>.pop>summary{
+  padding:5px 9px;font-size:.87em}
+/* 折叠面板用原生 details/summary：可点、可键盘操作、手机上也能用，
+   不用脚本，也不会像纯装饰那样「看着能点其实点不动」。
+   display:contents 让触发器与面板直接成为操作列的弹性项：面板占满一行
+   换到下方，收起时完全不占高度。不用绝对定位——面板会被 section 的
+   overflow-x:auto 裁掉。 */
+.pop{display:contents}
+.pop>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px;
+  color:var(--text);border:1px solid var(--line);border-radius:var(--radius-control);
+  background:var(--card-2);padding:5px 11px;font-size:.9em;font-weight:500;white-space:nowrap;
+  transition:background-color .14s var(--ease),border-color .14s var(--ease)}
+.pop>summary::-webkit-details-marker{display:none}
+.pop>summary::after{content:"";width:0;height:0;border:3.5px solid transparent;
+  border-top-color:currentColor;margin-top:2px;opacity:.7}
+.pop[open]>summary::after{border-bottom-color:currentColor;border-top-color:transparent;
+  margin-top:-2px}
+.pop>summary:hover{background:color-mix(in srgb,var(--card-2) 70%,var(--text) 6%);
+  border-color:var(--line-strong)}
+.pop>summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.pop.danger>summary{color:var(--danger);
+  border-color:color-mix(in srgb,var(--danger) 35%,transparent);
+  background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.pop.danger>summary:hover{background:color-mix(in srgb,var(--danger) 20%,transparent);
+  border-color:color-mix(in srgb,var(--danger) 55%,transparent)}
+.pop-panel{display:none;width:100%;box-sizing:border-box;
+  flex-direction:column;align-items:stretch;gap:8px;text-align:left;
+  padding:11px;border:1px solid var(--line);border-radius:10px;
+  background:var(--pop)}
+.pop[open] .pop-panel{display:flex}
+/* 折叠面板挂在 .inst-actions 这条 flex 行里，.pop 默认 display:contents，
+   触发器才能和「进入/启动」排在同一行。但 contents 的 <details> 不生成盒子，
+   子元素的百分比宽度会按 0 解析、退化成 min-content——删除面板因此被压成
+   198px 的窄柱，编辑面板则溢出到 412px。所以展开时把 <details> 还原成
+   真实块盒并占满整行，触发器改成贴着面板顶部的标题条（与面板同宽、
+   去掉自身边框，视觉上成为面板的一部分），收起后仍回到按钮行。 */
+.inst-actions .pop[open]{display:block;flex:1 1 100%;order:99;min-width:0}
+.inst-actions .pop[open]>summary{display:flex;width:100%;box-sizing:border-box;
+  justify-content:space-between;margin:0;border:0;border-radius:10px 10px 0 0;
+  padding:7px 11px;background:color-mix(in srgb,var(--card-2) 82%,var(--text) 6%);
+  font-size:.86em;color:var(--muted)}
+.inst-actions .pop[open]>summary::after{margin-top:-2px}
+.inst-actions .pop[open] .pop-panel{width:100%;border-radius:0 0 10px 10px;border-top:0}
+.inst-actions .pop.danger[open]>summary{color:var(--danger);
+  border:0;border-radius:10px 10px 0 0;
+  background:color-mix(in srgb,var(--danger) 14%,var(--pop))}
+.inst-actions .pop.danger[open] .pop-panel{border-top:0;border-radius:0 0 10px 10px}
+/* 安装表单是「安装目录整行 + 版本 / 方式 / 按钮一行」：目录要占满才看得下路径，
+   版本跟着下拉与按钮排在第二行。这条只能挂 .install-form——否则编辑配置表单
+   （三组 .row）也会被套成网格，三组字段被拆到左右两列里。 */
+#panel-instances .pop-panel form.install-form{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;
+  border:0;background:none;padding:0;margin:0}
+#panel-instances .pop-panel form.install-form input[type=text]{width:100%;min-width:0}
+#panel-instances .pop-panel form.install-form input[name=install_dir]{grid-column:1/-1}
+#panel-instances .pop-panel form.install-form select{min-width:0;width:100%}
+#panel-instances .pop-panel form.install-form button{justify-self:end}
+/* 编辑配置表单在卡片里只有 ~366px 宽。注意 .inst-actions form 那条把行内
+   表单设成了 flex，折叠面板里的表单也是 .inst-actions 的后代，会被继承成
+   横向 flex——三组 .row 于是各按 min-content 排开、铺不满面板。所以这里
+   显式还原成块级；通用 .row 的 minmax(190px,1fr) 在 366px 下也只放得下
+   一列，最小列宽降到 140px 才能两列铺满，更窄（手机）时自然回落成一列。 */
+#panel-instances .pop-panel form.edit-form{display:block;border:0;background:none;padding:0;margin:0}
+#panel-instances .pop-panel form.edit-form .row{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+/* 删除：不可逆动作，面板顶部分隔线；勾选框与提醒左对齐（先看后果、
+   再按按钮），按钮单独一行贴右，与勾选框拉开距离。 */
+#panel-instances .pop-panel form.remove-form{display:flex;flex-direction:column;
+  align-items:stretch;gap:6px;border-top:1px solid color-mix(in srgb,var(--danger) 30%,transparent);
+  padding-top:9px}
+#panel-instances .pop-panel form.remove-form label.check{white-space:normal;line-height:1.45;
+  justify-content:flex-start;text-align:left}
+#panel-instances .pop-panel form.remove-form .check-hint{text-align:left;max-width:none}
+#panel-instances .pop-panel form.remove-form button{align-self:flex-end;margin-top:2px}
+label.check{display:inline-flex;align-items:center;gap:6px;font-size:.84em;color:var(--muted);
+            cursor:pointer;white-space:nowrap}
+label.check input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--danger);cursor:pointer}
+.check-hint{font-size:.78em;line-height:1.5;color:var(--faint);text-align:right;
+            white-space:normal;max-width:300px}
 #panel-audit table{table-layout:fixed}
 #panel-audit th:nth-child(1){width:172px}
 #panel-audit th:nth-child(2){width:120px}
@@ -350,7 +498,7 @@ button:hover{background:color-mix(in srgb,var(--card-2) 70%,var(--text) 6%);bord
 button:active{transform:translateY(.5px);filter:brightness(.95)}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button.primary{background:var(--accent);border-color:color-mix(in srgb,var(--accent) 70%,#000);
-  color:#fff;font-weight:500;
+  color:var(--accent-ink);font-weight:500;
   box-shadow:0 1px 0 rgba(255,255,255,.28) inset,0 1px 2px rgba(0,0,0,.2)}
 button.primary:hover{filter:brightness(1.06);background:var(--accent)}
 button.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent);
@@ -359,12 +507,55 @@ button.danger:hover{background:color-mix(in srgb,var(--danger) 20%,transparent);
   border-color:color-mix(in srgb,var(--danger) 55%,transparent)}
 
 .row{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));
-     gap:clamp(10px,.9vw,14px);align-items:end}
+     gap:clamp(10px,.9vw,14px);align-items:start}
 .row label.field{min-width:0}
 .row label.field input,.row label.field select{width:100%;min-width:0}
-.row button{justify-self:start;min-height:30px}
+/* 按钮贴着行底：字段下面可能带一行小字说明，按钮不该跟着被顶到中间。 */
+.row button{justify-self:start;align-self:end;min-height:30px}
+/* 创建实例表单：auto-fill 在宽窗口会切出 6 列，而两行只各放 4 / 5 个字段，
+   右端永远空一列、按钮还贴在最后一列右侧。改成固定 4 列、由字段按顺序
+   铺满，第二行末尾的「创建实例」正好收边；窄屏由下面两条媒体查询降列。 */
+.create-form .row{grid-template-columns:repeat(4,minmax(0,1fr))}
+.create-form .row>button{justify-self:stretch;min-height:34px}
+/* 末行是「版本 + 安装目录 + 创建实例」：目录那一栏要留得下路径，占 2 列，
+   正好把 4 列铺满（占 3 列时按钮会被挤到下一行）。 */
+.create-form .row.create-submit .wide{grid-column:span 2}
+/* 窄屏降列：固定 4 列在平板/手机上会挤成很窄的输入框，按 2 列、1 列收。 */
+@media (max-width:900px){
+  .create-form .row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .create-form .row.create-submit .wide{grid-column:1/-1}
+}
+@media (max-width:720px){
+  .create-form .row{grid-template-columns:1fr}
+  .create-form .row.create-submit .wide{grid-column:auto}
+}
 label.field{display:flex;flex-direction:column;gap:5px;font-size:.82em;color:var(--muted)}
 label.field input,label.field select{min-width:clamp(140px,17vw,230px)}
+/* 长说明不再常驻在输入框下面占一行高：折成标签旁的小 i，悬停或聚焦才浮出。
+   文案仍在 DOM 里（测试与读屏都取得到），只是平时不占版面。
+   小 i 放在 label **外面**：label 会把点击转发给自己的输入框，放在里面
+   触屏就永远聚焦不上；挪出来点一下即可（:focus），鼠标悬停也行。
+   读屏靠 aria-label 念出说明，与视觉无关。 */
+.field-wrap{display:flex;align-items:flex-start;gap:6px;min-width:0}
+.field-wrap>label.field{flex:1;min-width:0}
+label.field .lb{display:flex;align-items:center;gap:5px}
+.tip{position:relative;display:inline-flex;color:var(--faint);cursor:help;flex:none;margin-top:1px}
+.tip>i{width:13px;height:13px;border-radius:50%;border:1px solid currentColor;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:9px;font-style:normal;font-weight:600;line-height:1}
+.tip-body{display:none;position:absolute;bottom:calc(100% + 6px);left:50%;
+  transform:translateX(-50%);z-index:60;width:max-content;max-width:min(300px,72vw);
+  padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--pop);
+  color:var(--muted);font-size:.95em;line-height:1.55;font-weight:400;text-align:left;
+  white-space:normal;overflow-wrap:anywhere;box-shadow:0 10px 28px -12px rgba(0,0,0,.55)}
+.tip-body::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:var(--pop)}
+.tip:hover .tip-body,.tip:focus .tip-body{display:block}
+.tip:focus{outline:none}
+.tip:focus-visible>i{outline:2px solid var(--accent);outline-offset:1px}
+details.dir-note{margin-top:10px;font-size:.9em;color:var(--faint)}
+details.dir-note summary{cursor:pointer;color:var(--muted);white-space:normal}
+details.dir-note p{margin:7px 0 0;line-height:1.7;white-space:normal}
 
 /* ---------------- 徽标 / 提示 / 授权矩阵 ---------------- */
 .tag{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;
@@ -375,6 +566,11 @@ label.field input,label.field select{min-width:clamp(140px,17vw,230px)}
 .tag.on::before{content:"";width:5px;height:5px;border-radius:50%;flex:none;background:var(--ok)}
 .tag.off{color:var(--faint)}
 .tag.off::before{content:"";width:5px;height:5px;border-radius:50%;flex:none;background:var(--faint)}
+/* 「启动中」（在跑但还没就绪）的徽标：模板一直在输出 warn 类，样式却漏了，
+   于是它渲染成普通灰底，和「已停止」几乎分不出。补上与 --warning 同色的一套。 */
+.tag.warn{color:var(--warning);border-color:color-mix(in srgb,var(--warning) 35%,transparent);
+          background:color-mix(in srgb,var(--warning) 13%,transparent)}
+.tag.warn::before{content:"";width:5px;height:5px;border-radius:50%;flex:none;background:var(--warning)}
 
 .notice{position:relative;border-radius:10px;padding:9px 12px 9px 34px;
         font-size:.92em;border:1px solid transparent}
@@ -398,18 +594,32 @@ label.field input,label.field select{min-width:clamp(140px,17vw,230px)}
 .empty{color:var(--faint);font-size:.88em}
 footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
        color:var(--faint);font-size:.76em;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* 页脚配色切换：三枚胶囊（明暗 / 方案 / 布局），每枚是几个普通链接，点一下带
+   ?theme= / ?scheme= 重新请求，服务端写 Cookie 并按新配色渲染——管理台不引入
+   脚本，这个控件也不破例。整组贴右端（margin-left:auto）：它是偏好设置，
+   不该跟操作按钮抢注意力。 */
+.switchers{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-left:auto}
+.themeswitch{display:flex;gap:1px;padding:2px;
+  border:1px solid var(--line);border-radius:999px;background:var(--card);font-size:.95em}
+.themeswitch a{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;
+  color:var(--muted);text-decoration:none;white-space:nowrap;
+  transition:background-color .15s var(--ease),color .15s var(--ease)}
+.themeswitch a:hover{color:var(--text);background:var(--card-2)}
+.themeswitch a[aria-current="true"]{color:var(--accent-ink);
+  background:linear-gradient(160deg,var(--accent),var(--accent-2));
+  box-shadow:0 1px 0 rgba(255,255,255,.28) inset}
+.themeswitch a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
 /* ---------------- 窄屏：窗口铺满，表格改卡片 ---------------- */
 @media (max-width:900px){
-  body{padding:0 0 calc(84px + env(safe-area-inset-bottom))}
-  .window{min-height:calc(100svh - 84px);border-radius:0;border-left:0;border-right:0;
+  body{padding:0 0 calc(64px + env(safe-area-inset-bottom))}
+  .window{min-height:calc(100svh - 64px);border-radius:0;border-left:0;border-right:0;
           -webkit-backdrop-filter:none;backdrop-filter:none;background:var(--window)}
   .titlebar{position:static;padding:8px 12px;min-height:46px;
             grid-template-columns:auto 1fr auto;gap:8px}
   .titlebar .title{justify-self:start;font-size:.92em}
   .titlebar .who{display:none}
   nav.tools{font-size:.78em}
-  .traffic{display:none}
   main{padding:12px}
   section{padding:13px;border-radius:11px;overflow-x:visible}
   .sec-ico{width:24px;height:24px;border-radius:6px}
@@ -430,13 +640,21 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   td:not([data-label])::before{content:none}
   td:first-child{font-weight:600;font-size:1em;padding-top:7px;display:block;text-align:left}
   td:first-child::before{content:none}
-  .inst-meta{display:block;max-width:none;margin-top:5px}
-  .inst-meta .kv{display:flex;gap:6px;justify-content:flex-start;text-align:left;flex-wrap:wrap}
-  .inst-meta .mono{white-space:normal;overflow-wrap:anywhere}
   tr.step td{display:block;text-align:left;border:none;padding:0}
   tr.step td::before{content:none}
 
-  td.actions.wrap{max-width:none}
+  /* 实例卡片在窄屏里：单列，路径允许折行。动作按行摊开：390px 宽放不下
+     五个按钮，与其让「删除」孤零零掉到第二行贴左，不如让每个按钮按份数
+     均分整行宽度，两行排满。 */
+  .inst-grid{grid-template-columns:1fr}
+  .inst-card{padding:12px}
+  .inst-meta{grid-template-columns:1fr 1fr;gap:6px 12px}
+  .inst-actions{gap:7px}
+  .inst-actions .inst-spacer{display:none}
+  .inst-actions form{flex:1 1 auto;min-width:0}
+  .inst-actions form button,.inst-actions a.open-btn{width:100%;justify-content:center;min-height:34px}
+  .inst-actions a.open-btn{flex:1 1 auto}
+
   td.actions{display:block;text-align:left;padding-top:9px}
   td.actions::before{content:none}
   td.actions form{display:flex;flex-wrap:wrap;justify-content:flex-start;gap:8px;margin:0 0 8px}
@@ -444,10 +662,15 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   td.actions input[type=text],td.actions input[type=password],td.actions select{
     flex:1 1 130px;min-width:0;width:auto;max-width:none}
   td.actions button{flex:0 0 auto;min-height:32px}
+  /* 折叠面板在窄屏里：触发器给足触摸高度，面板展开占满卡片宽度、单列排布。 */
+  .pop>summary{min-height:32px}
+  .pop-panel{margin:2px 0 8px}
+  #panel-instances .pop-panel form{grid-template-columns:1fr}
+  #panel-instances .pop-panel form button{justify-self:start}
   .mono{overflow-wrap:anywhere}
-  .dock{bottom:calc(10px + env(safe-area-inset-bottom));padding:6px 7px}
-  .tab{width:clamp(52px,15vw,64px);padding:6px 3px 7px}
-  .tab svg{width:20px;height:20px}
+  .dock{bottom:calc(8px + env(safe-area-inset-bottom));padding:4px 5px}
+  .tab{width:clamp(48px,14vw,58px);padding:5px 3px 6px}
+  .tab svg{width:18px;height:18px}
 }
 @media (max-width:720px){
   .row{grid-template-columns:1fr;gap:10px}
@@ -461,10 +684,25 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   .matrix button{width:100%;margin:6px 0 0;min-height:38px}
   button{min-height:30px}
 }
-/* 不支持 :has() 的老浏览器：整页退回一页平铺，Dock 隐藏。 */
+/* 不支持 :has() 的老浏览器：整页退回一页平铺，三套导航全部隐藏
+   （没有 :has() 就切不了页，留着导航等于摆三个点了没反应的按钮）。 */
 @supports not selector(:has(*)){
   .dock{display:none}
+  .topnav,.sidebar{display:none !important}
+  .shell{display:block !important}
   .panel{display:block}
+}
+/* 窄屏（手机端）：三种布局统一回落成 console 形态——390px 宽里放不进
+   侧栏，顶栏页签也不如一排 Dock 图标省地方。布局偏好在手机上不该强行
+   套用；统计条只留在总览布局（其它两套本来就不显示），压成两列。 */
+@media (max-width:900px){
+  .topnav,.sidebar{display:none !important}
+  .dock{display:flex !important}
+  .shell{display:block !important}
+  .stats{display:none !important}
+  :root[data-style="overview"] .stats{display:grid !important;grid-template-columns:1fr 1fr}
+  .stat{flex-direction:column;align-items:flex-start}
+  .stat .d{margin-left:0;white-space:normal}
 }
 @media (prefers-reduced-motion:reduce){
   *{transition-duration:.001ms !important;animation-duration:.001ms !important}
@@ -473,7 +711,12 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
 }
 </style>
 </head>
-<body>
+<body data-live="{{.LivePath}}" data-audit-rev="{{.AuditRev}}">
+{{/* Tab radios live at the top of body: panels show via body:has(#tab-x:checked),
+     which does not care where the <label for> sits in the DOM. The bottom dock,
+     the top bar and the sidebar are three renderings of the SAME radio group, so
+     clicking any of them checks the same control. Zero JavaScript. */}}
+<span class="tab-inputs">{{range .NavItems}}<input type="radio" name="admintab" id="tab-{{.ID}}" class="tab-input"{{if .Active}} checked{{end}}>{{end}}</span>
 <div class="bg" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
 
 <div class="window">
@@ -489,25 +732,40 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     <a class="plain" href="{{.OtherLangHref}}">{{.OtherLang}}</a>
     <a class="plain" href="{{.SignOutHref}}">{{.SignOut}}</a>
   </nav>
-      <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
     </div>
   </div>
+  <nav class="topnav" aria-label="{{.NavLabel}}">{{range .NavItems}}<label class="tn" for="tab-{{.ID}}"><i class="ico ico-{{.ID}}" aria-hidden="true"></i><span>{{.Title}}</span></label>{{end}}</nav>
   <div class="window-body">
 <main>
   {{if .Error}}<p class="notice err" role="alert">{{.Error}}</p>{{end}}
   {{if .Message}}<p class="notice ok" role="status">{{.Message}}</p>{{end}}
 
+  <div class="stats" role="group" aria-label="{{.InstancesTitle}}">
+    <div class="stat"><span class="k">{{.InstancesTitle}}</span><span class="v" data-stat="instances">{{.CountInstances}}</span><span class="d" data-stat-note="instances">{{.CountInstancesNote}}</span></div>
+    <div class="stat"><span class="k">{{.UsersTitle}}</span><span class="v" data-stat="users">{{.CountUsers}}</span><span class="d">{{.ColRole}}</span></div>
+    <div class="stat"><span class="k">{{.ColRun}}</span><span class="v" data-stat="running">{{.CountRunning}}</span><span class="d" data-stat-note="running">{{.CountRunningNote}}</span></div>
+    <div class="stat"><span class="k">{{.AuditTitle}}</span><span class="v" data-stat="audit">{{len .Audit}}</span><span class="d">{{.ColTime}}</span></div>
+  </div>
+  <div class="shell">
+  <aside class="sidebar" aria-label="{{.NavLabel}}">
+    <div class="side-title">{{.Title}}</div>
+    <nav class="snav">{{range .NavItems}}<label class="sn" for="tab-{{.ID}}"><i class="ico ico-{{.ID}}" aria-hidden="true"></i><span>{{.Title}}</span></label>{{end}}</nav>
+  </aside>
   <div class="panels">
   <section class="panel" id="panel-users">
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg></span><h2>{{.UsersTitle}}</h2></div>
     {{if .Users}}
     <table>
-      <thead><tr><th>{{.ColName}}</th><th>{{.ColRole}}</th><th>{{.ColStatus}}</th><th>{{.ColInstances}}</th><th></th></tr></thead>
+      <thead><tr><th>{{.ColAccount}}</th><th>{{.ColRole}}</th><th>{{.ColStatus}}</th><th>{{.ColInstances}}</th><th></th></tr></thead>
       <tbody>
       {{range .Users}}
         <tr>
-          <td data-label="{{$.ColName}}">{{.Name}}{{if .DisplayName}}<br><span class="mono">{{.DisplayName}}</span>{{end}}</td>
+          <td data-label="{{$.ColAccount}}">{{if .DisplayName}}{{.DisplayName}}<br><span class="mono">{{.Name}}</span>{{else}}{{.Name}}{{end}}{{if .SuperAdmin}}<br><span class="tag on">{{$.SuperBadge}}</span>{{end}}</td>
           <td data-label="{{$.ColRole}}">
+            {{/* 超级管理员（第一个注册的账号）：角色固定，不给改。 */}}
+            {{if .SuperAdmin}}
+            <span class="tag on">{{.RoleLabel}}</span>
+            {{else}}
             <form method="post" action="/admin">
               <input type="hidden" name="csrf" value="{{$.CSRF}}">
               <input type="hidden" name="action" value="user.role">
@@ -517,6 +775,7 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
               </select>
               <button type="submit">{{$.BtnApply}}</button>
             </form>
+            {{end}}
           </td>
           <td data-label="{{$.ColStatus}}"><span class="tag {{if .Disabled}}off{{else}}on{{end}}">{{.StatusLabel}}</span></td>
           <td data-label="{{$.ColInstances}}">{{.GrantCount}}</td>
@@ -528,6 +787,9 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
               <input type="password" name="password" placeholder="{{$.PhNewPassword}}" autocomplete="new-password">
               <button type="submit">{{$.BtnPassword}}</button>
             </form>
+            {{/* 超级管理员不给停用与删除：它是管理端的兜底身份。改口令保留
+                 ——忘了口令就把整个管理端锁死了，代价不对等。 */}}
+            {{if not .SuperAdmin}}
             <form method="post" action="/admin">
               <input type="hidden" name="csrf" value="{{$.CSRF}}">
               <input type="hidden" name="action" value="user.toggle">
@@ -541,6 +803,7 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
               <input type="hidden" name="name" value="{{.Name}}">
               <button type="submit" class="danger">{{$.BtnDelete}}</button>
             </form>
+            {{end}}
           </td>
         </tr>
       {{end}}
@@ -551,7 +814,9 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     <form method="post" action="/admin" class="row" style="margin-top:14px">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="action" value="user.create">
-      <label class="field">{{.ColName}}<input type="text" name="name" required autocomplete="off"></label>
+      <label class="field">{{.ColAccount}}<input type="text" name="name" required autocomplete="off"
+        pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" title="{{.NameHint}}"></label>
+      <label class="field">{{.ColDisplay}}<input type="text" name="display" required autocomplete="off"></label>
       <label class="field">{{.PhPassword}}<input type="password" name="password" required autocomplete="new-password"></label>
       <label class="field">{{.ColRole}}
         <select name="role">{{range .Roles}}<option value="{{.Value}}">{{.Label}}</option>{{end}}</select>
@@ -588,31 +853,23 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
       <thead><tr><th>{{.ColName}}</th><th>{{.ColStatus}}</th><th>PATH</th><th></th></tr></thead>
       <tbody>
       {{range .EnvTools}}
-        <tr>
+        {{/* 状态、路径与按钮都由自动刷新按 data-* 钩子改写；按钮表单常驻、
+             用 hidden 开关——补装完成后不用刷新整页，按钮自己就消失。 */}}
+        <tr data-tool="{{.Name}}">
           <td class="mono" data-label="{{$.ColName}}">{{.Name}}</td>
           <td data-label="{{$.ColStatus}}">
-            {{if .Found}}<span class="tag on">{{.Version}}</span>
-            {{else if .JobActive}}<span class="tag">{{.JobStep}}</span>
-            {{else if .JobFailed}}<span class="tag off">{{$.EnvInstallFailed}}</span>
-            {{else}}<span class="tag off">{{$.EnvMissing}}</span>{{end}}
+            <span class="tag {{if .Found}}on{{else if .JobActive}}{{else}}off{{end}}" data-tool-status>{{if .Found}}{{.Version}}{{else if .JobActive}}{{.JobStep}}{{else if .JobFailed}}{{$.EnvInstallFailed}}{{else}}{{$.EnvMissing}}{{end}}</span>
           </td>
-          <td class="mono path" data-label="PATH">
-            {{if .Found}}{{.Path}}
-            {{else if .JobFailed}}{{.JobError}}
-            {{else}}{{.Hint}}{{end}}
-          </td>
+          <td class="mono path" data-label="PATH" data-tool-path>{{if .Found}}{{.Path}}{{else if .JobFailed}}{{.JobError}}{{else}}{{.Hint}}{{end}}</td>
           <td class="actions">
-            {{if and .Installable (not .Found)}}
-              {{if .JobActive}}
-                <span class="tag">{{$.InstallingLabel}}</span>
-              {{else}}
-                <form method="post" action="{{$.AdminPath}}">
-                  <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                  <input type="hidden" name="action" value="env.install">
-                  <input type="hidden" name="tool" value="{{.Name}}">
-                  <button type="submit" class="primary">{{if .JobFailed}}{{$.EnvBtnRetry}}{{else}}{{$.EnvBtnInstall}}{{end}}</button>
-                </form>
-              {{end}}
+            {{if .Installable}}
+            <form method="post" action="{{$.AdminPath}}" data-tool-action="install"{{if or .Found .JobActive}} hidden{{end}}>
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="env.install">
+              <input type="hidden" name="tool" value="{{.Name}}">
+              <button type="submit" class="primary" data-tool-button>{{if .JobFailed}}{{$.EnvBtnRetry}}{{else}}{{$.EnvBtnInstall}}{{end}}</button>
+            </form>
+            <span class="tag" data-tool-action="during"{{if or .Found (not .JobActive)}} hidden{{end}}>{{$.InstallingLabel}}</span>
             {{end}}
           </td>
         </tr>
@@ -630,72 +887,175 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   <section class="panel" id="panel-instances">
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg></span><h2>{{.InstancesTitle}}</h2></div>
     {{if .Instances}}
-    <table>
-      <thead><tr><th>{{.ColName}}</th><th>ID</th><th>DSH_HOME</th><th>{{.ColPort}}</th><th>{{.ColStatus}}</th>{{if $.HasInstaller}}<th>{{.ColPhase}}</th><th></th>{{end}}</tr></thead>
-      <tbody>
+    {{/* 实例列表：卡片网格，不再是一张 8 列的表格。
+         旧版列多而窄：名字格里塞 4 行小字、DSH_HOME 在 140px 的列里被折成两三行、
+         操作列贴右浮动与整行基线不齐，每行还被「保存配置」那条跨整行的折叠面板
+         切成两截——列表读起来是断的。列宽再怎么调，也只是换个地方折行。
+         卡片把信息分成三层：卡头（名字 + 状态徽标，一眼看出叫什么、在不在跑）、
+         配置（路径独占一行，按需折行）、动作（固定在卡底，主行动在左、危险动作在右）。
+         窗口变窄时是换列，不是折行。 */}}
+    <div class="inst-grid">
       {{range .Instances}}
-        <tr>
-          <td data-label="{{$.ColName}}">
-            <a class="inst-name" href="{{.Href}}" target="_blank" rel="noopener">{{.Name}}</a>
-            {{/* 创建时能填的字段，建完都要能在这里看到；否则改完配置就再也确认不了
-                 自己填的是哪几个目录。留空的两个字段在 Go 侧已翻成一句人话。 */}}
-            <span class="inst-meta">
-              <span class="kv"><span class="k">{{$.ConfigLabel}}</span><span class="mono">{{.ConfigDir}}</span></span>
-              <span class="kv"><span class="k">{{$.WorkspaceLabel}}</span><span class="mono">{{.Workspace}}</span></span>
-              <span class="kv"><span class="k">{{$.HostLabel}}</span><span class="mono">{{.ListenHost}}</span></span>
-              <span class="kv"><span class="k">{{$.StartLabel}}</span>{{.StartLabel}}</span>
-            </span>
-          </td>
-          <td class="mono" data-label="ID">{{.ID}}</td>
-          <td class="mono path" data-label="DSH_HOME">{{.Home}}</td>
-          <td class="mono" data-label="{{$.ColPort}}">{{.Port}}</td>
-          <td data-label="{{$.ColStatus}}"><span class="tag {{if .Enabled}}on{{else}}off{{end}}">{{.StatusLabel}}</span></td>
-          {{if $.HasInstaller}}
-          <td data-label="{{$.ColPhase}}">
-            {{if .Installed}}<span class="tag on">{{.InstalledLabel}}</span>
-            {{else}}<span class="tag off">{{.NotReadyLabel}}</span>{{end}}
-            {{if .JobPhase}}<span class="tag">{{.JobPhase}}</span>{{end}}
-          </td>
-          <td class="actions wrap">
-            <form method="post" action="{{$.AdminPath}}">
-              <input type="hidden" name="csrf" value="{{$.CSRF}}">
-              <input type="hidden" name="action" value="instance.install">
-              <input type="hidden" name="instance_id" value="{{.ID}}">
-              <input type="hidden" name="name" value="{{.Name}}">
-              <input type="text" name="install_dir" value="{{.InstallDir}}" placeholder="{{$.InstDir}}">
-              <select name="install_mode">
-                {{range .ModeOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
-              </select>
-              <button type="submit">{{$.BtnInstInstall}}</button>
-            </form>
-            <form method="post" action="{{$.AdminPath}}">
-              <input type="hidden" name="csrf" value="{{$.CSRF}}">
-              <input type="hidden" name="action" value="instance.remove">
-              <input type="hidden" name="instance_id" value="{{.ID}}">
-              <input type="hidden" name="name" value="{{.Name}}">
-              <button type="submit" class="danger">{{$.BtnInstRemove}}</button>
-            </form>
-          </td>
+      {{/* data-* 钩子是自动刷新的落点：脚本按 data-inst 找到卡片，只改徽标 /
+           说明 / 启停按钮的文本与 hidden，不碰卡片里的表单控件。 */}}
+      <article class="inst-card{{if $.HasLifespan}}{{if .Ready}} is-ready{{else if .Running}} is-starting{{end}}{{end}}" data-inst="{{.ID}}">
+        <header class="inst-head">
+          <a class="inst-name" href="{{.Href}}" target="_blank" rel="noopener">{{.Name}}</a>
+          <span class="inst-badges">
+            <span class="tag {{if .Enabled}}on{{else}}off{{end}}">{{.StatusLabel}}</span>
+            {{if $.HasLifespan}}<span class="tag {{if .Ready}}on{{else if .Running}}warn{{else}}off{{end}}" data-badge="run">{{.RunLabel}}</span><span class="tag" data-badge="source"{{if not .RunSource}} hidden{{end}}>{{.RunSource}}</span>{{end}}
+            {{if $.HasInstaller}}<span class="tag {{if .Installed}}on{{else}}off{{end}}" data-badge="installed">{{if .Installed}}{{.InstalledLabel}}{{else}}{{.NotReadyLabel}}{{end}}</span><span class="tag" data-badge="phase"{{if not .JobPhase}} hidden{{end}}>{{.JobPhase}}</span>{{end}}
+          </span>
+        </header>
+        {{/* 创建时能填的字段，建完都要能在这里看到；否则改完配置就再也确认不了
+             自己填的是哪几个目录。留空的两个字段在 Go 侧已翻成一句人话。
+             短字段（端口/ID/监听/启动方式）两列并排，路径类独占整行。 */}}
+        <dl class="inst-meta">
+          <div class="im"><dt>{{$.ColPort}}</dt><dd class="mono">{{.Port}}</dd></div>
+          <div class="im"><dt>ID</dt><dd class="mono">{{.ID}}</dd></div>
+          <div class="im"><dt>{{$.HostLabel}}</dt><dd class="mono">{{.ListenHost}}</dd></div>
+          <div class="im"><dt>{{$.StartLabel}}</dt><dd>{{.StartLabel}}</dd></div>
+          <div class="im"><dt>{{$.ModeLabel}}</dt><dd>{{.InstallModeLabel}}</dd></div>
+          <div class="im"><dt>{{$.VersionLabel}}</dt><dd class="mono">{{.DshVersionLabel}}</dd></div>
+          {{/* 启动命令只说明 dsh 从哪来；实际监听地址与端口是运行时追加的 web
+               参数。单列一行，免得「命令里没看到填的端口」被当成没生效。 */}}
+          <div class="im wide"><dt>{{$.CmdLabel}}</dt><dd class="mono path" data-field="cmd">{{.Command}}</dd></div>
+          <div class="im wide"><dt>{{$.CmdArgsLabel}}</dt><dd class="mono path" data-field="cmd-args">{{.CmdArgs}}</dd></div>
+          {{if $.HasLifespan}}<div class="im" data-pid-wrap{{if not .RunPID}} hidden{{end}}><dt>{{$.PIDLabel}}</dt><dd class="mono" data-pid>{{.RunPID}}</dd></div>{{end}}
+          <div class="im wide"><dt>DSH_HOME</dt><dd class="mono path">{{.Home}}</dd></div>
+          <div class="im wide"><dt>{{$.ConfigLabel}}</dt><dd class="mono path">{{.ConfigDir}}</dd></div>
+          <div class="im wide"><dt>{{$.WorkspaceLabel}}</dt><dd class="mono path">{{.Workspace}}</dd></div>
+        </dl>
+        <p class="inst-note" data-note="run"{{if not .RunError}} hidden{{end}}><span class="tag off">{{$.ErrLabel}}</span><span class="mono">{{.RunError}}</span></p>
+        <p class="inst-note mono" data-note="job"{{if not .JobNote}} hidden{{end}}>{{.JobNote}}</p>
+        <div class="inst-actions">
+          {{/* 「进入」直接开实例（新窗口），不用退回「我的实例」；它只是链接，
+               不依赖运行时句柄，所以放在 HasLifespan 外面。启停：只在接了运行时
+               能力时出现，没在跑就只给「启动」——把做不到的动作藏起来，比点了报错好。 */}}
+          <a class="open-btn" href="{{.Href}}" target="_blank" rel="noopener">{{$.BtnInstOpen}}</a>
+          {{if $.HasLifespan}}
+          {{/* 三颗按钮常驻、按运行状态 hidden 开关：自动刷新改了运行状态时，
+               按钮跟着换，不用等整页重载。做不到的动作仍然看不到。 */}}
+          <form method="post" action="{{$.AdminPath}}" data-act="stop"{{if not .Running}} hidden{{end}}>
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="instance.stop">
+            <input type="hidden" name="instance_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.BtnInstStop}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}" data-act="restart"{{if not .Running}} hidden{{end}}>
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="instance.restart">
+            <input type="hidden" name="instance_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.BtnInstRestart}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}" data-act="start"{{if .Running}} hidden{{end}}>
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="instance.start">
+            <input type="hidden" name="instance_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.BtnInstStart}}</button>
+          </form>
           {{end}}
-        </tr>
-        {{if .JobStep}}
-        <tr class="step"><td colspan="7" class="mono">{{$.StepLabel}}{{.JobStep}}{{if .JobError}} · {{.JobError}}{{end}}{{if .JobCommand}} · {{$.CmdLabel}}{{.JobCommand}}{{end}}</td></tr>
-        {{end}}
+          <span class="inst-spacer" aria-hidden="true"></span>
+          {{if $.HasInstaller}}
+          {{/* 安装参数（目录 + 方式）收进折叠面板：卡面上只留一个触发器，
+               点开才见控件——卡片不会被参数表单撑变形。 */}}
+          <details class="pop">
+            <summary>{{$.InstCardInstall}}</summary>
+            <div class="pop-panel">
+              <form method="post" action="{{$.AdminPath}}" class="install-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="action" value="instance.install">
+                <input type="hidden" name="instance_id" value="{{.ID}}">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <input type="text" name="install_dir" value="{{.InstallDir}}" placeholder="{{$.InstDir}}">
+                <input type="text" name="dsh_version" value="{{.RawDshVersion}}" placeholder="{{$.VersionLabel}}"
+                       title="{{$.VersionHelp}}">
+                <select name="install_mode">
+                  {{range .ModeOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+                </select>
+                <button type="submit">{{$.BtnInstInstall}}</button>
+              </form>
+            </div>
+          {{end}}
+          {{/* 编辑配置：默认收起。改完点「保存配置」只落库，要让改动生效还要点
+               「重启」——这正是用户要的「停止 → 改配置 → 重启」链路。
+               只在接了运行时能力时出现：没有启停就没法让改动生效，摆个表单等于骗人。 */}}
+          {{if $.HasLifespan}}
+          <details class="pop">
+            <summary>{{$.EditTitle}}</summary>
+            <div class="pop-panel">
+              <form method="post" action="{{$.AdminPath}}" class="edit-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="action" value="instance.update">
+                <input type="hidden" name="instance_id" value="{{.ID}}">
+                <div class="row">
+                  <label class="field">{{$.NameLabel}}<input type="text" name="name" value="{{.Name}}" required></label>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.HomeLabel}}</span><input type="text" name="dsh_home" value="{{.Home}}" placeholder="{{$.HomePlaceholder}}"></label><span class="tip" tabindex="0" aria-label="{{$.HomeHelp}}"><i>?</i><span class="tip-body">{{$.HomeHelp}}</span></span></span>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.ConfigLabel}}</span><input type="text" name="config_dir" value="{{.RawConfigDir}}" placeholder="{{$.ConfigPh}}"></label><span class="tip" tabindex="0" aria-label="{{$.ConfigHelp}}"><i>?</i><span class="tip-body">{{$.ConfigHelp}}</span></span></span>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.WorkspaceLabel}}</span><input type="text" name="workspace" value="{{.RawWorkspace}}" placeholder="{{$.WorkspacePh}}"></label><span class="tip" tabindex="0" aria-label="{{$.WorkspaceHelp}}"><i>?</i><span class="tip-body">{{$.WorkspaceHelp}}</span></span></span>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="field">{{$.PortLabel}}<input type="text" name="dsh_port" value="{{.Port}}" size="6"></label>
+                  <label class="field">{{$.HostLabel}}<input type="text" name="listen_host" value="{{.ListenHost}}"></label>
+                  <label class="field">{{$.StartLabel}}
+                    <select name="start_mode">
+                      <option value="auto"{{if eq .RawStartMode "ondemand"}}{{else}} selected{{end}}>{{$.StartAuto}}</option>
+                      <option value="ondemand"{{if eq .RawStartMode "ondemand"}} selected{{end}}>{{$.StartDemand}}</option>
+                    </select>
+                  </label>
+                  <label class="field">{{$.ModeLabel}}
+                    <select name="install_mode">
+                      {{range .ModeOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+                    </select>
+                  </label>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.InstDir}}</span><input type="text" name="install_dir" value="{{.RawInstallDir}}" placeholder="{{$.InstallDirPh}}"></label><span class="tip" tabindex="0" aria-label="{{$.InstallDirHelp}}"><i>?</i><span class="tip-body">{{$.InstallDirHelp}}</span></span></span>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.VersionLabel}}</span><input type="text" name="dsh_version" value="{{.RawDshVersion}}" placeholder="{{$.VersionPh}}"></label><span class="tip" tabindex="0" aria-label="{{$.VersionHelp}}"><i>?</i><span class="tip-body">{{$.VersionHelp}}</span></span></span>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <button type="submit">{{$.BtnInstSave}}</button>
+                  <span class="empty">{{$.SaveHint}}</span>
+                </div>
+              </form>
+            </div>
+          </details>
+          {{end}}
+          {{/* 删实例的两个勾选框：勾了才真删目录。默认只解除管理关系——会话与
+               工作区是用户的数据，额外后果必须由用户显式勾选。
+               触发器描红：点开才见勾选框与「删除实例」，误触不了。 */}}
+          <details class="pop danger">
+            <summary>{{$.InstCardRemove}}</summary>
+            <div class="pop-panel">
+              <form method="post" action="{{$.AdminPath}}" class="remove-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="action" value="instance.remove">
+                <input type="hidden" name="instance_id" value="{{.ID}}">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <label class="check"><input type="checkbox" name="delete_home" value="1">{{$.InstRemoveHome}}</label>
+                <label class="check"><input type="checkbox" name="delete_install" value="1">{{$.InstRemoveInstall}}</label>
+                <span class="check-hint">{{$.InstRemoveHint}}</span>
+                <button type="submit" class="danger">{{$.BtnInstRemove}}</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      </article>
       {{end}}
-      </tbody>
-    </table>
+    </div>
     {{else}}<p class="empty">{{.NoInstances}}</p>{{end}}
 
     {{if .HasInstaller}}
     <div class="sec-head" style="margin-top:clamp(16px,1.4vw,22px)"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span><h2>{{.CreateTitle}}</h2></div>
-    <form method="post" action="{{.AdminPath}}">
+    <form method="post" action="{{.AdminPath}}" class="create-form">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="action" value="instance.create">
       <div class="row">
         <label class="field">{{.NameLabel}}<input type="text" name="name" required></label>
-        <label class="field">{{.HomeLabel}}<input type="text" name="dsh_home" required></label>
-        <label class="field">{{.ConfigLabel}}<input type="text" name="config_dir"></label>
-        <label class="field">{{.WorkspaceLabel}}<input type="text" name="workspace"></label>
+        <span class="field-wrap"><label class="field"><span class="lb">{{.HomeLabel}}</span><input type="text" name="dsh_home" placeholder="{{.HomePlaceholder}}"></label><span class="tip" tabindex="0" aria-label="{{.HomeHelp}}"><i>?</i><span class="tip-body">{{.HomeHelp}}</span></span></span>
+        <span class="field-wrap"><label class="field"><span class="lb">{{.ConfigLabel}}</span><input type="text" name="config_dir" placeholder="{{.ConfigPh}}"></label><span class="tip" tabindex="0" aria-label="{{.ConfigHelp}}"><i>?</i><span class="tip-body">{{.ConfigHelp}}</span></span></span>
+        <span class="field-wrap"><label class="field"><span class="lb">{{.WorkspaceLabel}}</span><input type="text" name="workspace" placeholder="{{.WorkspacePh}}"></label><span class="tip" tabindex="0" aria-label="{{.WorkspaceHelp}}"><i>?</i><span class="tip-body">{{.WorkspaceHelp}}</span></span></span>
       </div>
       <div class="row" style="margin-top:10px">
         <label class="field">{{.PortLabel}}<input type="text" name="dsh_port" value="0" size="6"></label>
@@ -711,10 +1071,17 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
             {{range .Modes}}<option value="{{.Value}}">{{.Label}}</option>{{end}}
           </select>
         </label>
-        <label class="field">{{.InstDirLabel}}<input type="text" name="install_dir"></label>
+      </div>
+      <div class="row create-submit" style="margin-top:10px">
+        <span class="field-wrap"><label class="field"><span class="lb">{{.VersionLabel}}</span><input type="text" name="dsh_version" placeholder="{{.VersionPh}}"></label><span class="tip" tabindex="0" aria-label="{{.VersionHelp}}"><i>?</i><span class="tip-body">{{.VersionHelp}}</span></span></span>
+        <span class="field-wrap wide"><label class="field"><span class="lb">{{.InstDirLabel}}</span><input type="text" name="install_dir" placeholder="{{.InstallDirPh}}"></label><span class="tip" tabindex="0" aria-label="{{.InstallDirHelp}}"><i>?</i><span class="tip-body">{{.InstallDirHelp}}</span></span></span>
         <button type="submit" class="primary">{{.BtnInstCreate}}</button>
       </div>
       <p class="empty">{{.CreateHint}}</p>
+      <details class="dir-note">
+        <summary>{{.DirsTitle}}</summary>
+        <p>{{.DirsTip}}</p>
+      </details>
     </form>
     {{end}}
 
@@ -723,44 +1090,43 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
 
   <section class="panel" id="panel-audit">
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg></span><h2>{{.AuditTitle}}</h2></div>
-    {{if .Audit}}
-    <table>
+    {{/* 表格常驻，自动刷新在新审计进来时重建 tbody（页面带着版本号，只有
+         最大的 id 变了才动）。空的时候由下面那条提示顶位。 */}}
+    <table data-audit-table{{if not .Audit}} hidden{{end}}>
       <thead><tr><th>{{.ColTime}}</th><th>{{.ColActor}}</th><th>{{.ColAction}}</th><th>{{.ColTarget}}</th><th>{{.ColDetail}}</th></tr></thead>
-      <tbody>
+      <tbody data-audit-body>
       {{range .Audit}}
-        <tr><td class="mono" data-label="{{$.ColTime}}">{{.At}}</td><td data-label="{{$.ColActor}}">{{.Actor}}</td><td class="mono" data-label="{{$.ColAction}}">{{.Action}}</td><td data-label="{{$.ColTarget}}">{{.Target}}</td><td class="mono path" data-label="{{$.ColDetail}}">{{.Detail}}</td></tr>
+        <tr><td class="mono" data-label="{{$.ColTime}}">{{.At}}</td><td data-label="{{$.ColActor}}">{{.Actor}}</td><td data-label="{{$.ColAction}}" title="{{.Action}}">{{.ActionLabel}}</td><td data-label="{{$.ColTarget}}">{{.Target}}</td><td class="path" data-label="{{$.ColDetail}}" title="{{.Detail}}">{{.DetailLabel}}</td></tr>
       {{end}}
       </tbody>
     </table>
-    {{else}}<p class="empty">{{.NoAudit}}</p>{{end}}
+    <p class="empty" data-audit-empty{{if .Audit}} hidden{{end}}>{{.NoAudit}}</p>
   </section>
   </div>
+  </div>
 </main>
-<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}</footer>
+<footer>{{.FooterPrefix}}<span>·</span>{{.Host}}<span>·</span>v{{.Version}}
+  <div class="switchers">
+    <nav class="themeswitch" aria-label="{{.ThemeLabel}}">
+      {{range .Themes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+    <nav class="themeswitch" aria-label="{{.SchemeLabel}}">
+      {{range .Schemes}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+    <nav class="themeswitch" aria-label="{{.StyleLabel}}">
+      {{range .Styles}}<a href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+    </nav>
+  </div>
+</footer>
   </div>
 </div>
 
 <nav class="dock" aria-label="{{.NavLabel}}">
+{{range .NavItems}}  <label class="tab" for="tab-{{.ID}}"><i class="ico ico-{{.ID}}" aria-hidden="true"></i><span>{{.Title}}</span></label>
+{{end}}</nav>
 
-{{if .HasInstaller}}  <input type="radio" name="admintab" id="tab-users" class="tab-input"{{if eq .ActiveTab "users"}} checked{{end}}>
-  <label class="tab" for="tab-users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg><span>{{.UsersTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-grants" class="tab-input"{{if eq .ActiveTab "grants"}} checked{{end}}>
-  <label class="tab" for="tab-grants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg><span>{{.GrantsTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-instances" class="tab-input"{{if eq .ActiveTab "instances"}} checked{{end}}>
-  <label class="tab" for="tab-instances"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg><span>{{.InstancesTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-env" class="tab-input"{{if eq .ActiveTab "env"}} checked{{end}}>
-  <label class="tab" for="tab-env"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect><path d="m7 9.5 3 2.5-3 2.5"></path><path d="M12.5 15H17"></path></svg><span>{{.NavEnv}}</span></label>
-  <input type="radio" name="admintab" id="tab-audit" class="tab-input"{{if eq .ActiveTab "audit"}} checked{{end}}>
-  <label class="tab" for="tab-audit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg><span>{{.AuditTitle}}</span></label>
-{{else}}  <input type="radio" name="admintab" id="tab-users" class="tab-input"{{if eq .ActiveTab "users"}} checked{{end}}>
-  <label class="tab" for="tab-users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg><span>{{.UsersTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-grants" class="tab-input"{{if eq .ActiveTab "grants"}} checked{{end}}>
-  <label class="tab" for="tab-grants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg><span>{{.GrantsTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-instances" class="tab-input"{{if eq .ActiveTab "instances"}} checked{{end}}>
-  <label class="tab" for="tab-instances"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"></path><path d="m4.2 7.6 7.8 4.4 7.8-4.4"></path><path d="M12 12v8.8"></path></svg><span>{{.InstancesTitle}}</span></label>
-  <input type="radio" name="admintab" id="tab-audit" class="tab-input"{{if eq .ActiveTab "audit"}} checked{{end}}>
-  <label class="tab" for="tab-audit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5h9L19 7.5v13H6z"></path><path d="M14.5 3.5V8H19"></path><path d="M9 12h6M9 15.5h6"></path></svg><span>{{.AuditTitle}}</span></label>
-{{end}}  
-</nav>
+{{/* 唯一的内联脚本：自动刷新。CSP 按这段内容算出的 sha256 放行它（admin.go
+     的 liveCSP），改动脚本会让哈希跟着变，不会出现「改了却被静默挡住」。 */}}
+<script>{{.LiveScript}}</script>
 </body>
 </html>

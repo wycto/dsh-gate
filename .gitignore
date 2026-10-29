@@ -1,4 +1,5 @@
 /dsh-gate
+/dsh-gate.exe
 dist/
 *.test
 tmp/
@@ -6,3 +7,5 @@ tmp/
 # Go 构建产物与本地构建缓存（go/build.sh 与开发时的 go build 会写在这里）
 go/.build/
 go/.gocache/
+
+go/dsh-gate

@@ -1,4 +1,4 @@
-// `dsh-gate manage run`：启动管理端进程。
+// 管理端进程的运行时入口：`dsh-gate start` 与 `start --foreground` 都落到这里。
 //
 // 组装顺序与单实例形态（server.Instance）一致：账号表 → 鉴权网关 → 实例运行时 →
 // 管理端 HTTP 层。区别只在「账号表换成 SQLite」「上游从『一个 dsh』变成『按实例查』」。
@@ -9,6 +9,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,10 +29,10 @@ import (
 	"github.com/wycto/dsh-gate/internal/config"
 	"github.com/wycto/dsh-gate/internal/dshproc"
 	"github.com/wycto/dsh-gate/internal/i18n"
+	"github.com/wycto/dsh-gate/internal/netutil"
 	"github.com/wycto/dsh-gate/internal/portal"
 	"github.com/wycto/dsh-gate/internal/portalruntime"
 	"github.com/wycto/dsh-gate/internal/registry"
-	"github.com/wycto/dsh-gate/internal/server"
 	"github.com/wycto/dsh-gate/internal/version"
 )
 
@@ -122,7 +124,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		Store:        store,
 		TLS:          opts.TLS,
 		PublicURL:    opts.PublicURL,
-		TrustedHosts: server.TrustedHosts(opts.TrustedHosts, opts.PublicURL),
+		TrustedHosts: netutil.TrustedHosts(opts.TrustedHosts, opts.PublicURL),
 		Launch:       opts.Launch,
 		Logger:       opts.Logger,
 	})
@@ -141,13 +143,25 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		Logger:   opts.Logger,
 	}
 
+	localToken, tokenErr := writeLocalToken(opts.StateDir)
+	if tokenErr != nil {
+		logger := opts.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("写入本机控制令牌失败（dsh 命令将无法控制实例）", "err", tokenErr)
+	}
+
 	server, err := portal.NewServer(portal.ServerOptions{
 		Store:     store,
 		Gate:      gate,
 		Upstream:  runtime.Upstream,
 		Installer: installer,
-		Version:   version.Version,
-		Logger:    opts.Logger,
+		// 启停能力单独注入：管理台的启动 / 停止 / 重启按钮靠它。
+		Lifespan:   &portalruntime.LifespanAdapter{Runtime: runtime},
+		Version:    version.Version,
+		Logger:     opts.Logger,
+		LocalToken: localToken,
 	})
 	if err != nil {
 		store.Close()
@@ -169,12 +183,12 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 	}, nil
 }
 
-// portalRunCommand 实现 `dsh-gate manage run`。
+// portalRunCommand 是管理端的实际运行路径（start / start --foreground 调用它）。
 func portalRunCommand(args []string) int {
 	fs := flag.NewFlagSet("portal run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	host := fs.String("host", "0.0.0.0", "管理端监听地址")
-	port := fs.Int("port", 3082, "管理端监听端口")
+	port := fs.Int("port", 12020, "管理端监听端口")
 	tlsCert := fs.String("tls-cert", "", "HTTPS 证书（与 --tls-key 成对）")
 	tlsKey := fs.String("tls-key", "", "HTTPS 私钥（与 --tls-cert 成对）")
 	publicURL := fs.String("public-url", "", "对外公告地址，如 https://dsh.example.com/")
@@ -241,7 +255,7 @@ func portalRunCommand(args []string) int {
 		if err := checkPortalAccounts(resolvedDB, cfg.StateDirPath()); err != nil {
 			return failKey(i18n.KeyCLIPortalRunFailed, err.Error())
 		}
-		return portalRunInBackground(*port, resolvedDB, os.Args)
+		return portalRunInBackground(*port, resolvedDB, args)
 	}
 
 	// 可取消的根上下文：停机端点（`dsh-gate stop portal`）调 Shutdown 回调取消它，
@@ -271,6 +285,14 @@ func portalRunCommand(args []string) int {
 		_ = assembly.stop(context.Background())
 		return failKey(i18n.KeyCLIPortalRunFailed, err.Error())
 	}
+
+	// 尽早自登记：Node 运行时下载 / 补库可能几十秒，status、stop、dsh list 不该
+	// 在这段时间里看不见管理端。登记只需要监听地址与命令行，与后面的准备无关。
+	// restart 按登记里的命令行重新拉起，而那条命令行是 `portal run`（不带
+	// --background）——前台跑的管理端如果只靠后台分支写登记，重启出来的这个就
+	// 谁也不认得。与单实例形态的 Instance.register 对齐：进程自己写、退出时删。
+	registerPortalRecord(runDir, listener.Addr().String(), *port, os.Args, tlsEnabled, strings.TrimSpace(*publicURL))
+	defer unregisterPortalRecord(runDir)
 
 	ctx, cancel := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -304,13 +326,6 @@ func portalRunCommand(args []string) int {
 		display = fmt.Sprintf("%s://%s/", scheme, listener.Addr().String())
 	}
 	sayKey(os.Stdout, i18n.KeyCLIPortalRunStarted, display, len(instances))
-
-	// 自登记：restart 是按登记里的命令行重新拉起的，而那条命令行是
-	// `portal run`（不带 --background）——前台跑的管理端如果只靠后台分支写登记，
-	// 重启出来的这个就谁也不认得，status 看不到、stop 找不到。
-	// 与单实例形态的 Instance.register 对齐：进程自己写自己的条目，退出时删掉。
-	registerPortalRecord(runDir, *port, os.Args, tlsEnabled, strings.TrimSpace(*publicURL))
-	defer unregisterPortalRecord(runDir)
 
 	server := &http.Server{
 		Handler: assembly.Handler,
@@ -393,8 +408,10 @@ func portalRunInBackground(port int, dbPath string, argv []string) int {
 		exe = resolved
 	}
 
-	// 后台化的子进程要把 --background/-d 去掉，否则它会试图再后台化一次。
-	child := stripBackgroundFlags(argv)
+	// 后台化的子进程显式用 `start --foreground` 重新进入：它不能复用调用方的
+	// os.Args——从 restart 或 install 转进来时，os.Args 是那条父命令，子进程照抄
+	// 会再执行一遍父命令（restart 会无限递归）。去掉 --background 只保留启动参数。
+	child := append([]string{"dsh-gate", "start", "--foreground"}, stripBackgroundFlags(argv)...)
 	pid, err := spawnDetached(exe, child, logDirFor(dir), portalRecordName)
 	if err != nil {
 		return fatal("管理端后台启动失败：%v", err)
@@ -412,12 +429,11 @@ func portalRunInBackground(port int, dbPath string, argv []string) int {
 	fmt.Printf("管理端已在后台运行（进程号 %d），访问 http://127.0.0.1:%d/\n", pid, port)
 	fmt.Printf("  管理台    http://127.0.0.1:%d/admin\n", port)
 	fmt.Printf("  日志      %s\n", filepath.Join(logDirFor(dir), portalRecordName+".log"))
-	// 登记名是 portal：stop/status 认的是登记名，与命令名 manage 无关，
-	// 这里直接写出来免得用户以为要敲 `stop manage`。
-	fmt.Printf("  停止      dsh-gate stop portal    状态 dsh-gate status\n")
+	// 登记名是 portal：stop/status 认的固定是它，与命令名无关。
+	fmt.Printf("  停止      dsh-gate stop           状态 dsh-gate status\n")
 	fmt.Println()
 	fmt.Println("管理端没有拉起任何 dsh。添加实例（默认也是按需启动，管理端重启不会自动拉起）:")
-	fmt.Println("  dsh-gate manage instance add <名字> --dsh-home <目录> --on-demand")
+	fmt.Println("  dsh-gate dsh add <名字> --dsh-home <目录> --start-mode ondemand")
 	return 0
 }
 
@@ -426,7 +442,7 @@ func portalRunInBackground(port int, dbPath string, argv []string) int {
 // 前台与后台两条路都靠它：后台分支由父进程先等端口就绪，子进程起来后再用自己
 // 的 PID 覆盖一次；restart 按登记命令行拉起的那种没有父进程，全靠这里自登记。
 // 写失败不影响管理端本身——只影响 status / stop 能不能看见它。
-func registerPortalRecord(dir registry.Dir, port int, argv []string, tls bool, publicURL string) {
+func registerPortalRecord(dir registry.Dir, listen string, port int, argv []string, tls bool, publicURL string) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = ""
@@ -438,7 +454,7 @@ func registerPortalRecord(dir registry.Dir, port int, argv []string, tls bool, p
 		PID:       os.Getpid(),
 		Exe:       exe,
 		Argv:      argv,
-		Listen:    net.JoinHostPort("0.0.0.0", strconv.Itoa(port)),
+		Listen:    listen,
 		Port:      port,
 		DSHPort:   0, // 管理端不托管任何 dsh：实例各自由 portalruntime 拉起
 		PublicURL: publicURL,
@@ -456,4 +472,31 @@ func unregisterPortalRecord(dir registry.Dir) {
 	if err := dir.Remove(portalRecordName); err != nil {
 		slog.Default().Warn("删除运行登记失败", "err", err)
 	}
+}
+
+// localTokenName 是本机控制 API 的令牌文件名（放在状态目录里，0600）。
+const localTokenName = "portal.token"
+
+// writeLocalToken 生成/刷新本机控制令牌。
+//
+// 每次启动都换一把新钥匙：旧令牌随上一次进程一起失效，文件被留下也不会变成
+// 一个永久有效的后门。CLI 每次调用现读文件，所以换钥匙对用户透明。
+func writeLocalToken(stateDir string) (string, error) {
+	dir := strings.TrimSpace(stateDir)
+	if dir == "" {
+		return "", errors.New("状态目录为空，无法生成本机控制令牌")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("创建状态目录 %s 失败: %w", dir, err)
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成随机令牌失败: %w", err)
+	}
+	token := hex.EncodeToString(buf)
+	path := filepath.Join(dir, localTokenName)
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("写入 %s 失败: %w", path, err)
+	}
+	return token, nil
 }

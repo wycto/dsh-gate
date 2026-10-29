@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/wycto/dsh-gate/internal/users"
@@ -98,6 +99,8 @@ func TestSchemaVersionGuard(t *testing.T) {
 
 func TestAuthenticate(t *testing.T) {
 	s := newStore(t)
+	// 首位注册自动成为超级管理员（见 CreateUser）；停用测试要用非超管账号。
+	mustCreateUser(t, s, "root", "correct horse battery", RoleUser)
 	mustCreateUser(t, s, "alice", "correct horse battery", RoleUser)
 
 	if _, err := s.Authenticate("alice", "correct horse battery"); err != nil {
@@ -135,40 +138,64 @@ func TestUserValidationAndUniqueness(t *testing.T) {
 	if _, err := s.CreateUser("bad name", "correct horse battery", RoleUser); err == nil {
 		t.Fatal("非法用户名应被拒绝")
 	}
+	// 账号不支持中文（中文名走「姓名」字段）。
+	if _, err := s.CreateUser("张三", "correct horse battery", RoleUser); err == nil {
+		t.Fatal("中文账号应被拒绝")
+	}
 	if _, err := s.CreateUser("carol", "correct horse battery", Role("root")); err == nil {
 		t.Fatal("非法角色应被拒绝")
+	}
+}
+
+// TestCreateUserWithDisplay 姓名入库与回退：留空回退登录名，非空原样存。
+func TestCreateUserWithDisplay(t *testing.T) {
+	s := newStore(t)
+	// 首位账号（超管）不带姓名：display 回退登录名。
+	first := mustCreateUser(t, s, "root", "correct horse battery", RoleAdmin)
+	if first.DisplayName != "root" {
+		t.Errorf("姓名留空应回退登录名，实际 %q", first.DisplayName)
+	}
+	u, err := s.CreateUserWithDisplay("li.si", "correct horse battery", RoleUser, "李四 ")
+	if err != nil {
+		t.Fatalf("带姓名建号失败: %v", err)
+	}
+	if u.DisplayName != "李四" {
+		t.Errorf("姓名应去空白后原样入库，实际 %q", u.DisplayName)
+	}
+	// 姓名里塞控制字符要拦住（账号合法、姓名非法）。
+	if _, err := s.CreateUserWithDisplay("wang.wu", "correct horse battery", RoleUser, "坏\x00名"); err == nil {
+		t.Fatal("非法姓名应被拒绝")
 	}
 }
 
 func TestLastAdminProtection(t *testing.T) {
 	s := newStore(t)
 	mustCreateUser(t, s, "root", "correct horse battery", RoleAdmin)
+	// 构造「超管不是管理员」的旧库形态：首位账号在新规则下自动是超管且
+	// 受超管保护，超管保护先于最后管理员保护拦下一切——要让后者仍然可达，
+	// 只能像迁移过来的老数据那样，把首位降成普通用户（直接改库模拟）。
+	if err := s.updateUser("root", `UPDATE users SET role = ? WHERE name = ?`, string(RoleUser), "root"); err != nil {
+		t.Fatalf("模拟旧库失败: %v", err)
+	}
 
-	if err := s.DeleteUser("root"); err == nil {
+	mustCreateUser(t, s, "root2", "correct horse battery", RoleAdmin)
+	if err := s.DeleteUser("root2"); err == nil {
 		t.Fatal("删除最后一个管理员应被拒绝")
 	}
-	if err := s.SetRole("root", RoleUser); err == nil {
+	if err := s.SetRole("root2", RoleUser); err == nil {
 		t.Fatal("降级最后一个管理员应被拒绝")
 	}
-	if err := s.SetDisabled("root", true); err == nil {
+	if err := s.SetDisabled("root2", true); err == nil {
 		t.Fatal("停用最后一个管理员应被拒绝")
 	}
 
-	// 有第二个管理员后：允许降级 root；但此时 root2 成了唯一管理员，
-	// 删它仍应被拒绝——保护看的是「还剩几个管理员」，不是「谁」。
-	mustCreateUser(t, s, "root2", "correct horse battery", RoleAdmin)
-	if err := s.SetRole("root", RoleUser); err != nil {
+	// 有备用管理员后：降级与删除都放行——保护看的是「还剩几个管理员」。
+	mustCreateUser(t, s, "root3", "correct horse battery", RoleAdmin)
+	if err := s.SetRole("root2", RoleUser); err != nil {
 		t.Fatalf("有备用管理员后应允许降级: %v", err)
 	}
-	if err := s.DeleteUser("root2"); err == nil {
-		t.Fatal("root2 已是唯一管理员，删除应被拒绝")
-	}
-	// 把 root 提回管理员，再删 root2 就应当放行。
-	if err := s.SetRole("root", RoleAdmin); err != nil {
-		t.Fatalf("提回管理员失败: %v", err)
-	}
 	if err := s.DeleteUser("root2"); err != nil {
-		t.Fatalf("有主管理员时应允许删除另一个管理员: %v", err)
+		t.Fatalf("有备用管理员后应允许删除: %v", err)
 	}
 }
 
@@ -237,12 +264,20 @@ func TestInstanceLifecycle(t *testing.T) {
 		t.Fatalf("自动分配的端口重复: %d %d %d", inst.DshPort, second.DshPort, third.DshPort)
 	}
 
-	// 名字不能重复、dsh-home 必填。
+	// 名字不能重复。
 	if err := s.CreateInstance(&Instance{Name: "alice-main", DshHome: "/x"}); err == nil {
 		t.Fatal("重名实例应被拒绝")
 	}
-	if err := s.CreateInstance(&Instance{Name: "no-home"}); err == nil {
-		t.Fatal("缺少 dsh-home 应被拒绝")
+	// dsh-home 留空不是错误：落到 dsh 自己的默认目录（~/.dsh 展开后的绝对路径）。
+	noHome := &Instance{Name: "no-home"}
+	if err := s.CreateInstance(noHome); err != nil {
+		t.Fatalf("dsh-home 留空应接受并补默认值，实际 %v", err)
+	}
+	if want := DefaultDshHome(); noHome.DshHome != want {
+		t.Errorf("dsh-home 应补成默认值 %q，实际 %q", want, noHome.DshHome)
+	}
+	if strings.HasPrefix(noHome.DshHome, "~") {
+		t.Errorf("默认值必须是展开后的绝对路径（子进程的 DSH_HOME 不经过 shell，`~` 不会被展开），实际 %q", noHome.DshHome)
 	}
 
 	// 更新：改端口、停用。
@@ -421,5 +456,136 @@ func TestNewInstanceIDFormat(t *testing.T) {
 			t.Fatalf("200 次生成出现重复 id %q，随机性可疑", id)
 		}
 		seen[id] = true
+	}
+}
+
+// TestInstanceHomeDefaultsToDshDefault 验证「实例目录留空就用 dsh 的默认目录」。
+//
+// 这是用户直接提的需求：建实例时那一栏空着应该照常能建，落到 dsh 自己的
+// ~/.dsh，而不是被一串「必填」拦住。
+//
+// 关键约束：落库的必须是**展开后的绝对路径**。这个值稍后会被原样塞进子进程
+// 环境变量（DSH_HOME=...），环境变量不经过 shell，`~` 不会被展开——存字面量
+// `~/.dsh` 会让 dsh 在当前工作目录下建出一个名字就叫 `~` 的目录，数据写错地方。
+func TestInstanceHomeDefaultsToDshDefault(t *testing.T) {
+	s := newStore(t)
+
+	want := DefaultDshHome()
+	if want == "" {
+		t.Skip("本机取不到家目录，默认值不可用")
+	}
+	if !filepath.IsAbs(want) {
+		t.Fatalf("默认实例目录必须是绝对路径，实际 %q", want)
+	}
+
+	inst := &Instance{Name: "default-home"}
+	if err := s.CreateInstance(inst); err != nil {
+		t.Fatalf("实例目录留空应能建实例，实际 %v", err)
+	}
+	if inst.DshHome != want {
+		t.Errorf("实例目录应为 %q，实际 %q", want, inst.DshHome)
+	}
+	// 读回来也必须是同一个值：默认值在读写两条路上不一致的话，管理台显示的
+	// 与实际使用的会是两个目录。
+	got, err := s.InstanceByID(inst.ID)
+	if err != nil {
+		t.Fatalf("读回实例失败: %v", err)
+	}
+	if got.DshHome != want {
+		t.Errorf("读回的实例目录应为 %q，实际 %q", want, got.DshHome)
+	}
+	// 留空时工作目录也跟着落到 <默认实例目录>/workspace。
+	if w := filepath.Join(want, "workspace"); got.Workspace != w {
+		t.Errorf("工作目录应为 %q，实际 %q", w, got.Workspace)
+	}
+
+	// 显式指定时不得被默认值覆盖。
+	explicit := &Instance{Name: "explicit-home", DshHome: "/srv/dsh/mine"}
+	if err := s.CreateInstance(explicit); err != nil {
+		t.Fatalf("显式指定实例目录应成功: %v", err)
+	}
+	if explicit.DshHome != "/srv/dsh/mine" {
+		t.Errorf("显式指定的实例目录被改写成了 %q", explicit.DshHome)
+	}
+}
+
+// TestUpdateInstanceHomeBlankFallsBack 验证改实例时把目录清空也回落到默认值。
+func TestUpdateInstanceHomeBlankFallsBack(t *testing.T) {
+	s := newStore(t)
+	want := DefaultDshHome()
+	if want == "" {
+		t.Skip("本机取不到家目录，默认值不可用")
+	}
+	inst := mustCreateInstance(t, s, "clear-home", "/srv/dsh/before")
+
+	inst.DshHome = ""
+	if err := s.UpdateInstance(*inst); err != nil {
+		t.Fatalf("清空实例目录应回落到默认值，实际报错 %v", err)
+	}
+	got, err := s.InstanceByID(inst.ID)
+	if err != nil {
+		t.Fatalf("读回实例失败: %v", err)
+	}
+	if got.DshHome != want {
+		t.Errorf("清空后应为默认值 %q，实际 %q", want, got.DshHome)
+	}
+}
+
+// TestOpenRecoversFromStaleShmIndex 验证留下一份过期的 WAL 索引时仍能打开库。
+//
+// 真实场景：重装时计划任务被 `schtasks /End` 强制结束，进程没走 sqlite 的正常
+// 收尾，<db>-shm 留在磁盘上；新进程映射这份过期索引后，读有的表报 disk I/O error
+// (266)，页面显示「服务内部错误」。Open 应当把它当缓存删掉重来。
+func TestOpenRecoversFromStaleShmIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "portal.db")
+
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("建库失败: %v", err)
+	}
+	mustCreateUser(t, first, "keeper", "secret-pass-123", RoleAdmin)
+	if err := first.Close(); err != nil {
+		t.Fatalf("关闭库失败: %v", err)
+	}
+	// 正常关闭时 sqlite 会删掉 -shm；这里故意留一份全是垃圾字节的索引，
+	// 模拟被强制结束的进程留下的状态。
+	junk := make([]byte, 32*1024)
+	for i := range junk {
+		junk[i] = 0xAA
+	}
+	shmPath := path + "-shm"
+	if err := os.WriteFile(shmPath, junk, 0o600); err != nil {
+		t.Fatalf("写入过期索引失败: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("有过期 WAL 索引时也应能打开库: %v", err)
+	}
+	u, err := s.UserByName("keeper")
+	if err != nil {
+		t.Fatalf("打开后读账号失败: %v", err)
+	}
+	if u.Name != "keeper" {
+		t.Errorf("读回的账号应为 keeper，实际 %q", u.Name)
+	}
+	_ = s.Close()
+
+	// 再把索引文件换成一个目录：第一次打开必然失败，只有「删掉过期索引再重来」
+	// 这条自愈路径能救回来——这是真正被验证的代码路径。
+	if err := os.Remove(shmPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("清理索引文件失败: %v", err)
+	}
+	if err := os.Mkdir(shmPath, 0o700); err != nil {
+		t.Fatalf("占住索引路径失败: %v", err)
+	}
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("索引路径被占住时应能自愈并打开库: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+	if _, err := s2.UserByName("keeper"); err != nil {
+		t.Fatalf("自愈后读账号失败: %v", err)
 	}
 }

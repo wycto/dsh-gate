@@ -25,8 +25,9 @@ import (
 // 默认值。集中放在这里，改行为时只动这一处。
 const (
 	// DefaultGatePort 是网关监听端口。刻意避开 dsh 的 3080 和常用的 80/443，
-	// 也避开很多开发服务器常占的 3000/5173/8080。
-	DefaultGatePort = 3082
+	// 也避开很多开发服务器常占的 3000/5173/8080，以及 9080 这类企业中间件
+	// （WebSphere、Istio 示例服务）爱用的号段。
+	DefaultGatePort = 12020
 
 	// DefaultDSHPort 与 dsh 自己的默认端口一致（dsh web 不带 --port 时）。
 	DefaultDSHPort = 3080
@@ -203,7 +204,7 @@ func (i *Instance) StateDirPath() string {
 	return i.StateDir
 }
 
-// ListenAddr 返回网关监听地址，形如 0.0.0.0:3082。
+// ListenAddr 返回网关监听地址，形如 0.0.0.0:12020。
 func (i *Instance) ListenAddr() string {
 	return net.JoinHostPort(i.Host, strconv.Itoa(i.Port))
 }

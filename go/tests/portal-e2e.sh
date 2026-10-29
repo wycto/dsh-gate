@@ -1,8 +1,7 @@
 #!/bin/sh
 # 门户端到端验收：两个用户 + 两个**真实** dsh 实例。
 #
-# 与 container-e2e.sh 的分工：那个脚本验「干净 Linux 容器里能不能起来」，这个脚本
-# 验门户的多用户/多实例语义 —— 用户只能看到自己的实例、拿别人的挂载路径得 404、
+# 验管理端的多用户/多实例语义 —— 用户只能看到自己的实例、拿别人的挂载路径得 404、
 # 进自己的实例能真的拿到 dsh 页面（也就是令牌交接真的完成了）。
 #
 # 用法：
@@ -49,26 +48,26 @@ db="$tmp/portal.db"
 mkdir -p "$state"
 
 echo "== 建门户账号（管理员 + 两个成员）"
-echo "admin-password-123" | "$bin" portal user add admin --role admin --db "$db" --password-stdin >/dev/null
-echo "alice-password-123" | "$bin" portal user add alice --db "$db" --password-stdin >/dev/null
-echo "bob-password-123"   | "$bin" portal user add bob   --db "$db" --password-stdin >/dev/null
+echo "admin-password-123" | "$bin" manage user add admin --role admin --db "$db" --password-stdin >/dev/null
+echo "alice-password-123" | "$bin" manage user add alice --db "$db" --password-stdin >/dev/null
+echo "bob-password-123"   | "$bin" manage user add bob   --db "$db" --password-stdin >/dev/null
 
 echo "== 建两个实例（各自的 DSH_HOME，端口自动分配）"
-"$bin" portal instance add alice-main --dsh-home "$tmp/alice/.dsh" --owner alice --db "$db" >/dev/null
-"$bin" portal instance add bob-main   --dsh-home "$tmp/bob/.dsh"   --owner bob   --db "$db" >/dev/null
+"$bin" dsh add alice-main --dsh-home "$tmp/alice/.dsh" --owner alice --db "$db" >/dev/null
+"$bin" dsh add bob-main   --dsh-home "$tmp/bob/.dsh"   --owner bob   --db "$db" >/dev/null
 
-alice_id=$("$bin" portal instance list --db "$db" | awk 'NF >= 5 && $1 == "alice-main" {print $2}')
-bob_id=$("$bin" portal instance list --db "$db" | awk 'NF >= 5 && $1 == "bob-main" {print $2}')
+alice_id=$("$bin" dsh list --db "$db" | awk 'NF >= 5 && $1 == "alice-main" {print $2}')
+bob_id=$("$bin" dsh list --db "$db" | awk 'NF >= 5 && $1 == "bob-main" {print $2}')
 [ -n "$alice_id" ] && [ -n "$bob_id" ] || fail "没能从 instance list 解析出实例 id"
 ok "实例就绪：alice-main=$alice_id bob-main=$bob_id"
 
 echo "== 授权：alice → alice-main，bob → bob-main"
-"$bin" portal grant add alice alice-main --db "$db" >/dev/null
-"$bin" portal grant add bob   bob-main   --db "$db" >/dev/null
+"$bin" manage grant add alice alice-main --db "$db" >/dev/null
+"$bin" manage grant add bob   bob-main   --db "$db" >/dev/null
 
 echo "== 启动门户（127.0.0.1:$portal_port）"
-"$bin" portal run --host 127.0.0.1 --port "$portal_port" --db "$db" --state-dir "$state" \
-  --log-level warn --lang en >"$tmp/portal.log" 2>&1 &
+"$bin" start --foreground --host 127.0.0.1 --port "$portal_port" --db "$db" --state-dir "$state" \
+  --lang en >"$tmp/portal.log" 2>&1 &
 portal_pid=$!
 
 base="http://127.0.0.1:$portal_port"

@@ -3,37 +3,67 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
-// defaultBinDir 是命令拷贝的默认落点。
+// defaultBinDir 是 Linux / macOS 下命令拷贝的默认落点。
 //
 // 选 /usr/local/bin 是因为它在几乎所有发行版与 macOS 的默认 PATH 里，且
-// 语义就是「本地管理员装的软件」。Windows 不走这条路（见 installSelfToBinDir）。
+// 语义就是「本地管理员装的软件」。Windows 的默认落点不同（见 binDirDefault）。
 const defaultBinDir = "/usr/local/bin"
 
-// errBinDirUnsupported 表示当前平台不做命令拷贝。
-var errBinDirUnsupported = errors.New("当前平台不在 PATH 目录里安装命令拷贝")
+// binDirDefault 返回当前平台的默认安装目录；空串表示「这个平台不问、也不拷」。
+//
+// Linux / macOS 用 /usr/local/bin：它在默认 PATH 里，装完就能直接敲命令。
+//
+// Windows 没有这样的目录：System32 要管理员权限，Program Files 也不是普通用户
+// 能写的。而计划任务里的命令必须指向一个不会被清理的位置——用户从 zip 解出来
+// 的目录、甚至临时目录随时会消失，开机自启就跟着失效（这正是用户从解压目录
+// 装完、删掉目录后自启打不开的情形）。所以这里选 %LOCALAPPDATA%\dsh-gate\bin：
+// 当前用户可写、不会被系统清理、卸载时也好找。它不在 PATH 里，安装结束时会
+// 提示一句「想直接敲 dsh-gate 就把它加进用户 PATH」。
+func binDirDefault() string {
+	if runtime.GOOS == "windows" {
+		base := os.Getenv("LOCALAPPDATA")
+		if base == "" {
+			// 极少数环境没有 LOCALAPPDATA（比如某些服务账号），退到 %AppData%。
+			if dir, err := os.UserConfigDir(); err == nil {
+				base = dir
+			}
+		}
+		if base == "" {
+			return ""
+		}
+		return filepath.Join(base, serviceName, "bin")
+	}
+	return defaultBinDir
+}
+
+// binTarget 返回拷贝到 dir 之后的文件路径。Windows 上可执行文件要带 .exe。
+func binTarget(dir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dir, serviceName+".exe")
+	}
+	return filepath.Join(dir, serviceName)
+}
 
 // installSelfToBinDir 把当前可执行文件拷到 dir 下，返回落点与是否发生了改动。
 //
 // 为什么是「拷一份」而不是软链：用户可能把 dsh-gate 放在
-// /www/wwwroot/dsh-gate 这种随时会被清理的部署目录里；拷到 PATH 目录之后，
-// 删掉原目录也不影响命令可用（service install 会把拷贝后的路径写进服务单元）。
+// /www/wwwroot/dsh-gate 这种随时会被清理的部署目录里；拷到安装目录之后，
+// 删掉原目录也不影响命令可用（service install 会把拷贝后的路径写进服务单元
+// 或 Windows 计划任务）。
 // 代价是升级时要再跑一次安装——所以内容一致时这里什么都不做，只报「已是最新」。
 //
 // 任何一步失败都不留半成品：先写临时文件、设好权限、再原子改名。
 func installSelfToBinDir(dir string) (string, bool, error) {
 	if dir == "" {
 		return "", false, nil
-	}
-	if runtime.GOOS == "windows" {
-		return "", false, errBinDirUnsupported
 	}
 
 	exe, err := os.Executable()
@@ -44,7 +74,7 @@ func installSelfToBinDir(dir string) (string, bool, error) {
 		exe = resolved
 	}
 
-	target := filepath.Join(dir, serviceName)
+	target := binTarget(dir)
 	// 已经跑在目标位置（例如服务单元就指着它）就不用自己拷自己。
 	if samePath(exe, target) {
 		return target, false, nil
@@ -86,9 +116,36 @@ func installSelfToBinDir(dir string) (string, bool, error) {
 		return "", false, fmt.Errorf("关闭临时文件失败: %w", err)
 	}
 	if err := os.Rename(tmpPath, target); err != nil {
+		// Windows 不允许覆盖正在运行的可执行文件。目标很可能就是当前管理端在跑的
+		// 那一份（升级 / 重装场景）：先请它正常停下，再试一次。安装流程随后会把
+		// 它重新启动，所以这里停一下不影响用户。
+		if stopErr := stopRunningPortal(); stopErr == nil {
+			if err = os.Rename(tmpPath, target); err == nil {
+				return target, true, nil
+			}
+		}
 		return "", false, fmt.Errorf("安装到 %s 失败: %w", target, err)
 	}
 	return target, true, nil
+}
+
+// stopRunningPortal 停掉正在跑的管理端，好让安装覆盖它自己的可执行文件。
+//
+// 返回 nil 表示「现在没有在跑的，或者已经停下了」——两种都算可以继续。
+func stopRunningPortal() error {
+	runDir := resolveRunDir("")
+	record, ok, err := runDir.Load(portalRecordName)
+	if err != nil {
+		return err
+	}
+	if !ok || !record.Alive() {
+		return nil
+	}
+	if err := stopRecord(record, 10*time.Second); err != nil {
+		return err
+	}
+	_ = runDir.Remove(portalRecordName)
+	return nil
 }
 
 // printInstallSelfResult 执行拷贝并把结果打出来，返回最终该用的可执行文件路径。
@@ -98,18 +155,19 @@ func installSelfToBinDir(dir string) (string, bool, error) {
 func printInstallSelfResult(dir string) string {
 	path, changed, err := installSelfToBinDir(dir)
 	switch {
-	case errors.Is(err, errBinDirUnsupported):
-		return ""
 	case err != nil:
 		fmt.Fprintf(os.Stderr, "提示：未能把 dsh-gate 放进 %s：%v\n", dir, err)
-		if os.Geteuid() != 0 {
+		if runtime.GOOS != "windows" && os.Geteuid() != 0 {
 			fmt.Fprintln(os.Stderr, "  那是需要写权限的目录：可以 sudo 重跑，或用 --bin-dir 换一个位置。")
 		}
 		return ""
 	case path == "":
 		return ""
 	case changed:
-		fmt.Printf("命令已安装 %s（可直接敲 dsh-gate）\n", path)
+		fmt.Printf("命令已安装 %s\n", path)
+		if runtime.GOOS == "windows" {
+			fmt.Printf("  提示：这个目录不在 PATH 里；想直接敲 dsh-gate，把它加进用户环境变量 PATH 即可。\n")
+		}
 	default:
 		fmt.Printf("命令已是最新 %s\n", path)
 	}

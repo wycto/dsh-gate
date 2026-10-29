@@ -1,0 +1,425 @@
+/* =====================================================================
+   dsh-gate 三张页面（登录 / 我的实例 / 管理台）共用的配色令牌。
+
+   由 assets.go 内嵌、以 template "dsh-theme" 注入每页的 <style>，
+   页面自身不再各抄一份——以前同一套令牌在三处手抄，改一次色要同步三处，
+   漏一处就出现「登录页换了、管理台没换」这种最难查的分叉。
+
+   两个正交维度：
+     * 明暗（data-theme）：light / dark / 缺省跟随系统（prefers-color-scheme）。
+     * 方案（data-scheme）：slate 石墨蓝（默认）/ ocean 海蓝 / violet 绛紫 /
+       forest 墨绿黄铜（旧版配色，降级为一个方案）。
+   模板**总是**写 data-scheme，所以每条规则的选择器都能稳定命中：
+     暗色方案块   :root[data-scheme="X"]                        （0,1,0）
+     亮色方案块   :root[data-theme="light"][data-scheme="X"]    （0,2,0）
+     跟随系统亮色  media 里的 :root:not([data-theme="dark"])[data-scheme="X"]
+   亮色块必须写在暗色块之后（同特异度靠顺序决胜）。
+
+   派生令牌（ring / btn-a / mark / fur / brass / …）只在 :root 写一次，
+   全部用 color-mix 挂在基础令牌上：换方案、换明暗都自动跟着走，
+   不再需要逐块手抄。
+   ===================================================================== */
+
+:root{
+  /* ---------- 石墨蓝 · 暗色（默认方案）---------- */
+  --desktop-1:#0b0f14;
+  --desktop-2:#10161d;
+  --window:rgba(22,27,34,.66);
+  --titlebar:rgba(28,33,41,.55);
+  --content:rgba(13,17,23,.35);
+  --card:rgba(255,255,255,.05);
+  --card-2:rgba(255,255,255,.08);
+  --pop:#161b22;
+  --field:rgba(0,0,0,.30);
+  --line:rgba(148,163,184,.16);
+  --line-strong:rgba(148,163,184,.32);
+  --text:#e6edf3;
+  --muted:#98a6b4;
+  --faint:#7d8b99;
+  --accent:#58a6ff;
+  --accent-2:#39c5cf;
+  --accent-ink:#0a0e14;
+  --ok:#3fb950;
+  --warning:#d29922;
+  --danger:#f85149;
+  --shadow-tint:rgba(0,0,0,.95);
+  --glass-edge:rgba(255,255,255,.10);
+  --aurora-1:#1f6feb;
+  --aurora-2:#0e7490;
+  --aurora-3:#33415c;
+  --aurora-4:#1d4ed8;
+  --aurora-op:.6;
+}
+
+/* ---------- 其余方案的暗色 ---------- */
+:root[data-scheme="ocean"]{
+  --desktop-1:#071018;
+  --desktop-2:#0a1622;
+  --window:rgba(13,30,45,.66);
+  --titlebar:rgba(16,36,54,.55);
+  --content:rgba(8,20,32,.35);
+  --pop:#0f2233;
+  --line:rgba(125,180,220,.16);
+  --line-strong:rgba(125,180,220,.32);
+  --text:#e2ecf5;
+  --muted:#96adc0;
+  --faint:#7b93a8;
+  --accent:#4cc2ff;
+  --accent-2:#2dd4bf;
+  --accent-ink:#04141f;
+  --ok:#3ecf72;
+  --warning:#ffd166;
+  --danger:#ff6b6b;
+  --aurora-1:#0b3a5e;
+  --aurora-2:#0e5f6e;
+  --aurora-3:#14406b;
+  --aurora-4:#155e75;
+}
+:root[data-scheme="violet"]{
+  --desktop-1:#0d0a14;
+  --desktop-2:#131022;
+  --window:rgba(30,25,46,.66);
+  --titlebar:rgba(37,31,56,.55);
+  --content:rgba(17,13,28,.35);
+  --pop:#1d1830;
+  --line:rgba(180,160,220,.16);
+  --line-strong:rgba(180,160,220,.32);
+  --text:#ece7f5;
+  --muted:#a89dc0;
+  --faint:#8d82a6;
+  --accent:#a78bfa;
+  --accent-2:#f472b6;
+  --accent-ink:#17102a;
+  --ok:#4ade80;
+  --warning:#fbbf24;
+  --danger:#fb7185;
+  --aurora-1:#3b2a6e;
+  --aurora-2:#5b2a63;
+  --aurora-3:#241a4d;
+  --aurora-4:#6b2d5c;
+}
+/* 墨绿黄铜：0.3.x 时代的唯一配色，原样保留成一个方案。 */
+:root[data-scheme="forest"]{
+  --desktop-1:#08130e;
+  --desktop-2:#0c1a13;
+  --window:rgba(16,38,28,.62);
+  --titlebar:rgba(22,48,36,.52);
+  --content:rgba(10,26,19,.34);
+  --card:rgba(255,255,255,.045);
+  --card-2:rgba(255,255,255,.07);
+  --pop:#14281e;
+  --field:rgba(0,0,0,.28);
+  --line:rgba(214,164,84,.16);
+  --line-strong:rgba(230,190,130,.30);
+  --text:#e9f0e7;
+  --muted:#9fb3a4;
+  --faint:#7d9384;
+  --accent:#d6a454;
+  --accent-2:#35b793;
+  --accent-ink:#241a08;
+  --ok:#3ecf72;
+  --warning:#ffd60a;
+  --danger:#ff5f56;
+  --aurora-1:#14532d;
+  --aurora-2:#0e5f55;
+  --aurora-3:#6b4a12;
+  --aurora-4:#1d6f4e;
+}
+
+/* ---------- 亮色：与明暗无关的公共部分（阴影、玻璃边缘、光斑浓度）---------- */
+:root[data-theme="light"]{
+  color-scheme:light;
+  --shadow-tint:rgba(15,23,42,.42);
+  --glass-edge:rgba(255,255,255,.9);
+  --aurora-op:.5;
+  /* 输入框在亮色下聚焦要更「亮」（白）：派生块里那两条是往黑里混的，
+     只适用于暗色的凹陷质感，亮色下会把白底混成灰。 */
+  --field-hover:#ffffff;
+  --field-focus:#ffffff;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    color-scheme:light;
+    --shadow-tint:rgba(15,23,42,.42);
+    --glass-edge:rgba(255,255,255,.9);
+    --aurora-op:.5;
+    --field-hover:#ffffff;
+    --field-focus:#ffffff;
+  }
+}
+
+/* ---------- 各方案的亮色（显式选择）---------- */
+:root[data-theme="light"][data-scheme="slate"]{
+  --desktop-1:#eef2f6;
+  --desktop-2:#f7fafc;
+  --window:rgba(255,255,255,.72);
+  --titlebar:rgba(240,244,248,.62);
+  --content:rgba(255,255,255,.45);
+  --card:rgba(15,23,42,.04);
+  --card-2:rgba(15,23,42,.065);
+  --pop:#f6f8fa;
+  --field:rgba(255,255,255,.8);
+  --line:rgba(15,23,42,.13);
+  --line-strong:rgba(15,23,42,.24);
+  --text:#1f2328;
+  --muted:#57606a;
+  --faint:#6e7781;
+  --accent:#0969da;
+  --accent-2:#0a7d86;
+  --accent-ink:#ffffff;
+  --ok:#1a7f37;
+  --warning:#9a6700;
+  --danger:#cf222e;
+  --aurora-1:#bfdbfe;
+  --aurora-2:#a5e3ea;
+  --aurora-3:#dbe4ee;
+  --aurora-4:#c7d7f0;
+}
+:root[data-theme="light"][data-scheme="ocean"]{
+  --desktop-1:#e8f1f8;
+  --desktop-2:#f4f9fd;
+  --window:rgba(250,252,255,.74);
+  --titlebar:rgba(232,243,251,.62);
+  --content:rgba(255,255,255,.45);
+  --card:rgba(12,40,66,.04);
+  --card-2:rgba(12,40,66,.065);
+  --pop:#f0f6fb;
+  --field:rgba(255,255,255,.8);
+  --line:rgba(12,40,66,.14);
+  --line-strong:rgba(12,40,66,.26);
+  --text:#10222f;
+  --muted:#48606f;
+  --faint:#5a7180;
+  --accent:#0b6bcb;
+  --accent-2:#0f766e;
+  --accent-ink:#ffffff;
+  --ok:#1a7f37;
+  --warning:#9a6700;
+  --danger:#c92a2a;
+  --aurora-1:#b9dcf3;
+  --aurora-2:#a8ddd8;
+  --aurora-3:#c5d9f2;
+  --aurora-4:#bfe6e0;
+}
+:root[data-theme="light"][data-scheme="violet"]{
+  --desktop-1:#f1eef8;
+  --desktop-2:#f8f6fc;
+  --window:rgba(252,251,255,.74);
+  --titlebar:rgba(242,238,250,.62);
+  --content:rgba(255,255,255,.45);
+  --card:rgba(40,25,70,.04);
+  --card-2:rgba(40,25,70,.065);
+  --pop:#f5f2fb;
+  --field:rgba(255,255,255,.8);
+  --line:rgba(40,25,70,.13);
+  --line-strong:rgba(40,25,70,.24);
+  --text:#1e1730;
+  --muted:#5d5275;
+  --faint:#71658a;
+  --accent:#6d43d8;
+  --accent-2:#be2f76;
+  --accent-ink:#ffffff;
+  --ok:#188a42;
+  --warning:#92620b;
+  --danger:#c0264b;
+  --aurora-1:#d6c9f2;
+  --aurora-2:#f0c6de;
+  --aurora-3:#cdd3f5;
+  --aurora-4:#e3c9ee;
+}
+:root[data-theme="light"][data-scheme="forest"]{
+  --desktop-1:#e7efe7;
+  --desktop-2:#f3f8f3;
+  --window:rgba(246,250,246,.74);
+  --titlebar:rgba(232,241,232,.62);
+  --content:rgba(255,255,255,.42);
+  --card:rgba(24,48,36,.035);
+  --card-2:rgba(24,48,36,.055);
+  --pop:#f2f7f2;
+  --field:rgba(255,255,255,.75);
+  --line:rgba(24,48,36,.14);
+  --line-strong:rgba(24,48,36,.26);
+  --text:#14231b;
+  --muted:#4c6154;
+  --faint:#5d7165;
+  --accent:#9a6b1f;
+  --accent-2:#177f63;
+  --accent-ink:#ffffff;
+  --ok:#1f9d55;
+  --warning:#b25e00;
+  --danger:#c9252c;
+  --aurora-1:#b7dcc4;
+  --aurora-2:#a8ddd2;
+  --aurora-3:#e6d3a8;
+  --aurora-4:#c4e3cf;
+}
+
+/* ---------- 各方案的亮色（跟随系统）：与上面逐字一致 ---------- */
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"])[data-scheme="slate"]{
+    color-scheme:light;
+    --desktop-1:#eef2f6;
+    --desktop-2:#f7fafc;
+    --window:rgba(255,255,255,.72);
+    --titlebar:rgba(240,244,248,.62);
+    --content:rgba(255,255,255,.45);
+    --card:rgba(15,23,42,.04);
+    --card-2:rgba(15,23,42,.065);
+    --pop:#f6f8fa;
+    --field:rgba(255,255,255,.8);
+    --line:rgba(15,23,42,.13);
+    --line-strong:rgba(15,23,42,.24);
+    --text:#1f2328;
+    --muted:#57606a;
+    --faint:#6e7781;
+    --accent:#0969da;
+    --accent-2:#0a7d86;
+    --accent-ink:#ffffff;
+    --ok:#1a7f37;
+    --warning:#9a6700;
+    --danger:#cf222e;
+    --aurora-1:#bfdbfe;
+    --aurora-2:#a5e3ea;
+    --aurora-3:#dbe4ee;
+    --aurora-4:#c7d7f0;
+  }
+  :root:not([data-theme="dark"])[data-scheme="ocean"]{
+    color-scheme:light;
+    --desktop-1:#e8f1f8;
+    --desktop-2:#f4f9fd;
+    --window:rgba(250,252,255,.74);
+    --titlebar:rgba(232,243,251,.62);
+    --content:rgba(255,255,255,.45);
+    --card:rgba(12,40,66,.04);
+    --card-2:rgba(12,40,66,.065);
+    --pop:#f0f6fb;
+    --field:rgba(255,255,255,.8);
+    --line:rgba(12,40,66,.14);
+    --line-strong:rgba(12,40,66,.26);
+    --text:#10222f;
+    --muted:#48606f;
+    --faint:#5a7180;
+    --accent:#0b6bcb;
+    --accent-2:#0f766e;
+    --accent-ink:#ffffff;
+    --ok:#1a7f37;
+    --warning:#9a6700;
+    --danger:#c92a2a;
+    --aurora-1:#b9dcf3;
+    --aurora-2:#a8ddd8;
+    --aurora-3:#c5d9f2;
+    --aurora-4:#bfe6e0;
+  }
+  :root:not([data-theme="dark"])[data-scheme="violet"]{
+    color-scheme:light;
+    --desktop-1:#f1eef8;
+    --desktop-2:#f8f6fc;
+    --window:rgba(252,251,255,.74);
+    --titlebar:rgba(242,238,250,.62);
+    --content:rgba(255,255,255,.45);
+    --card:rgba(40,25,70,.04);
+    --card-2:rgba(40,25,70,.065);
+    --pop:#f5f2fb;
+    --field:rgba(255,255,255,.8);
+    --line:rgba(40,25,70,.13);
+    --line-strong:rgba(40,25,70,.24);
+    --text:#1e1730;
+    --muted:#5d5275;
+    --faint:#71658a;
+    --accent:#6d43d8;
+    --accent-2:#be2f76;
+    --accent-ink:#ffffff;
+    --ok:#188a42;
+    --warning:#92620b;
+    --danger:#c0264b;
+    --aurora-1:#d6c9f2;
+    --aurora-2:#f0c6de;
+    --aurora-3:#cdd3f5;
+    --aurora-4:#e3c9ee;
+  }
+  :root:not([data-theme="dark"])[data-scheme="forest"]{
+    color-scheme:light;
+    --desktop-1:#e7efe7;
+    --desktop-2:#f3f8f3;
+    --window:rgba(246,250,246,.74);
+    --titlebar:rgba(232,241,232,.62);
+    --content:rgba(255,255,255,.42);
+    --card:rgba(24,48,36,.035);
+    --card-2:rgba(24,48,36,.055);
+    --pop:#f2f7f2;
+    --field:rgba(255,255,255,.75);
+    --line:rgba(24,48,36,.14);
+    --line-strong:rgba(24,48,36,.26);
+    --text:#14231b;
+    --muted:#4c6154;
+    --faint:#5d7165;
+    --accent:#9a6b1f;
+    --accent-2:#177f63;
+    --accent-ink:#ffffff;
+    --ok:#1f9d55;
+    --warning:#b25e00;
+    --danger:#c9252c;
+    --aurora-1:#b7dcc4;
+    --aurora-2:#a8ddd2;
+    --aurora-3:#e6d3a8;
+    --aurora-4:#c4e3cf;
+  }
+}
+
+/* ---------- 复合与派生令牌：只写一次，跟着基础令牌自动变 ---------- */
+:root{
+  /* 版式常量（不是颜色，但三页共用，放这里免得各抄一份） */
+  --radius-window:14px;
+  --radius-card:12px;
+  --radius-control:7px;
+  --radius:18px;
+  --gap:clamp(14px,1.1vw,22px);
+
+  --shadow-window:0 40px 90px -40px var(--shadow-tint),0 1px 0 var(--glass-edge) inset;
+  --shadow-dock:0 26px 60px -24px var(--shadow-tint),0 1px 0 var(--glass-edge) inset;
+  --ease:cubic-bezier(.32,.72,.24,1);
+
+  /* 登录页用的别名：与窗口令牌同一来源，不再另抄一套值。 */
+  --bg:var(--desktop-1);
+  --bg-tint:var(--desktop-2);
+  --hover-fill:var(--card-2);
+  --line-soft:var(--card-2);
+  --line-top:var(--line-strong);
+  --field-hover:color-mix(in srgb,var(--field) 82%,#000);
+  --field-focus:color-mix(in srgb,var(--field) 68%,#000);
+  --grid-line:color-mix(in srgb,var(--text) 4%,transparent);
+
+  /* 主按钮与焦点环 */
+  --ring:0 0 0 3px color-mix(in srgb,var(--accent) 26%,transparent);
+  --btn-a:color-mix(in srgb,var(--accent) 88%,#fff);
+  --btn-b:color-mix(in srgb,var(--accent) 78%,#000);
+  --btn-glow:color-mix(in srgb,var(--accent) 50%,transparent);
+
+  /* 标识图形 */
+  --mark-a:var(--accent);
+  --mark-b:var(--accent-2);
+
+  /* 错误提示底 */
+  --danger-bg:color-mix(in srgb,var(--danger) 12%,transparent);
+  --danger-line:color-mix(in srgb,var(--danger) 34%,transparent);
+
+  /* 登录页小守卫（宠物）：毛色跟副强调，肚皮跟主色淡入底色 */
+  --fur:var(--accent-2);
+  --fur-dark:color-mix(in srgb,var(--fur) 78%,#000);
+  --fur-belly:color-mix(in srgb,var(--accent) 26%,var(--desktop-2));
+  --brass:var(--accent);
+  --brass-dark:color-mix(in srgb,var(--accent) 72%,#000);
+}
+
+/* 不支持背景模糊时把窗口调回不透明：半透明 + 不模糊 = 看不清字。
+   用不透明的 --pop 顶替，天然跟着方案与明暗走。选择器特异度必须 ≥ 亮色方案块
+   （:root + 两个属性 = 0,3,0），否则显式亮色 / 跟随系统亮色下顶不掉那两份
+   半透明 --window，回退等于没写；data-scheme 由模板保证总在，:not([data-none])
+   只是凑特异度的占位。 */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  :root[data-scheme]:not([data-none]){
+    --window:var(--pop);
+    --titlebar:var(--pop);
+    --content:color-mix(in srgb,var(--pop) 78%,var(--desktop-1));
+  }
+}

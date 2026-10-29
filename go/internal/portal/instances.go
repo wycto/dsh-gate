@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -51,13 +52,19 @@ type Instance struct {
 	DshPort int
 	// DshCmd 留空表示自动探测启动命令。
 	DshCmd string
-	// InstallMode 是 dsh 的安装方式（npx / git / pnpm），空视为 npx。
-	// 它只影响「怎么把 dsh 准备好」，不影响运行时——三种方式最终都归结为
+	// InstallMode 是 dsh 的安装方式（npx / git / local / pnpm），空视为 npx。
+	// 它只影响「怎么把 dsh 准备好」，不影响运行时——几种方式最终都归结为
 	// DshCmd 这一条启动命令。
 	InstallMode string
-	// InstallDir 是该实例的 dsh 安装目录（git 方式放源码，pnpm 方式放包）；
-	// npx 方式不用它。
+	// InstallDir 是该实例的 dsh 安装目录（git 放源码，pnpm 放包，local 指向
+	// 用户已构建好的源码仓库）；npx 方式不用它。
 	InstallDir string
+	// DshVersion 是要装的 dsh 版本或 dist-tag（`0.2.2-alpha.2`、`next`、`alpha`）。
+	// 空表示跟随 latest，并保留「latest 在这台机器上跑不起来就退回实测可用版本」
+	// 的自动回退；非空表示**钉住**：不再回退，装不上就直接说装不上（用户点名要
+	// 的版本被悄悄换成别的版本，比装不上更难查）。只对走 npm 包的两种方式有效
+	// （npx / pnpm）；从源码构建用 git 分支或标签，见 --git-ref。
+	DshVersion string
 	// ConfigDir 是该实例的配置目录。留空表示用 DshHome——dsh 自己会把配置放在
 	// DSH_HOME 里；单独给一个目录是为了「配置与数据分开备份」这种诉求。
 	ConfigDir string
@@ -86,11 +93,11 @@ type Grant struct {
 	CreatedBy  string
 }
 
-const instanceColumns = `id, name, owner_id, dsh_home, workspace, dsh_port, dsh_cmd, install_mode, install_dir, config_dir, listen_host, start_mode, on_demand, idle_timeout_s, enabled, created_at, updated_at`
+const instanceColumns = `id, name, owner_id, dsh_home, workspace, dsh_port, dsh_cmd, install_mode, install_dir, dsh_version, config_dir, listen_host, start_mode, on_demand, idle_timeout_s, enabled, created_at, updated_at`
 
 // instanceColumnsQualified 是同一份列名、带 `i.` 前缀的版本：与 grants 表 join 时
 // 两张表都有 created_at，不加前缀会报 ambiguous column name。
-const instanceColumnsQualified = `i.id, i.name, i.owner_id, i.dsh_home, i.workspace, i.dsh_port, i.dsh_cmd, i.install_mode, i.install_dir, i.config_dir, i.listen_host, i.start_mode, i.on_demand, i.idle_timeout_s, i.enabled, i.created_at, i.updated_at`
+const instanceColumnsQualified = `i.id, i.name, i.owner_id, i.dsh_home, i.workspace, i.dsh_port, i.dsh_cmd, i.install_mode, i.install_dir, i.dsh_version, i.config_dir, i.listen_host, i.start_mode, i.on_demand, i.idle_timeout_s, i.enabled, i.created_at, i.updated_at`
 
 func scanInstance(row interface{ Scan(...any) error }) (*Instance, error) {
 	var (
@@ -103,7 +110,8 @@ func scanInstance(row interface{ Scan(...any) error }) (*Instance, error) {
 		idleSecs int64
 	)
 	if err := row.Scan(&inst.ID, &inst.Name, &owner, &inst.DshHome, &inst.Workspace,
-		&inst.DshPort, &inst.DshCmd, &inst.InstallMode, &inst.InstallDir, &inst.ConfigDir,
+		&inst.DshPort, &inst.DshCmd, &inst.InstallMode, &inst.InstallDir, &inst.DshVersion,
+		&inst.ConfigDir,
 		&inst.ListenHost, &inst.StartMode, &onDemand, &idleSecs, &enabled, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -121,6 +129,29 @@ func scanInstance(row interface{ Scan(...any) error }) (*Instance, error) {
 	inst.UpdatedAt = parseTime(updated)
 	inst.applyDefaults()
 	return &inst, nil
+}
+
+// DefaultDshHomeName 是实例目录留空时用的默认值（与 dsh 自己的默认值一致）。
+//
+// 写成 `~` 开头的形式是因为它要展示给人看（帮助文本、页面占位符）；真正落库
+// 前必须经 DefaultDshHome 展开成绝对路径。
+const DefaultDshHomeName = "~/.dsh"
+
+// DefaultDshHome 返回默认实例目录的**绝对路径**（当前用户主目录下的 .dsh）。
+//
+// 为什么必须展开而不是把 `~/.dsh` 直接存下来：这个值会被原样塞进子进程的环境
+// 变量（DSH_HOME=...），环境变量不经过 shell，`~` 不会被展开。存字面量 `~/.dsh`
+// 的后果是 dsh 在**当前工作目录**下建出一个名字就叫 `~` 的目录——数据写错地方，
+// 而且目录里多出一个 `~`（这个坑在网关的单实例形态上真踩过，见 ownerguard 的注释）。
+//
+// 展开不了（拿不到家目录）时退回空串，由调用方决定怎么报错：宁可不建实例，
+// 也不要写一个含义不明的路径进去。
+func DefaultDshHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".dsh")
 }
 
 // applyDefaults 补齐空字段的默认值，并让 StartMode 与 OnDemand 保持一致。
@@ -148,6 +179,12 @@ func (inst *Instance) applyDefaults() {
 	// 解析——容器与服务器通常没有这个命令（即使有，禁用时它会返回家目录，
 	// dsh 明确拒绝），前端只会弹一句「无法创建默认工作区」。网关的预置能力
 	// （SeedDefaultWorkspace）也要求工作目录非空才动手，所以默认值必须在这里补。
+	// 实例目录留空时用 dsh 自己的默认目录（~/.dsh）。放在这里与工作目录同理：
+	// 展示、CLI 输出、运行时拉起三条路看到的必须是同一个值，不能「页面显示空、
+	// 实际用默认值」。注意这里写成绝对路径，理由见 DefaultDshHome。
+	if strings.TrimSpace(inst.DshHome) == "" {
+		inst.DshHome = DefaultDshHome()
+	}
 	if strings.TrimSpace(inst.Workspace) == "" {
 		inst.Workspace = inst.defaultWorkspaceDir()
 	}
@@ -165,7 +202,8 @@ func (inst *Instance) defaultWorkspaceDir() string {
 		home = strings.TrimSpace(inst.DshHome)
 	}
 	if home == "" {
-		// DshHome 是必填项，理论上到不了这里；真到了就保持空串，不编路径。
+		// 只有「留空且取不到家目录」才可能走到这里；保持空串，不编路径。
+		// 建实例时那种情况已经被 CreateInstance 拒掉了。
 		return ""
 	}
 	return filepath.Join(home, "workspace")
@@ -182,7 +220,8 @@ const (
 // CreateInstance 新建实例。
 //
 // ID 为空时自动生成不透明短 id（做一次存在性检查，冲突则重试）；DshPort 为 0
-// 时在 [portBase, portBase+span) 里自动分配。DshHome 必填——没有它就不是一个实例。
+// 时在 [portBase, portBase+span) 里自动分配。DshHome 留空时用 dsh 自己的默认目录
+// （~/.dsh 展开后的绝对路径），见 DefaultDshHome。
 // 新建的实例一律为「启用」状态；要停用请随后 UpdateInstance（避免零值 bool 把
 // 新实例默默建成停用态）。
 func (s *Store) CreateInstance(inst *Instance) error {
@@ -192,8 +231,10 @@ func (s *Store) CreateInstance(inst *Instance) error {
 	if err := ValidateInstanceName(inst.Name); err != nil {
 		return err
 	}
-	if strings.TrimSpace(inst.DshHome) == "" {
-		return errors.New("实例必须指定 dsh-home（该实例的 DSH_HOME）")
+	// 实例目录留空是合法输入：用 dsh 自己的默认目录（applyDefaults 补上，
+	// 写库前会展开成绝对路径）。只有连默认值都取不到（拿不到家目录）才失败。
+	if strings.TrimSpace(inst.DshHome) == "" && DefaultDshHome() == "" {
+		return errors.New("实例目录留空且取不到当前用户主目录，无法推导默认的 DSH_HOME；请显式指定 dsh-home")
 	}
 	if _, err := s.InstanceByName(inst.Name); err == nil {
 		return fmt.Errorf("实例名 %q 已存在", inst.Name)
@@ -233,10 +274,11 @@ func (s *Store) CreateInstance(inst *Instance) error {
 	now := nowText()
 	if _, err := s.db.Exec(
 		`INSERT INTO instances (`+instanceColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, inst.Name, nullableID(inst.OwnerID), strings.TrimSpace(inst.DshHome),
 		strings.TrimSpace(inst.Workspace), inst.DshPort, strings.TrimSpace(inst.DshCmd),
 		strings.TrimSpace(inst.InstallMode), strings.TrimSpace(inst.InstallDir),
+		strings.TrimSpace(inst.DshVersion),
 		strings.TrimSpace(inst.ConfigDir), strings.TrimSpace(inst.ListenHost),
 		strings.TrimSpace(inst.StartMode),
 		boolToInt(inst.OnDemand), inst.IdleTimeoutS, 1, now, now,
@@ -297,8 +339,8 @@ func (s *Store) UpdateInstance(inst Instance) error {
 	if err := ValidateInstanceName(inst.Name); err != nil {
 		return err
 	}
-	if strings.TrimSpace(inst.DshHome) == "" {
-		return errors.New("实例必须指定 dsh-home（该实例的 DSH_HOME）")
+	if strings.TrimSpace(inst.DshHome) == "" && DefaultDshHome() == "" {
+		return errors.New("实例目录留空且取不到当前用户主目录，无法推导默认的 DSH_HOME；请显式指定 dsh-home")
 	}
 	if inst.DshPort <= 0 {
 		return errors.New("实例端口必须为正整数")
@@ -306,12 +348,13 @@ func (s *Store) UpdateInstance(inst Instance) error {
 	inst.applyDefaults()
 	res, err := s.db.Exec(
 		`UPDATE instances SET name = ?, owner_id = ?, dsh_home = ?, workspace = ?, dsh_port = ?,
-		 dsh_cmd = ?, install_mode = ?, install_dir = ?, config_dir = ?, listen_host = ?,
+		 dsh_cmd = ?, install_mode = ?, install_dir = ?, dsh_version = ?, config_dir = ?, listen_host = ?,
 		 start_mode = ?, on_demand = ?, idle_timeout_s = ?, enabled = ?, updated_at = ?
 		 WHERE id = ?`,
 		inst.Name, nullableID(inst.OwnerID), strings.TrimSpace(inst.DshHome), strings.TrimSpace(inst.Workspace),
 		inst.DshPort, strings.TrimSpace(inst.DshCmd),
 		strings.TrimSpace(inst.InstallMode), strings.TrimSpace(inst.InstallDir),
+		strings.TrimSpace(inst.DshVersion),
 		strings.TrimSpace(inst.ConfigDir), strings.TrimSpace(inst.ListenHost),
 		strings.TrimSpace(inst.StartMode),
 		boolToInt(inst.OnDemand), inst.IdleTimeoutS,

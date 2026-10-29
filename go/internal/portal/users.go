@@ -42,6 +42,10 @@ var (
 	// ErrLastAdmin 该操作会让管理端失去最后一个管理员，因此被拒绝。
 	// 用哨兵错误而不是裸字符串：管理台要据此给出准确文案。
 	ErrLastAdmin = errors.New("拒绝操作最后一个管理员")
+	// ErrSuperAdmin 该操作指向超级管理员（第一个注册的账号）。它承载管理端
+	// 的初始身份：不能改角色、不能停用、不能改名、不能删除。改口令与展示名
+	// 不在禁止之列——否则忘了口令就把整个管理端锁死了。
+	ErrSuperAdmin = errors.New("拒绝操作超级管理员（第一个注册的账号）")
 )
 
 // User 是一条管理端账号记录。
@@ -59,6 +63,32 @@ type User struct {
 
 // IsAdmin 是否是管理员。
 func (u *User) IsAdmin() bool { return u != nil && u.Role == RoleAdmin }
+
+// SuperAdminID 返回超级管理员的账号 id：用户表里 id 最小的那条，也就是
+// 第一个注册的账号（含从旧 users.json 迁移过来的首位）。它不存字段、
+// 不建配置——身份由「最早注册」这一事实决定，永不因后续操作而改变。
+// 表为空时返回 ErrNotFound。
+func (s *Store) SuperAdminID() (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM users ORDER BY id ASC LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("查询超级管理员失败: %w", err)
+	}
+	return id, nil
+}
+
+// IsSuperAdmin 判断某账号是否超级管理员。
+func (s *Store) IsSuperAdmin(name string) bool {
+	u, err := s.UserByName(name)
+	if err != nil {
+		return false
+	}
+	id, err := s.SuperAdminID()
+	return err == nil && id == u.ID
+}
 
 // randomDummySecret 给「账号不存在」分支造一个随机口令，用于计算校验桩哈希。
 func randomDummySecret() string {
@@ -92,20 +122,39 @@ func (s *Store) Count() int {
 	return n
 }
 
-// CreateUser 新建账号。name/password 走 internal/users 的同一套校验规则
-// （用户名 1-64 字符、口令至少 8 位），role 为空时按普通用户处理。
+// CreateUser 新建账号（不带姓名，姓名回退登录名）。name/password 走
+// internal/users 的同一套校验规则（账号 ASCII、口令至少 8 位），role 为空
+// 时按普通用户处理。需要给人看的中文名请用 CreateUserWithDisplay。
 func (s *Store) CreateUser(name, password string, role Role) (*User, error) {
+	return s.CreateUserWithDisplay(name, password, role, "")
+}
+
+// CreateUserWithDisplay 新建账号并带上「姓名」（给人看的中文名）。
+// display 为空时回退登录名；非空时按 ValidateDisplayName 校验。
+func (s *Store) CreateUserWithDisplay(name, password string, role Role, display string) (*User, error) {
 	if err := users.ValidateName(name); err != nil {
 		return nil, err
 	}
 	if err := users.ValidatePassword(password); err != nil {
 		return nil, err
 	}
+	if err := users.ValidateDisplayName(display); err != nil {
+		return nil, err
+	}
+	display = strings.TrimSpace(display)
 	if role == "" {
 		role = RoleUser
 	}
 	if !ValidRole(role) {
 		return nil, fmt.Errorf("角色 %q 非法（只能是 admin 或 user）", role)
+	}
+	// 第一个注册的账号就是超级管理员（身份判定见 SuperAdminID）：即便调用方
+	// 要的是普通用户，也按管理员建——超管不是「先建人再提权」的第二步，
+	// 而是这张表出生时就带着的身份。
+	if n, err := s.CountUsers(); err != nil {
+		return nil, err
+	} else if n == 0 {
+		role = RoleAdmin
 	}
 	if _, err := s.UserByName(name); err == nil {
 		return nil, fmt.Errorf("账号 %q: %w", name, ErrUserExists)
@@ -117,11 +166,15 @@ func (s *Store) CreateUser(name, password string, role Role) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 姓名留空回退登录名：display_name 参与「已登录：X」这类展示，空串会显示成空白。
+	if display == "" {
+		display = name
+	}
 	now := nowText()
 	res, err := s.db.Exec(
 		`INSERT INTO users (name, display_name, hash, role, disabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 0, ?, ?)`,
-		name, name, hash, string(role), now, now,
+		name, display, hash, string(role), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("写入账号失败: %w", err)
@@ -217,13 +270,17 @@ func (s *Store) SetPassword(name, password string) error {
 	return s.updateUser(name, `UPDATE users SET hash = ?, updated_at = ? WHERE name = ?`, hash, nowText(), name)
 }
 
-// SetRole 改角色。拒绝把最后一个管理员降级——否则没人能再管理管理端。
+// SetRole 改角色。超级管理员（第一个注册的账号）的角色不可变；
+// 其余拒绝把最后一个管理员降级——否则没人能再管理管理端。
 func (s *Store) SetRole(name string, role Role) error {
 	if !ValidRole(role) {
 		return fmt.Errorf("角色 %q 非法（只能是 admin 或 user）", role)
 	}
 	u, err := s.UserByName(name)
 	if err != nil {
+		return err
+	}
+	if err := s.guardSuperAdmin(u, "改角色"); err != nil {
 		return err
 	}
 	if u.Role == RoleAdmin && role != RoleAdmin {
@@ -238,31 +295,41 @@ func (s *Store) SetRole(name string, role Role) error {
 	return s.updateUser(name, `UPDATE users SET role = ?, updated_at = ? WHERE name = ?`, string(role), nowText(), name)
 }
 
-// SetDisabled 启用 / 停用账号。同样保护最后一个管理员。
+// SetDisabled 启用 / 停用账号。超级管理员不可停用；其余同样保护最后一个管理员。
 func (s *Store) SetDisabled(name string, disabled bool) error {
 	u, err := s.UserByName(name)
 	if err != nil {
 		return err
 	}
-	if disabled && u.Role == RoleAdmin && !u.Disabled {
-		n, err := s.CountAdmins()
-		if err != nil {
+	if disabled {
+		if err := s.guardSuperAdmin(u, "停用"); err != nil {
 			return err
 		}
-		if n <= 1 {
-			return fmt.Errorf("%w（会导致无人能管理管理端）", ErrLastAdmin)
+		if u.Role == RoleAdmin && !u.Disabled {
+			n, err := s.CountAdmins()
+			if err != nil {
+				return err
+			}
+			if n <= 1 {
+				return fmt.Errorf("%w（会导致无人能管理管理端）", ErrLastAdmin)
+			}
 		}
 	}
 	return s.updateUser(name, `UPDATE users SET disabled = ?, updated_at = ? WHERE name = ?`, boolToInt(disabled), nowText(), name)
 }
 
 // RenameUser 改登录名（审计里的人名会跟着变，历史记录不做回填）。
+// 超级管理员不可改名——「第一个注册」是它的身份依据，改名虽不动 id，
+// 但登录名是所有人认知它的入口，跟着变会让人找不到初始账号。
 func (s *Store) RenameUser(oldName, newName string) error {
 	if err := users.ValidateName(newName); err != nil {
 		return err
 	}
 	if oldName == newName {
 		return nil
+	}
+	if s.IsSuperAdmin(oldName) {
+		return fmt.Errorf("%w（改名）: %s", ErrSuperAdmin, oldName)
 	}
 	if _, err := s.UserByName(newName); err == nil {
 		return fmt.Errorf("账号 %q 已存在", newName)
@@ -278,10 +345,14 @@ func (s *Store) SetDisplayName(name, display string) error {
 		strings.TrimSpace(display), nowText(), name)
 }
 
-// DeleteUser 删除账号。拒绝删掉最后一个管理员；该用户的授权随之级联删除。
+// DeleteUser 删除账号。超级管理员不可删除；其余拒绝删掉最后一个管理员。
+// 该用户的授权随之级联删除。
 func (s *Store) DeleteUser(name string) error {
 	u, err := s.UserByName(name)
 	if err != nil {
+		return err
+	}
+	if err := s.guardSuperAdmin(u, "删除"); err != nil {
 		return err
 	}
 	if u.Role == RoleAdmin {
@@ -294,6 +365,22 @@ func (s *Store) DeleteUser(name string) error {
 		}
 	}
 	return s.updateUser(name, `DELETE FROM users WHERE name = ?`, name)
+}
+
+// guardSuperAdmin 拦住对超级管理员（第一个注册的账号）的受保护操作。
+// what 是中文动作名，出现在错误里供日志与页面使用。
+//
+// 刻意不保护改口令与展示名：忘了口令就把整个管理端锁死，代价远大于收益。
+func (s *Store) guardSuperAdmin(u *User, what string) error {
+	id, err := s.SuperAdminID()
+	if err != nil {
+		// 查不出超级管理员（表为空的竞态）不拦：后面的语句自会处理不存在。
+		return nil
+	}
+	if u.ID == id {
+		return fmt.Errorf("%w（%s %s）", ErrSuperAdmin, what, u.Name)
+	}
+	return nil
 }
 
 // updateUser 跑一条「按名字改一行」的语句，并统一把「没改到任何行」报成 ErrNotFound。

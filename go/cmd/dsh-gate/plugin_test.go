@@ -90,7 +90,20 @@ func TestLoadProfilePackageGuidesWhenMissing(t *testing.T) {
 // TestPluginProfilePath 配置档路径要落在 <dsh-home>/profiles/<profile>。
 func TestPluginProfilePath(t *testing.T) {
 	opts := pluginOptions{DSHHome: "/srv/dsh", Profile: "web"}
-	if got, want := opts.profilePath(), filepath.Join("/srv/dsh", "profiles", "web"); got != want {
+	got, err := opts.profilePath()
+	if err != nil {
+		t.Fatalf("显式 --dsh-home 时不该报错: %v", err)
+	}
+	if want := filepath.Join("/srv/dsh", "profiles", "web"); got != want {
 		t.Errorf("profilePath = %q，期望 %q", got, want)
+	}
+}
+
+// TestPluginRequiresInstance 没给 --instance 也没给 --dsh-home 时必须明确报错，
+// 不能悄悄落到 ~/.dsh——管理端形态下每个实例都有自己的 DSH_HOME。
+func TestPluginRequiresInstance(t *testing.T) {
+	opts := pluginOptions{Profile: "web"}
+	if _, err := opts.profilePath(); err == nil || !strings.Contains(err.Error(), "--instance") {
+		t.Fatalf("未指定实例时应报错并提到 --instance，实际: %v", err)
 	}
 }

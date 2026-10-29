@@ -56,9 +56,9 @@ func TestSplitCommand(t *testing.T) {
 
 func TestSplitToken(t *testing.T) {
 	cases := map[string]string{
-		"dsh web: http://192.168.1.20:3082/?token=abc123": "abc123",
-		"dsh web: http://127.0.0.1:3080/?token=abc&x=1":   "abc",
-		`printed "http://127.0.0.1:3080/?token=abc"`:      "abc",
+		"dsh web: http://192.168.1.20:12020/?token=abc123": "abc123",
+		"dsh web: http://127.0.0.1:3080/?token=abc&x=1":    "abc",
+		`printed "http://127.0.0.1:3080/?token=abc"`:       "abc",
 		"no token here":                   "",
 		"dsh web: http://127.0.0.1:3080/": "",
 	}
@@ -70,7 +70,7 @@ func TestSplitToken(t *testing.T) {
 }
 
 func TestRedactToken(t *testing.T) {
-	line := "dsh web: http://192.168.1.20:3082/?token=SECRET123"
+	line := "dsh web: http://192.168.1.20:12020/?token=SECRET123"
 	got := RedactToken(line)
 	if strings.Contains(got, "SECRET123") {
 		t.Fatalf("令牌没有被脱敏: %q", got)
@@ -79,7 +79,7 @@ func TestRedactToken(t *testing.T) {
 		t.Errorf("应当保留可读的痕迹，实际: %q", got)
 	}
 	// 脱敏后其它内容必须原样保留，否则日志会失去诊断价值。
-	if !strings.Contains(got, "dsh web:") || !strings.Contains(got, "3082") {
+	if !strings.Contains(got, "dsh web:") || !strings.Contains(got, "12020") {
 		t.Errorf("脱敏破坏了原有内容: %q", got)
 	}
 	if RedactToken("nothing to redact") != "nothing to redact" {
@@ -93,7 +93,7 @@ func TestExpandPlaceholders(t *testing.T) {
 		Port:         3080,
 		Home:         "/home/me/.dsh-work",
 		Workspace:    "/home/me/code",
-		PublicURL:    "http://192.168.1.20:3082/",
+		PublicURL:    "http://192.168.1.20:12020/",
 		TrustedHosts: []string{"192.168.1.20", "box.local"},
 	})
 
@@ -102,7 +102,7 @@ func TestExpandPlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("展开失败: %v", err)
 	}
-	want := "dsh web --host 127.0.0.1 --port 3080 --url http://192.168.1.20:3082/ " +
+	want := "dsh web --host 127.0.0.1 --port 3080 --url http://192.168.1.20:12020/ " +
 		"--trusted-host 192.168.1.20 --trusted-host box.local --dir '/home/me/code'"
 	if got != want {
 		t.Errorf("展开结果:\n got %q\nwant %q", got, want)
@@ -125,10 +125,10 @@ func TestBuildCommandAutoDetects(t *testing.T) {
 		Port:         3080,
 		Home:         t.TempDir(),
 		Workspace:    t.TempDir(),
-		PublicURL:    "http://192.168.1.20:3082/",
+		PublicURL:    "http://192.168.1.20:12020/",
 		TrustedHosts: []string{"192.168.1.20"},
 	})
-	binary, err := detectBinary()
+	binary, err := detectBinary("")
 	if err != nil {
 		t.Skipf("本机没有可用的 dsh 命令: %v", err)
 	}
@@ -155,6 +155,38 @@ func TestBuildCommandAutoDetects(t *testing.T) {
 	}
 	if strings.Contains(joined, "token") {
 		t.Errorf("启动命令里不应出现令牌: %s", joined)
+	}
+}
+
+// TestDetectBinaryCarriesPinnedVersion 实例钉了版本又没装出可执行文件时，自动探测
+// 出来的那条 npx 命令要带着版本——否则「填了版本但没点安装」的实例会静默跑 latest。
+func TestDetectBinaryCarriesPinnedVersion(t *testing.T) {
+	pinned, err := detectBinary("next")
+	if err != nil {
+		t.Skipf("本机没有可用的 npx: %v", err)
+	}
+	if !strings.HasSuffix(pinned, dshPackage+"@next") {
+		t.Errorf("detectBinary(next) = %q，期望包名带上 @next", pinned)
+	}
+	plain, err := detectBinary("")
+	if err != nil {
+		t.Skipf("本机没有可用的 npx: %v", err)
+	}
+	if pinned == plain {
+		t.Errorf("钉住与留空的探测结果不该一样: %q", pinned)
+	}
+}
+
+// TestBuildCommandRejectsBadPinnedVersion 非法版本名在探测之前就拒绝：这一串会
+// 拼进启动命令，而命令会被拆开直接执行。
+func TestBuildCommandRejectsBadPinnedVersion(t *testing.T) {
+	supervisor := New(Options{
+		Host: "127.0.0.1", Port: 3081, Home: t.TempDir(), Workspace: t.TempDir(),
+		DshVersion: "1.0.0 --registry=http://evil.example",
+	})
+	_, err := supervisor.buildCommand(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "不合法") {
+		t.Fatalf("非法版本名应当被拒绝，实际: %v", err)
 	}
 }
 

@@ -93,10 +93,27 @@ func startFakeDSH(t *testing.T, port int, token string) {
 	t.Setenv(fakeToken, token)
 }
 
+// quoteCommandArg 把一个路径写成 SplitCommand 眼里的一个字面量参数。
+//
+// 命令模板按 POSIX 引号规则拆、反斜杠是转义符，而 Windows 上的路径全是
+// 反斜杠——裸写会被拆成一个不存在的假路径。套单引号即可：单引号内一切按
+// 字面量处理，两个平台都成立。
+func quoteCommandArg(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
+}
+
+// fakeDSHCommand 把「测试二进制自己」写成一段 SplitCommand 认得的话。
+//
+// 这一批用真进程验证拉起路径的测试都靠它：少了引号，Windows 上 fork/exec 报
+// 「找不到文件」，整批拉起测试一起变成假失败。
+func fakeDSHCommand(suffix string) string {
+	return quoteCommandArg(filepath.Clean(os.Args[0])) + suffix
+}
+
 // launchOptions 构造一次拉起所需的配置。
 func launchOptions(t *testing.T, port int) Options {
 	return Options{
-		Command:      os.Args[0] + " --host {host} --port {port} --no-open",
+		Command:      fakeDSHCommand(" --host {host} --port {port} --no-open"),
 		Host:         "127.0.0.1",
 		Port:         port,
 		Home:         t.TempDir(),
@@ -185,6 +202,74 @@ func TestSecondSupervisorAdopts(t *testing.T) {
 	}
 }
 
+// TestStopAdoptedFreesPort 验证「停掉一个接管来的实例」真的能把端口让开。
+//
+// 这是用户报的那个 bug 的直接回归：管理台上点了停止，屏幕上写着「已停止」，
+// 端口却照旧有人监听。原因是接管来的实例没有子进程句柄，Shutdown 对它是趟空跑；
+// 而 Windows 上连「端口上是哪个进程」都查不出来，于是连想停都没有入口。
+func TestStopAdoptedFreesPort(t *testing.T) {
+	port := freePort(t)
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	startFakeDSH(t, port, "adopt-stop-token")
+
+	// 先把假 dsh 起在端口上，模拟「别处已经在跑的 dsh」。Restart=false 是关键：
+	// 它被外力杀掉时那个监督者不该重拉，否则端口又被人占上，断言就没法做。
+	ownerOptions := launchOptions(t, port)
+	ownerOptions.Restart = false
+	owner := New(ownerOptions)
+	if err := owner.Start(t.Context()); err != nil {
+		t.Fatalf("起假 dsh 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = owner.Shutdown(context.Background()) })
+
+	if findPID(port) <= 0 {
+		t.Skip("这台机器查不到端口上的进程号，接管实例没有「按进程号停止」这条路可验")
+	}
+
+	adopter := New(launchOptions(t, port))
+	adopter.opts.Token = "" // 接管时并不知道令牌
+	if err := adopter.Start(t.Context()); err != nil {
+		t.Fatalf("接管失败: %v", err)
+	}
+	if !adopter.Adopted() {
+		t.Fatal("端口已被占用，应当走接管")
+	}
+
+	if err := adopter.StopAdopted(t.Context()); err != nil {
+		t.Fatalf("停掉接管实例应当成功，实际报错: %v", err)
+	}
+	if Busy(addr, 500*time.Millisecond) {
+		t.Errorf("StopAdopted 之后端口 %s 仍有人监听——用户看到的「停不掉」就是这样", addr)
+	}
+	if adopter.Adopted() {
+		t.Error("确认端口让开之后不该还标着「接管」：否则状态页把已经停掉的进程说成还在")
+	}
+}
+
+// TestStopAdoptedLeavesOwnChildAlone 验证只停接管实例，不动网关自己拉起的子进程。
+//
+// 这条边界很重要：管理端自己退出时也会走停止路径，那时把用户自己在跑的 dsh
+// 顺手杀掉是没礼貌的；反过来，网关自己托管的孩子必须归 Shutdown 管，
+// StopAdopted 对它应该是空操作。
+func TestStopAdoptedLeavesOwnChildAlone(t *testing.T) {
+	port := freePort(t)
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	startFakeDSH(t, port, "own-child-token")
+
+	supervisor := New(launchOptions(t, port))
+	if err := supervisor.Start(t.Context()); err != nil {
+		t.Fatalf("拉起 dsh 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = supervisor.Shutdown(context.Background()) })
+
+	if err := supervisor.StopAdopted(t.Context()); err != nil {
+		t.Fatalf("对自家子进程应当是空操作，实际报错: %v", err)
+	}
+	if !Busy(addr, 500*time.Millisecond) {
+		t.Error("网关自己拉起的 dsh 不该被 StopAdopted 停掉")
+	}
+}
+
 // TestStartRefusesWhenPortTaken 验证 --adopt=false 时端口冲突会直接报错。
 func TestStartRefusesWhenPortTaken(t *testing.T) {
 	port := freePort(t)
@@ -266,7 +351,7 @@ func TestFailedLaunchRecordsError(t *testing.T) {
 	port := freePort(t)
 	// 让子进程立刻失败：命令存在，但参数让它退出。
 	options := Options{
-		Command:      os.Args[0] + " --unsupported-flag-xyz",
+		Command:      fakeDSHCommand(" --unsupported-flag-xyz"),
 		Host:         "127.0.0.1",
 		Port:         port,
 		Home:         t.TempDir(),

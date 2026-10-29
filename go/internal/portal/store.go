@@ -32,7 +32,8 @@ import (
 //
 // v2 给 instances 加了 install_mode / install_dir / config_dir / listen_host /
 // start_mode 五列（管理台创建实例时选安装方式与启动方式）。
-const SchemaVersion = 2
+// v3 加 dsh_version（装哪个版本或 dist-tag，空 = 跟随 latest）。
+const SchemaVersion = 3
 
 // ErrNotFound 表示按 id / 名字查不到记录。
 var ErrNotFound = errors.New("记录不存在")
@@ -111,11 +112,40 @@ ALTER TABLE instances ADD COLUMN listen_host  TEXT NOT NULL DEFAULT '127.0.0.1';
 ALTER TABLE instances ADD COLUMN start_mode   TEXT NOT NULL DEFAULT 'auto';
 `
 
+// schemaV3 给实例加上「装哪个版本」。默认空串 = 跟随 latest，与升级前的行为
+// 逐字一致（老实例不会因为有这一列就突然钉在某个版本上）。
+const schemaV3 = `
+ALTER TABLE instances ADD COLUMN dsh_version TEXT NOT NULL DEFAULT '';
+`
+
 // Open 打开（必要时创建并迁移）管理端数据库。
 //
 // 文件不存在不算错误：建一个空库。文件存在但结构版本比程序更新则报错，
 // 不静默降级——那样只会把数据写坏。
 func Open(path string) (*Store, error) {
+	// 先清一次「没有 WAL 却留着索引」的孤立 <db>-shm：那种残留不会让 Open 失败，
+	// 而是让**后续第一次读表**失败（SQLITE_IOERR_FSTAT 1802），下面那段自愈
+	// 重试就永远轮不到——现场表现是实例列表为空、重启实例报找不到实例。
+	clearOrphanShmIndex(path)
+	s, err := openStore(path)
+	if err == nil {
+		return s, nil
+	}
+	// 硬重启留下的过期 WAL 索引会让读取错位成「disk I/O error (266)」，别的进程
+	// 甚至打不开库（SHMOPEN 1546）：Windows 上被强制结束的进程不会清掉 <db>-shm，
+	// 而它只是 WAL 的索引缓存，删掉就能从 <db>-wal 重建。删之前先确认没有别人开着
+	// 这份索引（占用中的文件在 Windows 上删不掉），再重开一次；仍旧失败就把原始
+	// 错误原样报出去，不吞掉真正的问题。
+	if clearStaleShmIndex(path) {
+		if s, err2 := openStore(path); err2 == nil {
+			return s, nil
+		}
+	}
+	return nil, err
+}
+
+// openStore 是真正的打开与迁移逻辑（Open 会在失败后自愈重试一次）。
+func openStore(path string) (*Store, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("解析管理端数据库路径失败 %q: %w", path, err)
@@ -198,6 +228,11 @@ func (s *Store) migrate() error {
 	if version < 2 {
 		if _, err := tx.Exec(schemaV2); err != nil {
 			return fmt.Errorf("升级管理端数据库到结构版本 2 失败: %w", err)
+		}
+	}
+	if version < 3 {
+		if _, err := tx.Exec(schemaV3); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 3 失败: %w", err)
 		}
 	}
 	// PRAGMA 不接受参数占位符；版本号来自本包常量，不涉及外部输入。

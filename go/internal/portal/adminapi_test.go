@@ -119,15 +119,15 @@ func TestAdminJSONActionLifecycle(t *testing.T) {
 		t.Fatalf("被停用后应立即失效，实际 %d", got.Code)
 	}
 
-	// 最后一个管理员：拒绝并给出说明
+	// 超级管理员（fixture 里第一个注册的 root）：拒绝并给出说明
 	rec = postAdminJSON(t, f, session, map[string]any{
 		"action": "user.toggle", "name": "root", "disabled": true,
 	}, "http://portal.test", "application/json")
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("拒绝操作最后一个管理员应 400，实际 %d", rec.Code)
+		t.Fatalf("拒绝操作超级管理员应 400，实际 %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "最后一个管理员") {
-		t.Errorf("应给出「最后一个管理员」的说明，实际 %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "超级管理员") {
+		t.Errorf("应给出「超级管理员」的说明，实际 %q", rec.Body.String())
 	}
 }
 

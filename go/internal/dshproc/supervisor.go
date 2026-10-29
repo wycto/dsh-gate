@@ -28,6 +28,10 @@ type Options struct {
 	// NPMRegistry 是用户点名的 npm 源（--npm-registry）；非空时以
 	// npm_config_registry 注入 dsh 子进程，dsh 自己拉插件也走同一个源。
 	NPMRegistry string
+	// DshVersion 是要钉住的 dsh 版本或 dist-tag（空 = 跟随 latest）。只在自动
+	// 探测那条路上起作用：显式 Command 与已经装好的 ResolvedCommand 里本来就
+	// 带着 @版本。
+	DshVersion string
 	// Host / Port 是 dsh 的监听地址。
 	Host string
 	Port int
@@ -41,6 +45,12 @@ type Options struct {
 	TrustedHosts []string
 	// Token 是已知的启动令牌；留空则从 dsh 的启动输出里读。
 	Token string
+	// TokenFile 是启动令牌的落盘位置；留空则令牌只留在内存里。
+	//
+	// dsh 每个进程随机生成令牌、只在启动时打印一次。网关重启（崩溃、升级、
+	// 重装服务）后 dsh 往往还活着，此时没有令牌就只能「接管」成未授权状态：
+	// 首页打得开、一对话就要求重新登录。记一份到实例目录（0600）就能续上。
+	TokenFile string
 	// Adopt 表示端口已被占用时接管那个 dsh，而不是报错。
 	Adopt bool
 	// AutoStart 表示端口空闲时由本进程把 dsh 拉起来。
@@ -63,19 +73,20 @@ type Supervisor struct {
 	opts Options
 	log  *slog.Logger
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	exited    chan struct{} // 当前子进程退出时关闭
-	adopted   bool          // 端口上的 dsh 不是我们启动的
-	stopped   bool          // 收到过停止指令，不再自动重启
-	reaping   bool          // 崩溃重启循环正在运行：此刻只有它有权拉起子进程
-	ready     bool
-	pid       int
-	token     string
-	lastErr   string
-	supported map[string]bool // dsh 支持的选项，探测一次后缓存
-	readyCh   chan struct{}
-	recent    []string // dsh 最近若干行输出，失败时原样回放
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	exited     chan struct{} // 当前子进程退出时关闭
+	adopted    bool          // 端口上的 dsh 不是我们启动的
+	adoptedPID int           // 接管到的那个进程号（0 = 这台机器查不出来）
+	stopped    bool          // 收到过停止指令，不再自动重启
+	reaping    bool          // 崩溃重启循环正在运行：此刻只有它有权拉起子进程
+	ready      bool
+	pid        int
+	token      string
+	lastErr    string
+	supported  map[string]bool // dsh 支持的选项，探测一次后缓存
+	readyCh    chan struct{}
+	recent     []string // dsh 最近若干行输出，失败时原样回放
 
 	// commandMu 保护 opts.ResolvedCommand 与 resolvedRegistry：它们可能在启动
 	// 之后才由后台的「准备 dsh」写进来（见 SetResolvedCommand），而每次拉起
@@ -98,9 +109,20 @@ func New(opts Options) *Supervisor {
 	return &Supervisor{
 		opts:    opts,
 		log:     opts.Logger,
-		token:   opts.Token,
+		token:   tokenOrDefault(opts),
 		readyCh: make(chan struct{}),
 	}
+}
+
+// tokenOrDefault 返回启动时该用的令牌：显式给的优先，其次读落盘的那份。
+//
+// 读不到落盘令牌就当没有（返回空串），交给启动输出去补——不因为一个辅助文件
+// 的缺失让实例起不来。
+func tokenOrDefault(opts Options) string {
+	if strings.TrimSpace(opts.Token) != "" {
+		return opts.Token
+	}
+	return readTokenFile(opts.TokenFile)
 }
 
 // Addr 返回 dsh 的监听地址。
@@ -148,7 +170,36 @@ func (s *Supervisor) registry() string {
 // childEnv 是 dsh 子进程的环境变量。
 func (s *Supervisor) childEnv() []string {
 	env := append(os.Environ(), "DSH_HOME="+s.opts.Home)
+	// HOME 指向实例自己的工作目录：dsh 的「选择工作区目录」弹窗从**宿主家目录**
+	// 开始浏览（目录选择器用 os.homedir() 解析默认路径，DSH 侧没有配置项可改）。
+	// 网关通常以服务方式跑在无头机器上，进程家目录是 /root——于是每个实例点
+	// 「选择工作区」都落在 /root，用户得自己一层层翻到实例目录。把它设成实例的
+	// 工作目录，弹窗默认就在该实例自己的工作区里。
+	//
+	// 不影响 dsh 的数据根：DSH_HOME 已显式注入，优先级高于 ~/.dsh；插件与技能
+	// 元数据（DSH_AGENTS_HOME 未设时才落到 ~/.agents）也继续留在网关侧，多个
+	// 实例不会因此共享用户数据。
+	if dir := strings.TrimSpace(s.opts.Workspace); dir != "" {
+		env = setEnv(env, "HOME", dir)
+		// npm 的缓存（_npx / _cacache）默认落在 HOME 下。HOME 改成工作目录后，
+		// 缓存会出现在用户的工作区里，把「选择工作区」的列表搞脏。固定指回网关
+		// 自己的家目录，缓存继续留在网关侧，多实例还能共用一份。
+		if home := originalHome(); home != "" {
+			env = setEnv(env, "npm_config_cache", filepath.Join(home, ".npm"))
+		}
+	}
 	return npmEnv(env, s.registry())
+}
+
+// originalHome 取网关进程自己的家目录，供「HOME 被改走后仍要留在网关侧」的缓存使用。
+//
+// 在 childEnv 被调用时读取：那时 HOME 还是网关的值（改动只作用于子进程的环境切片）。
+func originalHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return home
 }
 
 // ensureWorkspaceDir 在拉起 dsh 之前确认工作目录可用，不存在就建出来。
@@ -201,15 +252,16 @@ func (s *Supervisor) NativeURL() string {
 
 // Token 返回已知的 dsh 启动令牌，可能为空。
 //
-// 这个令牌是「让浏览器拿到 dsh 会话的唯一钥匙」，因此它的生命周期被严格
-// 限制在这个进程的内存里：不落盘、不进结构化日志字段。
+// 这个令牌是「让浏览器拿到 dsh 会话的唯一钥匙」：除网关自己，谁拿到它都能直接
+// 进 dsh，所以它不进结构化日志字段（日志里统一 RedactToken 打码）。落盘只落在
+// 实例目录的 0600 文件里（见 Options.TokenFile），供网关重启后接手仍活着的 dsh。
 func (s *Supervisor) Token() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.token
 }
 
-// SetToken 记住启动令牌。
+// SetToken 记住启动令牌，并尽力写一份到实例目录（供网关重启后沿用）。
 //
 // 除了从 dsh 启动输出里自动读取，网关还会在浏览器把带 token 的 URL 粘过来
 // 时调用它——这是「接管别人启动的 dsh」时唯一可行的令牌来源。
@@ -222,10 +274,18 @@ func (s *Supervisor) SetToken(token string) {
 	s.token = token
 	s.mu.Unlock()
 	if changed {
-		// 打出完整地址而不是只说「已记录」：网关本身不会用这条地址，
-		// 人要用——排查时需要能绕过网关直接连 dsh。
-		s.log.Info("已记录 dsh 启动令牌，本机可直接打开（该地址只在回环上有用）",
-			"本机地址", "http://"+s.Addr()+"/?token="+token)
+		// 落盘失败不拦运行：令牌还在内存里，本次会话照样能用，只是下次网关重启
+		// 又得重新要一次。写不进去通常是权限或目录被删，喊一声就够。
+		if err := writeTokenFile(s.opts.TokenFile, token); err != nil {
+			s.log.Warn("记录 dsh 启动令牌到实例目录失败（不影响本次运行，网关重启后需重新获取）",
+				"file", s.opts.TokenFile, "err", err.Error())
+		}
+		// 只打地址、不打令牌：这条日志是要给人拿去「绕过网关直接连 dsh」的，
+		// 但令牌本身不能进日志（见 Token 的说明）。要令牌就从实例目录那个
+		// 0600 文件读，或者启动时用 --dsh-token 指定。
+		s.log.Info("已记录 dsh 启动令牌（地址里的令牌已打码，明文见实例目录的令牌文件）",
+			"本机地址", "http://"+s.Addr()+"/?token=***",
+			"令牌文件", s.opts.TokenFile)
 	}
 }
 
@@ -284,6 +344,12 @@ func (s *Supervisor) setLastError(err error) {
 	s.mu.Unlock()
 }
 
+// errInstanceStopped 是「停止指令已经落地，这次拉起作废」。
+//
+// 单独一个错误值：重启循环靠它识别出「不是 dsh 起不来，是有人叫了停」，
+// 从而不再退避重试，也不把它当成一次启动失败去刷屏。
+var errInstanceStopped = errors.New("实例已被停止，取消这次拉起")
+
 // Run 持续尝试把 dsh 拉起来，直到成功或上下文结束。
 //
 // 与一次性的 Start 的区别只在于失败后的重试。之所以要有这个包装：dsh 首次
@@ -291,6 +357,16 @@ func (s *Supervisor) setLastError(err error) {
 // dsh 慢慢总能起来」正是无界面服务器上应有的行为。成功后本方法立刻返回——
 // 此后的崩溃重启由 reap 负责。
 func (s *Supervisor) Run(ctx context.Context) {
+	// 「有人要求它跑起来」就是从这里开始的，stopped 也只在这里清。
+	//
+	// 早先是 spawn 顺手清掉它的，于是停掉一个「正在崩溃重启」的实例会变成
+	// 越停越发：Shutdown 时 s.cmd 还是 nil（谁也没被杀），下一次 spawn 又把
+	// 「已停止」抹掉，重启循环接着数退避。挪到 Run 之后，重启循环内部的任何
+	// 一步都拦得住，而「停止 → 再点启动」仍然是新的一次意图。
+	s.mu.Lock()
+	s.stopped = false
+	s.mu.Unlock()
+
 	backoff := time.Second
 	for attempt := 1; ; attempt++ {
 		err := s.Start(ctx)
@@ -382,18 +458,28 @@ func (s *Supervisor) Start(ctx context.Context) (err error) {
 func (s *Supervisor) adopt(state State) {
 	s.mu.Lock()
 	s.adopted = true
+	// 记下端口上那个进程号：接管来的实例没有子进程句柄，进程号是「停止它」
+	// 唯一的入口。没记就等于停不掉——0.3.44 之前 Windows 上正是这样（findPID
+	// 恒为 0），管理台上点停止只把网关自己的转发标记清掉，端口照旧有人听。
+	s.adoptedPID = state.PID
 	s.setReadyLocked(true)
 	s.mu.Unlock()
 	s.log.Info("接管已在运行的 dsh 实例", "addr", s.Addr(), "pid", state.PID, "detail", state.Detail)
-	if s.opts.Token == "" {
+	// 这里要看「解析后的令牌」而不是 opts.Token：令牌优先来自落盘的那份
+	// （Options.TokenFile），只在两者都没有时才真的无从得知。早先只看
+	// opts.Token，于是每次管理端重启后接管都误报「没有令牌」，而文件里明明
+	// 有——浏览器照着这个提示去重新登录，反而不必要地丢了会话。
+	if token := s.Token(); token == "" {
 		// 这条提示与「重新登录」页、启动横幅讲的是同一件事，三处说法要一致。
-		// 令牌每个进程随机生成、只在 dsh 启动时打印一次、不落盘，所以别人拉起的
-		// dsh 我们无从得知——出路只有「用户还记得那个地址」或「让网关自己管 dsh」。
+		// 令牌每个进程随机生成、只在 dsh 启动时打印一次，所以别人拉起的 dsh
+		// 我们无从得知——出路只有「用户还记得那个地址」或「让网关自己管 dsh」。
 		s.log.Warn("接管的实例没有已知启动令牌：浏览器能开首页，但对话会报未授权。"+
 			"两条出路：① 还留着 dsh 启动时打印的地址，就把它粘到网关地址后面打开一次"+
 			"（也可用 --dsh-token 指定）；② 停掉外面那个 dsh 再重启本实例，"+
 			"让网关自己拉起 dsh（一定成功）",
 			"addr", s.Addr())
+	} else {
+		s.log.Info("接管的实例用上了此前记下的启动令牌，浏览器可以直接对话", "addr", s.Addr())
 	}
 }
 
@@ -451,6 +537,18 @@ func (s *Supervisor) launch(ctx context.Context) error {
 // reap 自己（见其注释），否则「秒退的子进程」会让新旧两个重启循环并存，
 // 崩溃风暴就是这么来的。
 func (s *Supervisor) spawn(args []string) (*exec.Cmd, <-chan error, chan struct{}, error) {
+	// 停止指令优先于一切拉起：这里是唯一能拦住「重启循环」的地方。
+	//
+	// 拦不住会怎样：用户点停止时实例正处在「启动中」（重启循环在跑），Shutdown
+	// 那一刻 s.cmd 是 nil，于是它谁也没停；紧接着 spawn 又起了一个孩子，并且按
+	// 老代码把 stopped 清掉了——崩溃重启循环从此认为「这是正常退出」，越停越发。
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return nil, nil, nil, errInstanceStopped
+	}
+
 	// 工作目录不存在时 exec.Command 会报「fork/exec <可执行文件>: no such file
 	// or directory」——错误信息指向的是**命令**，而真正缺的是目录。照着这个报错
 	// 去查命令只会越查越远，所以先自己判一次，把话说清楚。
@@ -495,9 +593,17 @@ func (s *Supervisor) spawn(args []string) (*exec.Cmd, <-chan error, chan struct{
 	}()
 
 	s.mu.Lock()
+	if s.stopped {
+		// 停止恰好落在「进程已经起来了」与「登记进监督者」之间：这个孩子
+		// 已经不在任何人的管辖之内了，只能就地收掉，否则又是一次「点了停止
+		// 却还剩一个 dsh 在跑」。收尸交给上面那个 Wait goroutine，它会把
+		// s.cmd 保持成 nil（我们从没登记过它）。
+		s.mu.Unlock()
+		_ = kill(cmd)
+		return nil, nil, nil, errInstanceStopped
+	}
 	s.cmd = cmd
 	s.pid = cmd.Process.Pid
-	s.stopped = false
 	s.exited = exited
 	s.mu.Unlock()
 
@@ -728,6 +834,81 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	}
 }
 
+// StopAdopted 停掉「接管来的」那个 dsh，并等端口真的让开。
+//
+// 为什么单列一个方法，而不是并进 Shutdown：Shutdown 也用在管理端自己退出那一刻
+// （Runtime.Stop）。顺手杀掉一个不是网关启动的 dsh 是没礼貌的——那是用户自己在
+// 终端里跑着的服务，网关只是借它的端口用。所以「结束别人的进程」必须是一个只有
+// 用户明确点了停止才会发生的动作。
+//
+// 网关自己拉起的那个（有子进程句柄的）在这里是空操作，归 Shutdown 管。
+func (s *Supervisor) StopAdopted(ctx context.Context) error {
+	s.mu.Lock()
+	adopted, pid := s.adopted, s.adoptedPID
+	s.mu.Unlock()
+	if !adopted {
+		return nil
+	}
+
+	addr := s.Addr()
+	if pid <= 0 {
+		// 接管那一刻查不出来（或那个进程之后换过一代），再问一次。
+		pid = findPID(s.opts.Port)
+	}
+	if pid <= 0 && !Busy(dialableAddr(addr), probeTimeout) {
+		return nil // 端口上已经没人听了：它本来就停了
+	}
+	if pid <= 0 {
+		// 到这里就是「确有个进程占着端口，可我们叫不出它是谁」。
+		// 必须如实报错：静悄悄返回 nil 会让管理台显示「已停止」，而端口照旧
+		// 有人监听——用户看到的正是「点了停止却停不下来」。
+		return fmt.Errorf("端口 %s 上那个 dsh 不是网关启动的，而这台机器查不到它的进程号，"+
+			"网关无法替它停止。请手动停掉那个进程；之后再点一次重启，"+
+			"dsh 就会改由网关自己拉起（那样在这里就停得掉了）", addr)
+	}
+
+	if err := terminatePID(pid); err != nil {
+		s.log.Warn("向接管实例发送终止信号失败，直接结束进程", "addr", addr, "pid", pid, "err", err)
+	}
+	if err := s.waitForAdoptedGone(ctx, addr, s.opts.StopTimeout); err == nil {
+		s.forgetAdopted(pid)
+		return nil
+	}
+
+	s.log.Warn("接管实例未在宽限时间内退出，强制结束", "addr", addr, "pid", pid)
+	if err := killPID(pid); err != nil {
+		return fmt.Errorf("结束端口 %s 上的 dsh（进程 %d）失败: %w", addr, pid, err)
+	}
+	if err := s.waitForAdoptedGone(ctx, addr, 5*time.Second); err != nil {
+		return fmt.Errorf("已强制结束进程 %d，但端口 %s 仍被占用（%v）——"+
+			"可能还有别的进程占着这个端口，或权限不足以结束它", pid, addr, err)
+	}
+	s.forgetAdopted(pid)
+	return nil
+}
+
+// waitForAdoptedGone 在给定时间内等端口空出来。
+func (s *Supervisor) waitForAdoptedGone(ctx context.Context, addr string, grace time.Duration) error {
+	if grace <= 0 {
+		grace = time.Second
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	return WaitPortFree(waitCtx, addr, 200*time.Millisecond)
+}
+
+// forgetAdopted 在确认端口空了之后清掉接管标记与进程号。
+//
+// 不清的话，同一个监督者后来自己拉起了 dsh，Adopted() 却还是真的——状态页会
+// 把「网关托管的实例」标成「接管来的」，用户也就再也看不懂那个实例归谁管。
+func (s *Supervisor) forgetAdopted(pid int) {
+	s.mu.Lock()
+	s.adopted = false
+	s.adoptedPID = 0
+	s.mu.Unlock()
+	s.log.Info("接管实例已停止", "addr", s.Addr(), "pid", pid)
+}
+
 // setReadyLocked 更新就绪状态并唤醒等待者。调用方必须持有锁。
 func (s *Supervisor) setReadyLocked(ready bool) {
 	if s.ready == ready {
@@ -771,6 +952,18 @@ func (s *Supervisor) stopChild(grace time.Duration) {
 	}
 }
 
+// WebArgs 是网关拉起 dsh 时固定追加的那组参数。
+//
+// 导出是为了让管理台能如实展示「配置的端口到底传给了谁」：卡片上那条启动
+// 命令只是 dsh 从哪来，真正的监听地址与端口由这里补上。显示与实际执行各写
+// 一份迟早会漂移，所以两处共用这一份。
+//
+// 可选参数（--public-url / --trusted-host）不在这里：它们取决于运行时的
+// 对外地址，还会按 dsh 版本过滤，管理台那层拿不到。
+func WebArgs(host string, port int) []string {
+	return []string{"web", "--host", host, "--port", strconv.Itoa(port), "--no-open"}
+}
+
 // buildCommand 生成 dsh 的启动命令。
 //
 // 自动探测出的命令会先问一遍 dsh 自己支持哪些选项（见 supportedFlags），
@@ -786,8 +979,11 @@ func (s *Supervisor) buildCommand(ctx context.Context) ([]string, error) {
 		// （0.2.0-rc 系列在 Node 下静默退出，盲探测出来的命令是坏的）。
 		command := s.resolvedCommand()
 		if command == "" {
-			var err error
-			command, err = detectBinary()
+			version, err := ValidateDshVersion(s.opts.DshVersion)
+			if err != nil {
+				return nil, err
+			}
+			command, err = detectBinary(version)
 			if err != nil {
 				return nil, err
 			}
@@ -806,7 +1002,7 @@ func (s *Supervisor) buildCommand(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		args := append([]string{}, prefix...)
-		args = append(args, "web", "--host", s.opts.Host, "--port", strconv.Itoa(s.opts.Port), "--no-open")
+		args = append(args, WebArgs(s.opts.Host, s.opts.Port)...)
 
 		optional := []string{}
 		if s.opts.PublicURL != "" {
@@ -878,6 +1074,7 @@ func (s *Supervisor) supportedFlags(ctx context.Context, binary string) map[stri
 	}
 	args = append(args, "web", "--help")
 	cmd := exec.CommandContext(probeCtx, args[0], args[1:]...)
+	applyProbeAttrs(cmd)
 	cmd.Env = s.childEnv()
 	cmd.Dir = s.opts.Workspace
 
@@ -972,9 +1169,9 @@ func (s *Supervisor) expand(template string) (string, error) {
 //
 // 暴露出来是为了让 `dsh-gate check` 能在启动之前就告诉用户「找不到 dsh」，
 // 而不是让人先跑起来、在等待页上才发现。
-func DetectBinary() (string, error) { return detectBinary() }
+func DetectBinary() (string, error) { return detectBinary("") }
 
-// detectBinary 探测官方 dsh 启动命令。
+// detectBinary 探测官方 dsh 启动命令；version 非空时把它钉进包名（`@<version>`）。
 //
 // 官方命令就是 npx @deepseek-ai/dsh web：npx 每次启动都会对照 npm 检查版本，
 // 包不存在或有新版本时需要交互确认安装/更新——--yes 把这个确认自动化
@@ -982,11 +1179,14 @@ func DetectBinary() (string, error) { return detectBinary() }
 //
 // 返回值是「可执行文件 + 必要的参数」，因为 npx 这条路必须带上包名。
 // 可执行性由 EnsureDSH 的冒烟验证负责，这里只做存在性探测。
-func detectBinary() (string, error) {
+func detectBinary(version string) (string, error) {
 	// Windows 上 npx 是 npx.cmd；这里连包名一起返回——只返回 "npx" 的话，
 	// 拼出来的命令会变成 "npx web"，npx 会去找一个名叫 web 的包然后失败。
 	for _, candidate := range []string{"npx", "npx.cmd"} {
 		if _, err := exec.LookPath(candidate); err == nil {
+			if version != "" {
+				return candidate + " --yes " + dshPackage + "@" + version, nil
+			}
 			return candidate + " --yes " + dshPackage, nil
 		}
 	}
@@ -1046,5 +1246,5 @@ func checkLaunchable(binary string) error {
 	}
 	return fmt.Errorf("找不到 %s：它所在的目录可能已被删除或清理。"+
 		"如果这是网关自备的 Node.js 运行时，删掉状态目录里的 node/ 让网关重新下载即可"+
-		"（或重启网关实例 dsh-gate restart）", binary)
+		"（或在管理台重启该实例，或用 dsh-gate dsh restart <实例名>）", binary)
 }

@@ -149,3 +149,15 @@ func TestModelSubcommandRequiresArgument(t *testing.T) {
 		t.Errorf("未知子命令时退出码 = %d，期望 2", code)
 	}
 }
+
+// TestModelRequiresInstance 模型配置必须落在某个实例上：不给 --instance 也不给
+// --dsh-home 时应当明确报错，而不是默认写 ~/.dsh。
+func TestModelRequiresInstance(t *testing.T) {
+	opts := modelOptions{}
+	if _, err := opts.home(); err == nil || !strings.Contains(err.Error(), "--instance") {
+		t.Fatalf("未指定实例时应报错并提到 --instance，实际: %v", err)
+	}
+	if home, err := (modelOptions{DSHHome: "/srv/dsh"}).home(); err != nil || home != "/srv/dsh" {
+		t.Errorf("显式 --dsh-home 应直接使用，得到 %q, %v", home, err)
+	}
+}

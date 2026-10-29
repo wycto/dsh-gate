@@ -128,9 +128,9 @@ func TestLoginPageLanguage(t *testing.T) {
 		return recorder.Body.String(), recorder.Result().Cookies()
 	}
 
-	// 默认（中文）
+	// 默认（中文）。「账号」是登录名的叫法（与「姓名」区分），文案改了这里跟着改。
 	body, _ := renderLogin(nil)
-	if !strings.Contains(body, "登录") || !strings.Contains(body, "用户名") {
+	if !strings.Contains(body, "登录") || !strings.Contains(body, "账号") {
 		t.Errorf("默认应为中文登录页，实际缺少中文文案")
 	}
 
@@ -143,7 +143,7 @@ func TestLoginPageLanguage(t *testing.T) {
 			t.Errorf("?lang=en 的登录页缺少英文文案 %q", want)
 		}
 	}
-	if strings.Contains(body, "用户名") {
+	if strings.Contains(body, "账号") || strings.Contains(body, "登录") {
 		t.Error("?lang=en 时不该再出现中文文案")
 	}
 	var langCookie *http.Cookie

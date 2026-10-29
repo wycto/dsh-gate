@@ -93,6 +93,30 @@ func TestAdminPageShowsStateWithoutSecrets(t *testing.T) {
 	}
 }
 
+// TestAdminPageShowsLaunchArgs 验证卡片把运行时追加的参数也摆出来：启动命令
+// 本身只有 dsh 从哪来，真正生效的监听地址与端口在追加参数里。用户问「填的
+// 端口用没用上」时，页面上必须有这一行可看。
+func TestAdminPageShowsLaunchArgs(t *testing.T) {
+	f := newPortalFixture(t)
+	session := f.login(t, "root", "root-password-123")
+
+	inst := &Instance{Name: "arg-check", DshHome: t.TempDir(), DshPort: 12080, ListenHost: "0.0.0.0"}
+	if err := f.store.CreateInstance(inst); err != nil {
+		t.Fatalf("创建实例失败: %v", err)
+	}
+
+	rec := f.get(t, AdminPath, session)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("管理台应 200，实际 %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"启动参数", "web --host 0.0.0.0 --port 12080 --no-open"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("管理台缺少 %q（启动命令里看不到实际端口）", want)
+		}
+	}
+}
+
 // TestAdminTabParam 验证分页参数：?tab= 选中对应分页；无效值回落默认；
 // 没接运行环境时 env 不可用（否则点进去是一张空面板）。
 func TestAdminTabParam(t *testing.T) {
@@ -111,13 +135,13 @@ func TestAdminTabParam(t *testing.T) {
 	}
 	// env 面板只在接了 Installer 时存在；本 fixture 没接，请求它应回落默认。
 	body := f.get(t, AdminPath+"?tab=env", session).Body.String()
-	if !strings.Contains(body, checked("users")) {
-		t.Error("?tab=env 在无 Installer 时应回落到默认分页")
+	if !strings.Contains(body, checked("instances")) {
+		t.Error("?tab=env 在无 Installer 时应回落到默认分页（实例）")
 	}
 	// 乱值同样回落默认。
 	body = f.get(t, AdminPath+"?tab=nonsense", session).Body.String()
-	if !strings.Contains(body, checked("users")) {
-		t.Error("无效 tab 应回落到默认分页")
+	if !strings.Contains(body, checked("instances")) {
+		t.Error("无效 tab 应回落到默认分页（实例）")
 	}
 }
 
@@ -132,7 +156,7 @@ func TestAdminPostRedirectKeepsTab(t *testing.T) {
 		{"user.create", "users"},
 		{"grants.save", "grants"},
 		{"instance.remove", "instances"},
-		{"env.install", "users"}, // 无 Installer：env 不存在，回落默认
+		{"env.install", "instances"}, // 无 Installer：env 不存在，回落默认
 	}
 	for _, c := range cases {
 		form := url.Values{"action": {c.action}, "name": {"alice"}}
@@ -295,7 +319,8 @@ func TestAdminPasswordChangeRevokesSessions(t *testing.T) {
 	f.login(t, "alice", "new-alice-password")
 }
 
-func TestAdminLastAdminProtectionShowsMessage(t *testing.T) {
+func TestAdminSuperAdminProtectionShowsMessage(t *testing.T) {
+	// fixture 的 root 是第一个注册的账号：超管保护先于最后管理员保护拦下它。
 	f := newPortalFixture(t)
 	session := f.login(t, "root", "root-password-123")
 	csrfCookie, csrf := adminCSRF(t, f, session)
@@ -304,14 +329,14 @@ func TestAdminLastAdminProtectionShowsMessage(t *testing.T) {
 		"action": {"user.toggle"}, "name": {"root"}, "disabled": {"1"},
 	})
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("拒绝操作最后一个管理员应 400，实际 %d", rec.Code)
+		t.Fatalf("拒绝操作超级管理员应 400，实际 %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "最后一个管理员") {
-		t.Errorf("应给出「最后一个管理员」的说明，实际 body 里没有")
+	if !strings.Contains(rec.Body.String(), "超级管理员") {
+		t.Errorf("应给出「超级管理员」的说明，实际 body 里没有")
 	}
 	root, err := f.store.UserByName("root")
 	if err != nil || root.Disabled {
-		t.Fatalf("最后一个管理员不该被停用: %+v %v", root, err)
+		t.Fatalf("超级管理员不该被停用: %+v %v", root, err)
 	}
 }
 
@@ -350,6 +375,67 @@ func TestAdminPageLanguage(t *testing.T) {
 	}
 	if body := f.get(t, AdminPath+"?lang=en", session).Body.String(); !strings.Contains(body, "Admin") {
 		t.Error("?lang=en 时应渲染英文管理台")
+	}
+}
+
+// TestAdminPageTheme 验证管理台也跟着配色偏好渲染，并且切换链接不会丢掉 ?tab=。
+//
+// 管理台刻意不用 JavaScript，配色切换因此是普通链接 + 服务端 Cookie：点一下换一套
+// 令牌重新渲染，当前分页必须还在，否则换个配色就被弹回第一页。
+func TestAdminPageTheme(t *testing.T) {
+	f := newPortalFixture(t)
+	session := f.login(t, "root", "root-password-123")
+
+	// 默认：不写 data-theme，页面跟着系统走；页脚「跟随系统」是当前项。
+	// data-scheme 总在——色相没有跟随系统这一态，缺省石墨蓝。
+	body := f.get(t, AdminPath, session).Body.String()
+	if !strings.Contains(body, `<html lang="zh-CN" data-scheme="slate" data-style="console">`) {
+		t.Error("没选过配色时管理台不该写 data-theme，但应写缺省方案")
+	}
+	if !strings.Contains(body, `theme=auto" aria-current="true"`) {
+		t.Error("没选过配色时页脚的「跟随系统」应当是当前项")
+	}
+	// 页脚必须有方案胶囊（四个色相之一被标为当前）。
+	if !strings.Contains(body, "scheme=ocean") {
+		t.Error("页脚应有方案切换链接")
+	}
+
+	// ?theme=dark&tab=users：暗色渲染 + 记住偏好 + 切换链接留住分页。
+	recorder := f.get(t, AdminPath+"?theme=dark&tab=users", session)
+	body = recorder.Body.String()
+	if !strings.Contains(body, `data-theme="dark"`) {
+		t.Error("?theme=dark 时管理台应渲染暗色")
+	}
+	if !strings.Contains(body, `theme=dark" aria-current="true"`) {
+		t.Error("?theme=dark 时页脚的「暗色」应当是当前项")
+	}
+	if !strings.Contains(body, "tab=users") {
+		t.Error("配色切换链接应保留当前分页 ?tab=")
+	}
+	// 方案链接同样要留住 ?tab= 与明暗值：点一下色相不该被弹回第一页。
+	// （query.Encode 按字母序 scheme→tab→theme；模板输出时 & 被转义成 &amp;）
+	if !strings.Contains(body, "scheme=ocean&amp;style=console&amp;tab=users&amp;theme=dark") {
+		t.Error("方案切换链接应带上当前分页与明暗值")
+	}
+	var themeCookie *http.Cookie
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == auth.ThemeCookie {
+			themeCookie = c
+		}
+	}
+	if themeCookie == nil || themeCookie.Value != string(auth.ThemeDark) {
+		t.Errorf("显式选配色后应写回 %s=dark，实际 %+v", auth.ThemeCookie, themeCookie)
+	}
+
+	// Cookie 记住 + 显式亮色覆盖。
+	request := httptest.NewRequest(http.MethodGet, AdminPath, nil)
+	request.Host = "portal.test"
+	request.AddCookie(session)
+	request.AddCookie(&http.Cookie{Name: auth.ThemeCookie, Value: string(auth.ThemeLight)})
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, request)
+	if body := rec.Body.String(); !strings.Contains(body, `data-theme="light"`) {
+		t.Error("Cookie 里选了亮色时管理台应渲染亮色")
 	}
 }
 

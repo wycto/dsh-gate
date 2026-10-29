@@ -8,9 +8,11 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/wycto/dsh-gate/internal/i18n"
 )
 
-// serviceCommand 实现 `dsh-gate service`：把网关交给系统的服务管理器托管，
+// serviceCommand 实现 `dsh-gate service`：把**管理端**交给系统的服务管理器托管，
 // 从而开机（登录）自动启动。
 //
 // 三个平台各有各的「官方办法」，这里各写一份，不去抽象一个假的中间层：
@@ -19,8 +21,8 @@ import (
 //	macOS    launchd 的 LaunchAgent（每个用户一个，登录即启动）
 //	Windows  计划任务（登录时启动）
 //
-// 共同点是：托管的都是 `dsh-gate run`（前台）。服务管理器自己负责重启与日志，
-// 网关不必也不该再后台化一次——两套机制各管一半最容易出「谁在重启谁」的烂摊子。
+// 托管的命令固定是 `dsh-gate start --foreground`：服务管理器自己负责重启与日志，
+// 管理端不必也不该再后台化一次——两套机制各管一半最容易出「谁在重启谁」。
 func serviceCommand(args []string) int {
 	if len(args) == 0 {
 		printServiceHelp(os.Stderr)
@@ -30,6 +32,9 @@ func serviceCommand(args []string) int {
 	action := args[0]
 	switch action {
 	case "unit", "install", "uninstall", "status":
+	case "run":
+		// 服务管理器实际执行的入口（Windows 计划任务用）。用户不必直接敲它，
+		// 所以帮助里只留一行说明：与 start --foreground 的区别是把控制台摘掉。
 	case "-h", "--help", "help":
 		printServiceHelp(os.Stdout)
 		return 0
@@ -44,23 +49,21 @@ func serviceCommand(args []string) int {
 		fs.PrintDefaults()
 	}
 
-	hold := registerInstanceFlags(fs)
 	var (
-		configPath string
-		user       string
-		workDir    string
-		selfPath   string
-		binDir     string
+		user     string
+		workDir  string
+		selfPath string
+		binDir   string
+		tray     bool
 	)
-	fs.StringVar(&configPath, "config", "", "多实例配置文件路径，会写进启动命令")
 	fs.StringVar(&user, "user", currentUser(), "以哪个用户身份运行（Linux 用）")
-	fs.StringVar(&workDir, "working-dir", defaultWorkingDir(),
-		"工作目录。dsh 把它当作会话的默认 workspace")
+	fs.StringVar(&workDir, "working-dir", "", "管理端进程的工作目录（默认用户家目录）")
 	fs.StringVar(&selfPath, "binary", "", "dsh-gate 可执行文件的绝对路径（默认用当前运行的真实路径）")
-	fs.StringVar(&binDir, "bin-dir", defaultBinDir,
+	fs.StringVar(&binDir, "bin-dir", binDirDefault(),
 		"把 dsh-gate 拷贝到这个目录（需在 PATH 里），命令就能直接敲；留空则不拷贝")
-	manage := fs.Bool("manage", false,
-		"托管管理端（manage run）而不是单实例网关（run）")
+	fs.BoolVar(&tray, "tray", false,
+		"Windows 专用：开机自启改成系统托盘程序，登录时起托盘、由它保证管理端在跑（不再有终端窗口）")
+	pf := registerPortalFlags(fs)
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -69,30 +72,17 @@ func serviceCommand(args []string) int {
 		return 2
 	}
 
-	// 区分「显式给了 --working-dir」与「用默认值」。
-	//
-	// 这一条踩过坑：--working-dir 的默认值是家目录，于是 workDir 永远非空，
-	// workDirOrDefault 里「显式 > workspace > 家目录」的第二档永远轮不到——
-	// 实测 `service install --workspace /srv` 写出的单元里 WorkingDirectory 仍是
-	// /root，网关进程与 dsh 的工作目录分家。没显式给就清空，交由下面按优先级决定。
-	workDirSet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "working-dir" {
-			workDirSet = true
-		}
-	})
-	if !workDirSet {
-		workDir = ""
+	if tray && runtime.GOOS != "windows" {
+		// 不静默忽略：用户明确要的是「不要那个终端窗口」，在 Linux / macOS 上
+		// 根本没有窗口这回事，服务管理器自己就把进程放在没有终端的会话里。
+		return usageKey(i18n.KeyCLITrayUnsupported)
 	}
 
 	opts := serviceOptions{
 		Binary:     selfPath,
 		User:       user,
 		WorkingDir: workDir,
-		ConfigPath: configPath,
-	}
-	if *manage {
-		opts.Command = "manage run"
+		Tray:       tray,
 	}
 	if opts.Binary == "" {
 		// 用自己的真实路径而不是 PATH 查找：服务管理器的环境很干净，写死绝对
@@ -106,18 +96,36 @@ func serviceCommand(args []string) int {
 		}
 		opts.Binary = executable
 	}
-	if configPath == "" {
-		values, err := overrides(fs, hold.trustedHosts)
-		if err != nil {
-			return usageError("%v", err)
-		}
-		// 这几个不是实例配置：它们决定「怎么装」而不是「装成什么样」。
-		// --manage 也在这里剔除——它已经体现在子命令里，再传一次就是重复。
-		for _, key := range []string{"user", "working-dir", "binary", "bin-dir", "manage"} {
-			delete(values, key)
-		}
-		opts.Overrides = values
+
+	stateDir, err := resolveStateDir(pf.stateDir)
+	if err != nil {
+		return fatal("%v", err)
 	}
+	overrides := map[string]string{
+		"host":      pf.host,
+		"port":      fmt.Sprintf("%d", pf.port),
+		"state-dir": stateDir,
+	}
+	if strings.TrimSpace(pf.tlsCert) != "" {
+		overrides["tls-cert"] = strings.TrimSpace(pf.tlsCert)
+	}
+	if strings.TrimSpace(pf.tlsKey) != "" {
+		overrides["tls-key"] = strings.TrimSpace(pf.tlsKey)
+	}
+	if strings.TrimSpace(pf.publicURL) != "" {
+		overrides["public-url"] = strings.TrimSpace(pf.publicURL)
+	}
+	if strings.TrimSpace(pf.dbPath) != "" {
+		overrides["db"] = strings.TrimSpace(pf.dbPath)
+	}
+	if strings.TrimSpace(pf.npmRegistry) != "" {
+		overrides["npm-registry"] = strings.TrimSpace(pf.npmRegistry)
+	}
+	if len(pf.trusted) > 0 {
+		// trusted-host 可重复，用逗号拼成一个值：start 侧会再拆开。
+		overrides["trusted-host"] = strings.Join(pf.trusted, ",")
+	}
+	opts.Overrides = overrides
 
 	switch action {
 	case "unit":
@@ -127,29 +135,32 @@ func serviceCommand(args []string) int {
 		}
 		fmt.Print(text)
 		return 0
+	case "run":
+		return serviceRun(pf, stateDir)
 	case "install":
 		// 把命令拷进 PATH 目录放在写单元之前：单元里的 ExecStart 用拷贝后的
 		// 路径，将来原目录被清理也不影响开机自启。拷不过去只提示，不拦安装。
 		if copied := printInstallSelfResult(binDir); copied != "" {
 			opts.Binary = copied
 		}
+		if tray {
+			// 托盘是另一个二进制（GUI 子系统，见 build.sh），计划任务指的就是它：
+			// 没有它就没有托盘形态，这一步失败必须拦住安装——装了个跑不起来的任务
+			// 比装不上更糟。
+			trayPath, err := installTraySiblingToBinDir(binDir, opts.Binary)
+			if err != nil {
+				return fatal("%v", err)
+			}
+			opts.TrayBinary = trayPath
+		}
 		if err := serviceInstall(opts); err != nil {
 			return fatal("%v", err)
 		}
-		// 把「装完 dsh 会在哪工作」直接说出来：服务托管时网关的工作目录是安装时
-		// 的默认值（用户家目录），不提示的话，用户会以为会话默认工作目录还是
-		// setup 里填的那个——实测正是这样踩的。
-		if workspace := opts.Overrides["workspace"]; workspace != "" {
-			fmt.Printf("会话默认工作目录  %s\n", workspace)
-		} else {
-			fmt.Printf("会话默认工作目录  未指定：跟随网关进程的工作目录 %s\n", opts.workDirOrDefault())
-			fmt.Println("  想让 agent 默认读写某个目录，加 --workspace <目录> 重装一次服务。")
-		}
-		fmt.Print(serviceInstalledHint())
+		fmt.Print(serviceInstalledHint(opts))
 		return 0
 	case "uninstall":
 		// 先读出来它托管的是什么，再删：用户点的是「取消自启」，但真正想知道的
-		// 是「刚刚被取消的是哪个实例」——服务单元是机器级的，一个平台只有一个。
+		// 是「刚刚被取消的是哪个命令」。
 		managed := serviceManagedCommand()
 		if err := serviceUninstall(opts); err != nil {
 			return fatal("%v", err)
@@ -166,35 +177,74 @@ func serviceCommand(args []string) int {
 	return 2
 }
 
+// serviceRun 是服务管理器实际执行的启动命令：参数与 `start --foreground` 相同。
+//
+// 为什么不直接让计划任务执行 `start --foreground`：见 taskArgs 的注释。
+//
+// Windows 上它只当「启动器」：派一个没有控制台的子进程去当管理端，自己立刻退出
+// （见 detachServiceConsole）。这样关掉那个终端窗口只会关掉一个已经结束的进程，
+// 服务不受影响——而挂在控制台上的进程被关掉窗口时，控制台宿主是一定会把它一起
+// 结束的，屏蔽信号也拦不住。
+func serviceRun(pf *portalFlags, stateDir string) int {
+	hideServiceConsole()
+	args := pf.startArgs(stateDir)
+	if !detachServiceConsole() {
+		return portalRunCommand(args)
+	}
+	// 已经有一个在跑就安静退出：计划任务的「失败重启」和手工 `schtasks /Run` 都会
+	// 二次拉起，派出去的那个只会 bind 失败，留下一条没人看的报错。
+	if record, running := portalRecord(resolveRunDir("")); running {
+		fmt.Printf("管理端已经在运行（%s，进程号 %d），不再拉起。\n", record.Listen, record.PID)
+		return 0
+	}
+	return portalRunCommand(append(args, "--background"))
+}
+
 // serviceOptions 是各平台实现共用的输入。
 type serviceOptions struct {
 	// Binary 是 dsh-gate 可执行文件的绝对路径。
 	Binary string
 	// User 是以哪个用户身份运行（Linux systemd 用 User=，其它平台忽略）。
 	User string
-	// WorkingDir 是工作目录，dsh 把它当作会话的默认 workspace。
+	// WorkingDir 是管理端进程的工作目录。
 	WorkingDir string
-	// ConfigPath 非空时走多实例配置文件。
-	ConfigPath string
-	// Overrides 是命令行显式给出的实例选项，键是选项名（不含前导 --）。
+	// Overrides 是传给 `start` 的选项，键是选项名（不含前导 --）。
 	Overrides map[string]string
-	// Command 是托管时要跑的子命令，默认 "run"（单实例形态）。
-	//
-	// 管理端形态要托管的是 "manage run"：它有自己的端口、账号库与实例表，
-	// 与单实例形态互不兼容。为空时按 "run" 处理，保持老调用方不变。
-	Command string
+	// Tray 表示 Windows 上把计划任务的动作换成托盘程序（GUI 子系统，没有终端窗口）。
+	Tray bool
+	// TrayBinary 是托盘可执行文件的绝对路径，只有 Tray 为真时有值。
+	TrayBinary string
 }
 
 // serviceArgs 返回托管时要执行的完整命令行，含程序名本身。
+//
+// Linux / macOS 的服务管理器自己会处理「不要挂终端」这件事（systemd 没有控制台、
+// launchd 的进程也不连终端），所以直接执行 `start --foreground` 即可；Windows 的
+// 计划任务会给控制台程序开一个可见窗口，必须换成 `service run`（见 taskArgs）。
 func (o serviceOptions) serviceArgs() []string {
-	command := o.Command
-	if command == "" {
-		command = "run"
+	return o.argsWith([]string{o.Binary, "start", "--foreground"})
+}
+
+// taskArgs 返回 Windows 计划任务要执行的命令行。
+//
+// 默认用 `service run` 而不是 `start --foreground`：计划任务以交互身份启动控制台程序时
+// 会新开一个终端窗口，用户手一关就是 Ctrl-Close，管理端跟着退出——这正是「启动后
+// 又开了一个终端，关掉就访问不到了」的原因。`service run` 会先把控制台隐藏掉，
+// 再把管理端派进没有控制台的后代进程。
+//
+// `--tray` 形态下动作换成托盘程序：它是 GUI 子系统（-H=windowsgui）的那份二进制，
+// 系统从一开始就不会给它开控制台，于是连「闪一下」都没有，取而代之的是通知区里的
+// 图标。启动参数照旧传过去，由它在需要拉起管理端时原样使用。
+func (o serviceOptions) taskArgs() []string {
+	if o.Tray && o.TrayBinary != "" {
+		return o.argsWith([]string{o.TrayBinary, "tray"})
 	}
-	args := []string{o.Binary, command, "--log-json"}
-	if o.ConfigPath != "" {
-		return append(args, "--config", o.ConfigPath)
-	}
+	return o.argsWith([]string{o.Binary, "service", "run"})
+}
+
+// argsWith 在固定前缀之后按稳定顺序拼上要托管的选项。
+func (o serviceOptions) argsWith(prefix []string) []string {
+	args := append([]string{}, prefix...)
 	// 按键排序，保证生成的配置稳定：同一份配置反复生成应当完全一致，否则每次
 	// install 都会因为参数顺序不同而看起来「变了」，让人以为没生效。
 	keys := make([]string, 0, len(o.Overrides))
@@ -203,29 +253,24 @@ func (o serviceOptions) serviceArgs() []string {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		args = append(args, "--"+key, o.Overrides[key])
+		value := o.Overrides[key]
+		if key == "trusted-host" {
+			for _, host := range strings.Split(value, ",") {
+				if strings.TrimSpace(host) != "" {
+					args = append(args, "--trusted-host", strings.TrimSpace(host))
+				}
+			}
+			continue
+		}
+		args = append(args, "--"+key, value)
 	}
 	return args
 }
 
 // workDirOrDefault 返回服务的工作目录（写进单元的 WorkingDirectory）。
-//
-// 优先级：显式的 --working-dir > 实例的 --workspace > 用户家目录。
-//
-// 中间那一条是实测补上的：用户手敲
-// `service install --workspace /srv` 时，只有 ExecStart 里带了 --workspace，
-// 而 WorkingDirectory 仍停在安装时的默认（家目录）。结果是网关进程自己的 cwd
-// 与 dsh 的会话工作目录分家——凡是「留空 --workspace 时跟随网关进程」的语义，
-// 在服务托管下就都指向了 /root 那种地方。setup 已经会转发 --working-dir，
-// 但手敲命令这条路径不该依赖它。
-//
-// 最后才用家目录：它几乎总是「想看到的东西都在附近」，而 "/" 既没意义也不安全。
 func (o serviceOptions) workDirOrDefault() string {
 	if o.WorkingDir != "" {
 		return o.WorkingDir
-	}
-	if workspace := o.Overrides["workspace"]; workspace != "" {
-		return workspace
 	}
 	return defaultWorkingDir()
 }
@@ -237,18 +282,22 @@ const serviceName = "dsh-gate"
 func serviceUsageHeader() string {
 	return fmt.Sprintf(`用法: dsh-gate service <unit|install|uninstall|status> [选项]
 
-把网关交给系统的服务管理器托管，从而开机（登录）自动启动。
+把管理端交给系统的服务管理器托管，从而开机（登录）自动启动。
+托管的命令是 `+"`dsh-gate start --foreground`"+`（Windows 上是 `+"`dsh-gate service run`"+`，
+它先把控制台隐藏掉；加 --tray 则改成托盘程序），参数就是下面这些。
 
   unit        打印将要安装的配置内容，不做任何改动
-  install     安装并启用
+  install     安装并启用（立即启动）
   uninstall   取消开机自启（机器级：一个平台只有一个服务单元）
   status      查看当前的托管状态
+  run         服务管理器内部使用：启动管理端并隐藏控制台（Windows 计划任务用）
 
 当前平台：%s —— %s
 
 示例:
-  sudo dsh-gate service install --dsh-home /var/lib/dsh --port 3082
-  dsh-gate service install --config ~/dsh-gate.json
+  sudo dsh-gate service install --host 0.0.0.0 --port 12020
+  dsh-gate service install --port 8080 --tls-cert cert.pem --tls-key key.pem
+  dsh-gate service install --tray        Windows：登录时起托盘，没有终端窗口
   dsh-gate service status
 
 选项:
@@ -284,28 +333,4 @@ func defaultWorkingDir() string {
 		return home
 	}
 	return "/"
-}
-
-// quoteForTaskScheduler 把命令行转成 schtasks /TR 需要的写法。
-//
-// 单独抽出来是因为它是 Windows 那条路径上最容易错、又最难实机验证的一段：
-// 本机不是 Windows 也能把它测到。
-//
-// 规则有两层：
-//
-//   - 外层那一对引号是 /TR 的分隔符，会被 schtasks 自己吃掉；
-//   - 里面**需要保留的**引号必须写成 \"，否则会连同外层一起被剥掉。
-//
-// 程序路径一定要引起来：dsh-gate 装在 C:\Users\... 或 Program Files 下面时路径
-// 几乎必然含空格，不引起来 CreateProcess 会把它当成两个 token，任务启动即失败。
-func quoteForTaskScheduler(args []string) []string {
-	out := make([]string, len(args))
-	for i, arg := range args {
-		if i == 0 || strings.ContainsAny(arg, " \t") {
-			out[i] = `\"` + arg + `\"`
-			continue
-		}
-		out[i] = arg
-	}
-	return out
 }

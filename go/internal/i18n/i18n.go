@@ -160,8 +160,19 @@ const (
 	KeyLoginShowPassword        = "login.showPassword"
 	KeyLoginHidePassword        = "login.hidePassword"
 	KeyLoginSubmit              = "login.submit"
+	KeyLoginSigningIn           = "login.signingIn"
 	KeyLoginHint                = "login.hint"
 	KeyLoginFooterPrefix        = "login.footerPrefix"
+
+	// 登录页左栏介绍与宠物（小守卫）的状态文案
+	KeyLoginFeat1     = "login.feat1"
+	KeyLoginFeat2     = "login.feat2"
+	KeyLoginFeat3     = "login.feat3"
+	KeyLoginPetIdle   = "login.pet.idle"
+	KeyLoginPetTyping = "login.pet.typing"
+	KeyLoginPetPeek   = "login.pet.peek"
+	KeyLoginPetSad    = "login.pet.sad"
+	KeyLoginPetSubmit = "login.pet.submit"
 
 	// 登录失败提示
 	KeyLoginErrBadRequest  = "login.err.badRequest"
@@ -172,6 +183,25 @@ const (
 
 	// 其它
 	KeyHostLocal = "host.local"
+
+	// 配色切换（三个页面页脚共用）
+	KeyThemeLabel = "theme.label"
+	KeyThemeAuto  = "theme.auto"
+	KeyThemeLight = "theme.light"
+	KeyThemeDark  = "theme.dark"
+
+	// 配色方案切换（与明暗正交：色相；三个页面页脚共用）
+	KeySchemeLabel  = "scheme.label"
+	KeySchemeSlate  = "scheme.slate"
+	KeySchemeOcean  = "scheme.ocean"
+	KeySchemeViolet = "scheme.violet"
+	KeySchemeForest = "scheme.forest"
+
+	// 布局风格切换（第三维度：信息架构；管理台页脚用）
+	KeyStyleLabel    = "style.label"
+	KeyStyleConsole  = "style.console"
+	KeyStyleOverview = "style.overview"
+	KeyStyleSplit    = "style.split"
 
 	// 管理端首页（「我的实例」）
 	KeyPortalTitle       = "portal.title"
@@ -228,42 +258,76 @@ const (
 	KeyAdminNoInstances    = "admin.noInstances"
 	KeyAdminNoAudit        = "admin.noAudit"
 
-	// 管理台：实例安装（环境检测 + 三种安装方式 + 进度）
-	KeyAdminInstCreate       = "admin.inst.create"
-	KeyAdminInstCreateHint   = "admin.inst.createHint"
-	KeyAdminInstName         = "admin.inst.name"
-	KeyAdminInstHome         = "admin.inst.home"
-	KeyAdminInstWorkspace    = "admin.inst.workspace"
-	KeyAdminInstConfigDir    = "admin.inst.configDir"
+	// 管理台：实例安装（环境检测 + 四种安装方式 + 进度）
+	KeyAdminInstCreate             = "admin.inst.create"
+	KeyAdminInstCreateHint         = "admin.inst.createHint"
+	KeyAdminInstName               = "admin.inst.name"
+	KeyAdminInstHome               = "admin.inst.home"
+	KeyAdminInstHomeHint           = "admin.inst.homePlaceholder"
+	KeyAdminInstHomeHelp           = "admin.inst.homeHelp"
+	KeyAdminInstWorkspace          = "admin.inst.workspace"
+	KeyAdminInstWorkspacePh        = "admin.inst.workspacePlaceholder"
+	KeyAdminInstWorkspaceHelp      = "admin.inst.workspaceHelp"
+	KeyAdminInstConfigDir          = "admin.inst.configDir"
+	KeyAdminInstConfigPh           = "admin.inst.configPlaceholder"
+	KeyAdminInstConfigHelp         = "admin.inst.configHelp"
+	KeyAdminInstInstallDirPh       = "admin.inst.installDirPlaceholder"
+	KeyAdminInstInstallDirHelp     = "admin.inst.installDirHelp"
+	KeyAdminInstDirsTitle          = "admin.inst.dirsTitle"
+	KeyAdminInstDirsTip            = "admin.inst.dirsTip"
+	KeyAdminInstMetaConfigOverride = "admin.inst.metaConfigOverride"
+	// 删除实例时可选连带删除的目录（两个勾选框 + 一句不可恢复的提醒）
+	KeyAdminInstRemoveHome    = "admin.inst.removeHome"
+	KeyAdminInstRemoveInstall = "admin.inst.removeInstall"
+	KeyAdminInstRemoveHint    = "admin.inst.removeHint"
+	// 操作列两张卡的小标题：勾选框和按钮的归属要在视觉上说清楚
+	KeyAdminInstCardInstall  = "admin.inst.cardInstall"
+	KeyAdminInstCardRemove   = "admin.inst.cardRemove"
 	KeyAdminInstPort         = "admin.inst.port"
 	KeyAdminInstPortAuto     = "admin.inst.portAuto"
 	KeyAdminInstListenHost   = "admin.inst.listenHost"
 	KeyAdminInstStartMode    = "admin.inst.startMode"
 	KeyAdminInstMetaSameHome = "admin.inst.metaSameHome"
 	KeyAdminInstMetaUnset    = "admin.inst.metaUnset"
+	KeyAdminInstMetaCmdAuto  = "admin.inst.metaCmdAuto"
+	KeyAdminRunRunning       = "admin.run.running"
+	KeyAdminRunStarting      = "admin.run.starting"
+	KeyAdminRunStopped       = "admin.run.stopped"
+	KeyAdminRunManaged       = "admin.run.managed"
+	KeyAdminRunAdopted       = "admin.run.adopted"
 	KeyAdminInstStartAuto    = "admin.inst.startAuto"
 	KeyAdminInstStartDemand  = "admin.inst.startDemand"
 	KeyAdminInstMode         = "admin.inst.mode"
 	KeyAdminInstModeNpx      = "admin.inst.modeNpx"
 	KeyAdminInstModeGit      = "admin.inst.modeGit"
 	KeyAdminInstModePnpm     = "admin.inst.modePnpm"
+	KeyAdminInstModeLocal    = "admin.inst.modeLocal"
 	KeyAdminInstDir          = "admin.inst.dir"
-	KeyAdminInstEnvTitle     = "admin.inst.envTitle"
-	KeyAdminInstEnvHint      = "admin.inst.envHint"
-	KeyAdminInstEnvMissing   = "admin.inst.envMissing"
-	KeyAdminEnvBtnInstall    = "admin.env.btnInstall"
-	KeyAdminEnvBtnRetry      = "admin.env.btnRetry"
-	KeyAdminInstSelfNode     = "admin.inst.selfNode"
-	KeyAdminInstSelfPnpm     = "admin.inst.selfPnpm"
-	KeyAdminInstExisting     = "admin.inst.existing"
-	KeyAdminInstNone         = "admin.inst.none"
-	KeyAdminInstPhase        = "admin.inst.phase"
-	KeyAdminInstStep         = "admin.inst.step"
-	KeyAdminInstLog          = "admin.inst.log"
-	KeyAdminInstCmd          = "admin.inst.cmd"
-	KeyAdminInstInstalled    = "admin.inst.installed"
-	KeyAdminInstNotReady     = "admin.inst.notReady"
-	KeyAdminInstPhasePend    = "admin.inst.phasePending"
+
+	// 「装哪个版本的 dsh」：npx / pnpm 方式可以把版本或 dist-tag 钉住。
+	KeyAdminInstVersion           = "admin.inst.version"
+	KeyAdminInstVersionPh         = "admin.inst.versionPlaceholder"
+	KeyAdminInstVersionHelp       = "admin.inst.versionHelp"
+	KeyAdminInstMetaVersionLatest = "admin.inst.metaVersionLatest"
+	KeyAdminInstMetaVersionBuild  = "admin.inst.metaVersionBuild"
+
+	KeyAdminInstEnvTitle   = "admin.inst.envTitle"
+	KeyAdminInstEnvHint    = "admin.inst.envHint"
+	KeyAdminInstEnvMissing = "admin.inst.envMissing"
+	KeyAdminEnvBtnInstall  = "admin.env.btnInstall"
+	KeyAdminEnvBtnRetry    = "admin.env.btnRetry"
+	KeyAdminInstSelfNode   = "admin.inst.selfNode"
+	KeyAdminInstSelfPnpm   = "admin.inst.selfPnpm"
+	KeyAdminInstExisting   = "admin.inst.existing"
+	KeyAdminInstNone       = "admin.inst.none"
+	KeyAdminInstPhase      = "admin.inst.phase"
+	KeyAdminInstStep       = "admin.inst.step"
+	KeyAdminInstLog        = "admin.inst.log"
+	KeyAdminInstCmd        = "admin.inst.cmd"
+	KeyAdminInstCmdArgs    = "admin.inst.cmdArgs"
+	KeyAdminInstInstalled  = "admin.inst.installed"
+	KeyAdminInstNotReady   = "admin.inst.notReady"
+	KeyAdminInstPhasePend  = "admin.inst.phasePending"
 	// CLI：实例安装
 	KeyCLIInstInstallStart  = "cli.inst.installStart"
 	KeyCLIInstInstallDone   = "cli.inst.installDone"
@@ -274,13 +338,46 @@ const (
 	KeyAdminBtnInstCreate   = "admin.btn.instCreate"
 	KeyAdminBtnInstInstall  = "admin.btn.instInstall"
 	KeyAdminBtnInstRemove   = "admin.btn.instRemove"
+	KeyAdminBtnInstOpen     = "admin.btn.instOpen"
+	KeyAdminBtnInstStart    = "admin.btn.instStart"
+	KeyAdminBtnInstStop     = "admin.btn.instStop"
+	KeyAdminBtnInstRestart  = "admin.btn.instRestart"
+	KeyAdminBtnInstSave     = "admin.btn.instSave"
+	KeyAdminColRun          = "admin.col.run"
+	KeyAdminPIDLabel        = "admin.label.pid"
+	KeyAdminErrLabel        = "admin.label.err"
+	KeyAdminEditTitle       = "admin.inst.editTitle"
+	KeyAdminSaveHint        = "admin.inst.saveHint"
 	KeyAdminMsgInstCreated  = "admin.msg.instCreated"
 	KeyAdminMsgInstRemoved  = "admin.msg.instRemoved"
 	KeyAdminMsgInstStarted  = "admin.msg.instStarted"
+	// 勾选了删目录时的成功提示：要把删掉的路径说出来，删目录不可逆。
+	KeyAdminMsgInstRemovedDirs = "admin.msg.instRemovedDirs"
 
 	// 管理台：角色名
 	KeyRoleAdmin = "role.admin"
 	KeyRoleUser  = "role.user"
+
+	// 管理台：审计页的动作与说明（库里存稳定英文标识，只有页面渲染时翻译）
+	KeyAuditInstanceEnter    = "audit.instance.enter"
+	KeyAuditInstanceDenied   = "audit.instance.denied"
+	KeyAuditUserCreate       = "audit.user.create"
+	KeyAuditUserPasswd       = "audit.user.passwd"
+	KeyAuditUserRole         = "audit.user.role"
+	KeyAuditUserToggle       = "audit.user.toggle"
+	KeyAuditUserDelete       = "audit.user.delete"
+	KeyAuditGrantsSave       = "audit.grants.save"
+	KeyAuditInstanceCreate   = "audit.instance.create"
+	KeyAuditInstanceInstall  = "audit.instance.install"
+	KeyAuditInstanceRemove   = "audit.instance.remove"
+	KeyAuditInstanceStart    = "audit.instance.start"
+	KeyAuditInstanceStop     = "audit.instance.stop"
+	KeyAuditInstanceRestart  = "audit.instance.restart"
+	KeyAuditInstanceUpdate   = "audit.instance.update"
+	KeyAuditEnvInstall       = "audit.env.install"
+	KeyAuditCSRFRejected     = "audit.csrfRejected"
+	KeyAuditDetailFailed     = "audit.detail.failed"
+	KeyAuditDetailInstanceID = "audit.detail.instanceID"
 
 	// 管理台：操作结果
 	KeyAdminMsgUserCreated     = "admin.msg.userCreated"
@@ -296,8 +393,15 @@ const (
 	KeyAdminErrCSRF         = "admin.err.csrf"
 	KeyAdminErrUserExists   = "admin.err.userExists"
 	KeyAdminErrLastAdmin    = "admin.err.lastAdmin"
+	KeyAdminErrSuperAdmin   = "admin.err.superAdmin"
+	KeyAdminSuperBadge      = "admin.superBadge"
 	KeyAdminErrActionFailed = "admin.err.actionFailed"
 	KeyAdminErrBadRequest   = "admin.err.badRequest"
+
+	// 管理台：用户页把「账号」（登录名，ASCII）与「姓名」（给人看）分开
+	KeyAdminColAccount = "admin.col.account"
+	KeyAdminColDisplay = "admin.col.display"
+	KeyAdminNameHint   = "admin.name.hint"
 
 	// CLI：管理端命令（帮助、用法、错误、结果）
 	KeyCLIPortalHelp       = "cli.portal.help"
@@ -309,7 +413,6 @@ const (
 
 	KeyCLIUsageUserName     = "cli.usage.userName"
 	KeyCLIUsageInstanceName = "cli.usage.instanceName"
-	KeyCLIUsageInstanceHome = "cli.usage.instanceHome"
 	KeyCLIUsageRole         = "cli.usage.role"
 
 	KeyCLIErrOpenStore       = "cli.err.openStore"
@@ -352,15 +455,32 @@ const (
 	KeyCLIPortalRunStopping   = "cli.portal.run.stopping"
 	KeyCLIPortalRunFailed     = "cli.portal.run.failed"
 
+	// 托盘（Windows）：通知区图标上的状态、菜单项与失败提示。
+	KeyCLITrayUnsupported = "cli.tray.unsupported"
+	KeyTrayTipRunning     = "tray.tip.running"
+	KeyTrayTipStopped     = "tray.tip.stopped"
+	KeyTrayStateRunning   = "tray.state.running"
+	KeyTrayStateStopped   = "tray.state.stopped"
+	KeyTrayMenuOpen       = "tray.menu.open"
+	KeyTrayMenuStart      = "tray.menu.start"
+	KeyTrayMenuStop       = "tray.menu.stop"
+	KeyTrayMenuRestart    = "tray.menu.restart"
+	KeyTrayMenuQuit       = "tray.menu.quit"
+	KeyTrayOpFailed       = "tray.op.failed"
+
 	// CLI：install（管理端安装）
 	KeyCLIInstallUsage        = "cli.install.usage"
 	KeyCLIInstallNeedPassword = "cli.install.needPassword"
 	KeyCLIInstallCreated      = "cli.install.created"
 	KeyCLIInstallExists       = "cli.install.exists"
-	KeyCLIInstallStarted      = "cli.install.started"
-	KeyCLIInstallNotStarted   = "cli.install.notStarted"
-	KeyCLIInstallNextSteps    = "cli.install.nextSteps"
-	KeyCLIInstallBadFlag      = "cli.install.badFlag"
+	// 已有账号时把账号连同类型（谁是超级管理员）一并列出来，省得人以为
+	// 向导里那个「管理员账号」会生效。
+	KeyCLIInstallHasAccounts = "cli.install.hasAccounts"
+	KeyCLIInstallExistingRow = "cli.install.existingRow"
+	KeyCLIInstallStarted     = "cli.install.started"
+	KeyCLIInstallNotStarted  = "cli.install.notStarted"
+	KeyCLIInstallNextSteps   = "cli.install.nextSteps"
+	KeyCLIInstallBadFlag     = "cli.install.badFlag"
 
 	// 时长（错误提示里的「还有多久能再试」）
 	KeyDurationSeconds        = "duration.seconds"
@@ -379,14 +499,36 @@ var allKeys = []string{
 	KeyLoginShowPassword,
 	KeyLoginHidePassword,
 	KeyLoginSubmit,
+	KeyLoginSigningIn,
 	KeyLoginHint,
 	KeyLoginFooterPrefix,
+	KeyLoginFeat1,
+	KeyLoginFeat2,
+	KeyLoginFeat3,
+	KeyLoginPetIdle,
+	KeyLoginPetTyping,
+	KeyLoginPetPeek,
+	KeyLoginPetSad,
+	KeyLoginPetSubmit,
 	KeyLoginErrBadRequest,
 	KeyLoginErrBadCreds,
 	KeyLoginErrTooMany,
 	KeyLoginErrMethod,
 	KeyLoginErrNotSignedIn,
 	KeyHostLocal,
+	KeyThemeLabel,
+	KeyThemeAuto,
+	KeyThemeLight,
+	KeyThemeDark,
+	KeySchemeLabel,
+	KeySchemeSlate,
+	KeySchemeOcean,
+	KeySchemeViolet,
+	KeySchemeForest,
+	KeyStyleLabel,
+	KeyStyleConsole,
+	KeyStyleOverview,
+	KeyStyleSplit,
 	KeyPortalTitle,
 	KeyPortalSignedInAs,
 	KeyPortalAdmin,
@@ -434,8 +576,24 @@ var allKeys = []string{
 	KeyAdminInstCreateHint,
 	KeyAdminInstName,
 	KeyAdminInstHome,
+	KeyAdminInstHomeHint,
+	KeyAdminInstHomeHelp,
 	KeyAdminInstWorkspace,
+	KeyAdminInstWorkspacePh,
+	KeyAdminInstWorkspaceHelp,
 	KeyAdminInstConfigDir,
+	KeyAdminInstConfigPh,
+	KeyAdminInstConfigHelp,
+	KeyAdminInstInstallDirPh,
+	KeyAdminInstInstallDirHelp,
+	KeyAdminInstDirsTitle,
+	KeyAdminInstDirsTip,
+	KeyAdminInstMetaConfigOverride,
+	KeyAdminInstRemoveHome,
+	KeyAdminInstRemoveInstall,
+	KeyAdminInstRemoveHint,
+	KeyAdminInstCardInstall,
+	KeyAdminInstCardRemove,
 	KeyAdminInstPort,
 	KeyAdminInstPortAuto,
 	KeyAdminInstListenHost,
@@ -443,12 +601,24 @@ var allKeys = []string{
 	KeyAdminInstStartAuto,
 	KeyAdminInstMetaSameHome,
 	KeyAdminInstMetaUnset,
+	KeyAdminInstMetaCmdAuto,
+	KeyAdminRunRunning,
+	KeyAdminRunStarting,
+	KeyAdminRunStopped,
+	KeyAdminRunManaged,
+	KeyAdminRunAdopted,
 	KeyAdminInstStartDemand,
 	KeyAdminInstMode,
 	KeyAdminInstModeNpx,
 	KeyAdminInstModeGit,
 	KeyAdminInstModePnpm,
+	KeyAdminInstModeLocal,
 	KeyAdminInstDir,
+	KeyAdminInstVersion,
+	KeyAdminInstVersionPh,
+	KeyAdminInstVersionHelp,
+	KeyAdminInstMetaVersionLatest,
+	KeyAdminInstMetaVersionBuild,
 	KeyAdminInstEnvTitle,
 	KeyAdminInstEnvHint,
 	KeyAdminInstEnvMissing,
@@ -462,6 +632,7 @@ var allKeys = []string{
 	KeyAdminInstStep,
 	KeyAdminInstLog,
 	KeyAdminInstCmd,
+	KeyAdminInstCmdArgs,
 	KeyAdminInstInstalled,
 	KeyAdminInstNotReady,
 	KeyAdminInstPhasePend,
@@ -474,11 +645,41 @@ var allKeys = []string{
 	KeyAdminBtnInstCreate,
 	KeyAdminBtnInstInstall,
 	KeyAdminBtnInstRemove,
+	KeyAdminBtnInstOpen,
+	KeyAdminBtnInstStart,
+	KeyAdminBtnInstStop,
+	KeyAdminBtnInstRestart,
+	KeyAdminBtnInstSave,
+	KeyAdminColRun,
+	KeyAdminPIDLabel,
+	KeyAdminErrLabel,
+	KeyAdminEditTitle,
+	KeyAdminSaveHint,
 	KeyAdminMsgInstCreated,
 	KeyAdminMsgInstRemoved,
+	KeyAdminMsgInstRemovedDirs,
 	KeyAdminMsgInstStarted,
 	KeyRoleAdmin,
 	KeyRoleUser,
+	KeyAuditInstanceEnter,
+	KeyAuditInstanceDenied,
+	KeyAuditUserCreate,
+	KeyAuditUserPasswd,
+	KeyAuditUserRole,
+	KeyAuditUserToggle,
+	KeyAuditUserDelete,
+	KeyAuditGrantsSave,
+	KeyAuditInstanceCreate,
+	KeyAuditInstanceInstall,
+	KeyAuditInstanceRemove,
+	KeyAuditInstanceStart,
+	KeyAuditInstanceStop,
+	KeyAuditInstanceRestart,
+	KeyAuditInstanceUpdate,
+	KeyAuditEnvInstall,
+	KeyAuditCSRFRejected,
+	KeyAuditDetailFailed,
+	KeyAuditDetailInstanceID,
 	KeyAdminMsgUserCreated,
 	KeyAdminMsgPasswordChanged,
 	KeyAdminMsgRoleChanged,
@@ -490,8 +691,13 @@ var allKeys = []string{
 	KeyAdminErrCSRF,
 	KeyAdminErrUserExists,
 	KeyAdminErrLastAdmin,
+	KeyAdminErrSuperAdmin,
+	KeyAdminSuperBadge,
 	KeyAdminErrActionFailed,
 	KeyAdminErrBadRequest,
+	KeyAdminColAccount,
+	KeyAdminColDisplay,
+	KeyAdminNameHint,
 	KeyCLIPortalHelp,
 	KeyCLIPortalUserHelp,
 	KeyCLIPortalInstHelp,
@@ -500,7 +706,6 @@ var allKeys = []string{
 	KeyCLIUnknownCommand,
 	KeyCLIUsageUserName,
 	KeyCLIUsageInstanceName,
-	KeyCLIUsageInstanceHome,
 	KeyCLIUsageRole,
 	KeyCLIErrOpenStore,
 	KeyCLIErrUserNotExist,
@@ -535,10 +740,23 @@ var allKeys = []string{
 	KeyCLIPortalRunNoAccounts,
 	KeyCLIPortalRunStopping,
 	KeyCLIPortalRunFailed,
+	KeyCLITrayUnsupported,
+	KeyTrayTipRunning,
+	KeyTrayTipStopped,
+	KeyTrayStateRunning,
+	KeyTrayStateStopped,
+	KeyTrayMenuOpen,
+	KeyTrayMenuStart,
+	KeyTrayMenuStop,
+	KeyTrayMenuRestart,
+	KeyTrayMenuQuit,
+	KeyTrayOpFailed,
 	KeyCLIInstallUsage,
 	KeyCLIInstallNeedPassword,
 	KeyCLIInstallCreated,
 	KeyCLIInstallExists,
+	KeyCLIInstallHasAccounts,
+	KeyCLIInstallExistingRow,
 	KeyCLIInstallStarted,
 	KeyCLIInstallNotStarted,
 	KeyCLIInstallNextSteps,
@@ -559,8 +777,18 @@ type LoginStrings struct {
 	ShowPassword        string
 	HidePassword        string
 	Submit              string
+	SigningIn           string
 	Hint                string
 	FooterPrefix        string
+	// 左栏介绍的三条要点与小守卫的状态语（脚本按状态换气泡）。
+	Feat1     string
+	Feat2     string
+	Feat3     string
+	PetIdle   string
+	PetTyping string
+	PetPeek   string
+	PetSad    string
+	PetSubmit string
 }
 
 // Login 返回某语言的登录页文案。
@@ -573,8 +801,17 @@ func Login(lang Lang) LoginStrings {
 		ShowPassword:        T(lang, KeyLoginShowPassword),
 		HidePassword:        T(lang, KeyLoginHidePassword),
 		Submit:              T(lang, KeyLoginSubmit),
+		SigningIn:           T(lang, KeyLoginSigningIn),
 		Hint:                T(lang, KeyLoginHint),
 		FooterPrefix:        T(lang, KeyLoginFooterPrefix),
+		Feat1:               T(lang, KeyLoginFeat1),
+		Feat2:               T(lang, KeyLoginFeat2),
+		Feat3:               T(lang, KeyLoginFeat3),
+		PetIdle:             T(lang, KeyLoginPetIdle),
+		PetTyping:           T(lang, KeyLoginPetTyping),
+		PetPeek:             T(lang, KeyLoginPetPeek),
+		PetSad:              T(lang, KeyLoginPetSad),
+		PetSubmit:           T(lang, KeyLoginPetSubmit),
 	}
 }
 

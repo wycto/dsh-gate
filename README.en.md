@@ -1,8 +1,8 @@
 # dsh-gate
 
-**A LAN / remote access gateway for [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/guide/quickstart).**
+**A LAN / remote-access admin console for [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/guide/quickstart).**
 
-A single-binary Go program that uses only the Go standard library (the management console's SQLite is the one exception — see [go.mod](go/go.mod)). It serves a login page on a LAN-reachable port and, once you are authenticated, reverse-proxies requests to the local dsh. If dsh is not running yet, it starts it for you.
+A single-binary Go program that uses only the Go standard library (the SQLite driver behind the admin console is the one exception — see [go.mod](go/go.mod)). It serves a login page and an admin console on a LAN-reachable port, and once you are authenticated it reverse-proxies each request to the right local dsh instance. Instances are installed, started and lazily launched by the console, and each one has its own `DSH_HOME`.
 
 ![dsh-gate login page (dark)](docs/images/login.png)
 
@@ -16,27 +16,48 @@ A single-binary Go program that uses only the Go standard library (the managemen
 
 - [What problem it solves](#what-problem-it-solves)
 - [How it works](#how-it-works)
+  - [How instances start](#how-instances-start)
 - [What it actually does](#what-it-actually-does)
+- [Admin console: one entry point, many dsh instances](#admin-console-one-entry-point-many-dsh-instances)
+  - [Installing dsh from the admin console](#installing-dsh-from-the-admin-console)
 - [Getting started in 30 seconds](#getting-started-in-30-seconds)
+  - [The login page on a phone, and in light mode](#the-login-page-on-a-phone-and-in-light-mode)
 - [Tutorial](#tutorial)
+  - [Step 0 — What you need](#step-0--what-you-need)
+  - [Step 1 — Install the admin console](#step-1--install-the-admin-console)
+  - [Step 2 — Create an instance and install dsh](#step-2--create-an-instance-and-install-dsh)
+  - [Step 3 — Open it and log in](#step-3--open-it-and-log-in)
+  - [Step 4 — Configure a model (works without any plugin)](#step-4--configure-a-model-works-without-any-plugin)
+  - [Step 5 — Install the plugin (optional, recommended)](#step-5--install-the-plugin-optional-recommended)
+  - [Step 6 — Day-to-day](#step-6--day-to-day)
+  - [Step 7 — Removing it](#step-7--removing-it)
+  - [Three places to look when something is wrong](#three-places-to-look-when-something-is-wrong)
 - [Installation](#installation)
+  - [Download a prebuilt binary](#download-a-prebuilt-binary)
+  - [Build from source](#build-from-source)
+  - [Cross-compiling and packaging](#cross-compiling-and-packaging)
 - [Command reference](#command-reference)
-  - [dsh-gate run](#dsh-gate-run)
-  - [dsh-gate status](#dsh-gate-status)
+  - [dsh-gate install](#dsh-gate-install)
+  - [dsh-gate start](#dsh-gate-start)
   - [dsh-gate stop](#dsh-gate-stop)
   - [dsh-gate restart](#dsh-gate-restart)
-  - [dsh-gate user](#dsh-gate-user)
-  - [dsh-gate manage](#dsh-gate-manage)
-  - [dsh-gate check](#dsh-gate-check)
-  - [dsh-gate service](#dsh-gate-service)
+  - [dsh-gate status](#dsh-gate-status)
   - [dsh-gate uninstall](#dsh-gate-uninstall)
+  - [dsh-gate service](#dsh-gate-service)
+  - [dsh-gate dsh](#dsh-gate-dsh)
+  - [dsh-gate manage](#dsh-gate-manage)
+  - [dsh-gate plugin](#dsh-gate-plugin)
+  - [dsh-gate model](#dsh-gate-model)
   - [dsh-gate version](#dsh-gate-version)
 - [Multiple instances](#multiple-instances)
 - [Server deployment (Linux + systemd)](#server-deployment-linux--systemd)
 - [Remote access (using your office DSH from home)](#remote-access-using-your-office-dsh-from-home)
+  - [Option 1: a tunneling service (least effort)](#option-1-a-tunneling-service-least-effort)
+  - [Option 2: an overlay network such as Tailscale or ZeroTier](#option-2-an-overlay-network-such-as-tailscale-or-zerotier)
+  - [Option 3: the console serves HTTPS itself](#option-3-the-console-serves-https-itself)
 - [Security notes](#security-notes)
 - [Environment variables](#environment-variables)
-- [Frequently asked questions](#frequently-asked-questions)
+- [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -44,306 +65,373 @@ A single-binary Go program that uses only the Go standard library (the managemen
 
 ## What problem it solves
 
-The Web UI that ships with dsh **only listens on `127.0.0.1`**. That is not an oversight — it is a deliberate security decision. dsh authenticates with a random token generated at startup and printed to stdout, so only someone who can read that terminal gets it. In other words, dsh was never designed to be reached from another machine.
+dsh's built-in web UI **listens on `127.0.0.1` only**. That is not an oversight; it is its security design: dsh authenticates with a random token generated at each start and printed to stdout, so only someone who can see that output on that machine gets it. In other words, dsh was never meant to be reached from another machine.
 
 The consequences:
 
-- On a headless Linux server, dsh is only usable over SSH.
-- dsh running on a macOS machine at home is unreachable from a Windows PC at work.
+- On a headless Linux server, you can only use dsh over SSH;
+- The dsh running on your home macOS cannot be reached from the Windows machine at the office;
 - A phone browser cannot open `127.0.0.1`.
 
-dsh-gate exists to address exactly that. Four typical scenarios:
+dsh-gate solves exactly this. It has a single form: **one admin console + N dsh instances**. Typical setups:
 
-1. **Headless Linux server**: install dsh and dsh-gate on the server, and any PC or phone browser can open `http://server-ip:3082` — nothing to install on the client.
-2. **dsh on a macOS at home, used from a Windows PC at the office** (or the other way round): run the gateway on the machine that runs dsh, and browse from the other one.
-3. **Phone browser**: same address, opens directly on the phone.
-4. **Two sets of dsh for one person**: one for work and one for personal use, with sessions, plugins and configuration fully separated, each on its own port.
+1. **A headless Linux server**: install dsh-gate on the server, then open `http://server-ip:12020` from any computer or phone. No client needed.
+2. **dsh at home, continue at the office** (or the other way round): the console runs on the machine with dsh, the other machine uses a browser.
+3. **Phone browser**: same address, open it on the phone.
+4. **Several dsh setups on one machine**: work and personal stay completely separate in sessions, plugins and configuration, while the console gives you one login and one grant matrix instead of several ports to remember.
 
-dsh-gate does not modify a single line of dsh, and does not require you to change how you start dsh. It simply sits in front of dsh and answers one extra question: who are you.
+dsh-gate does not change a single line of dsh, and does not ask you to change how dsh is started. It simply stands in front of each dsh and checks "who are you" once.
 
 ---
 
 ## How it works
 
 ```
-   any device on the LAN / the internet
+   any device on the LAN / internet
               |
-              |  http://192.168.1.20:3082/
+              |  http://192.168.1.20:12020/
               v
-   +---------------------------+
-   |   dsh-gate  :3082         |   <- the public entry point, login page
-   |  (listens on 0.0.0.0)     |
-   +---------------------------+
-       |            |
-  not logged in |    | logged in
-       |            |
-       v            v
-   login page    +-----------------------------+
-   password      |  reverse proxy              |
-   check         |  Host header forwarded as-is|
-   rate limit    |  performs the dsh startup   |
-   per IP        |  token exchange for the    |
-                 |  browser                    |
-                 +-----------------------------+
-                          |
-                          |  http://127.0.0.1:3080/
-                          v
-                  +-------------------+
-                  |   dsh   :3080     |  <- still 127.0.0.1 only;
-                  | (per DSH_HOME)    |     unreachable from the LAN
-                  +-------------------+
+   +--------------------------------------------+
+   |  admin console  :12020 (0.0.0.0)            |   <- the only public entry
+   |  /            login page / "my instances"  |
+   |  /admin       console (instances, users…)  |
+   |  /i/<instance id>/…  per-instance proxy, token handoff
+   +------+-------------------+-----------------+
+          |                   |
+          | 127.0.0.1:32101   | 127.0.0.1:32102
+          v                   v
+   +-------------+     +-------------+
+   | dsh alice   |     | dsh bob     |   <- loopback only, unreachable from the LAN
+   | DSH_HOME=…  |     | DSH_HOME=…  |
+   +-------------+     +-------------+
 ```
 
-Four points worth noting:
+Four points:
 
-- **dsh always listens on `127.0.0.1` only.** The gateway port is the single public entry point. dsh refuses `--host 0.0.0.0` for security reasons, and dsh-gate does not change that default either.
-- **When the dsh port is free, the gateway starts dsh**; when dsh already holds the port, it **adopts that instance**. You do not have to care which case applies.
-- **The login page belongs to the gateway.** Users need only an account password they chose themselves; it has nothing to do with dsh's startup token.
-- **Multiple instances**: different values of `--dsh-home` are two completely separate dsh instances, each with its own gateway port.
+- **The console is the only public port.** Each instance's dsh binds `127.0.0.1:<auto-assigned port>` by default; the outside world only sees one console port. This boundary is the security premise of the whole design.
+- **Instances are supervised by the console.** When the port is free the console starts dsh; when an existing dsh already owns the port it **adopts** that instance; when some other program owns it, it reports the error and keeps retrying (starting at 1 second, capped at 30 seconds). You never need to know which case applies.
+- **The login page belongs to the console.** Users only need a console account; dsh's own launch token is irrelevant to them. Admins create instances, install dsh and grant access in `/admin`.
+- **Instances are isolated.** A different `DSH_HOME` means a different, independent dsh; the instance id is an opaque random string, instances are mounted at `/i/<id>/`, and both the id and the loopback port are assigned automatically.
 
-### Three paths for the dsh port
+### How instances start
 
-On startup dsh-gate probes the dsh port and takes one of three paths:
+Every instance has a start mode that decides whether the console brings it up at boot:
 
-| Port state | Behaviour |
-| --- | --- |
-| Free, and `--auto-start=true` (default) | Start dsh as a child process, wait until it is listening, then start forwarding |
-| Already in use, and it is dsh | Adopt that instance directly instead of starting a second one (the common case: you were already running dsh yourself) |
-| Already in use, but not dsh | Treated as an adoption by default, with an explicit warning in the log; pass `--adopt=false` to fail fast instead |
+| Start mode | Behaviour | Good for |
+| --- | --- | --- |
+| `auto` (default) | Started together with the console; retried if dsh crashes | Instances you use all the time |
+| `ondemand` | Not started with the console; started the moment a user opens it | Instances you use occasionally and want to keep cheap |
 
-If dsh exits unexpectedly, the gateway restarts it with exponential backoff starting at 1 second (capped at 30 seconds).
+Stopping an instance from the console only stops the process; it does not change the start mode. After a console restart, `auto` instances come back. To keep an instance from ever being started, disable it or switch it to `ondemand`.
 
 ---
 
 ## What it actually does
 
-dsh ships with its own authentication: each process generates a random **startup token** and prints it in the `?token=` part of the URL on the `dsh web:` line. A browser visiting `GET /?token=...` exchanges it for a dsh-signed session cookie, and every API call and WebSocket afterwards validates that cookie.
+dsh has its own authentication: every process generates a random **launch token**, printed at start in the URL on the `dsh web:` line as `?token=...`. A browser must visit `GET /?token=...` to exchange it for a session cookie issued by dsh; every API call and WebSocket after that is checked against it.
 
-In a "behind a gateway, reached from a browser" topology this creates two problems:
+Behind a console, accessed from a browser, this mechanism has two problems:
 
-1. The token cannot be handed to every visitor — that would mean anyone with the URL can drive the agent.
-2. The browser has no way to obtain the token, so pages load but every API call returns 401.
+1. The token cannot be handed to every visitor — whoever gets the URL would get the agent;
+2. The browser itself does not have the token, so the page loads but every API call returns 401.
 
-dsh-gate's answer is: **the token never leaves the gateway process's memory, and the gateway performs the exchange on the browser's behalf.** What you see is only an account password you set yourself.
-
-The full flow:
+dsh-gate's answer: **the token stays in the console process memory, and the console performs the exchange on the browser's behalf.** Each instance is mounted under its own `/i/<id>/`, and the handshake runs once per instance:
 
 ```
-1. Browser GETs / , with no "already exchanged" marker
+1. browser GET /i/<id>/ with no "handed off" marker
       |
       v
-2. Gateway appends token=... to the URL it forwards to dsh
+2. the console appends token=... to the URL it forwards to that instance's dsh
       |
       v
-3. dsh completes the exchange, writes its session cookie, 302s back to a clean ./
+3. dsh performs the exchange, writes its own session cookie, 302s back to a clean ./
       |
       v
-4. Gateway sets an "already exchanged" marker cookie (dsh_gate_ds)
+4. the console sets that instance's "handed off" cookie on the response
+   (its path is rewritten to /i/<id>/, so markers never collide across instances)
       |
       v
-5. On later visits to / the browser carries the marker, so the gateway stops
-   injecting the token (otherwise it would 302 forever)
+5. later requests to /i/<id>/ carry the marker, so the console does not inject again (otherwise it would 302 forever)
 ```
 
-The marker is necessary, not an optimisation: dsh's own 302 target is `/` itself, so without a marker there is no way to tell "first visit" from "just redirected back".
+The marker is not an optimisation: dsh's 302 target is `/` itself, so without a marker there is no way to tell "first visit" from "just redirected back". The marker stores a fingerprint of the token used for the last handshake: after dsh restarts with a new token the browser re-handshakes on the next visit, and when a session dies for another reason (401) the console clears the marker and re-handshakes. Both are invisible to the user, who just sees "the page fixed itself".
 
-If dsh returns 401 — because the session expired, or because the user switched between an IP, a hostname and a tunnel domain — the gateway clears the marker and sends the browser back to `/` to repeat the exchange. The whole thing is invisible to the user; from their side the page simply starts working.
+Two more things must be right:
 
-One more thing has to be done correctly: **the `Host` header must be forwarded verbatim.** dsh compares the received `Host` against the set of accepted authorities and requires `Origin` to point at the same authority (DNS rebinding and cross-site protection). So the gateway does not rewrite `Host`; instead it passes `--trusted-host` to dsh to allow the public address. Rewriting it to the listener's address would make dsh's Origin check fail unconditionally.
+- **The sub-path mechanics.** dsh's front end loads assets with document-relative paths, so the console strips `/i/<id>/xxx` down to `/xxx` upstream. dsh's session cookie name is derived from the authority, which is shared across instances on one domain, so the `Path` of upstream `Set-Cookie` headers must be rewritten to each `/i/<id>/`; otherwise instances would overwrite each other's sessions. `go/tests/portal-e2e.sh` covers this specifically.
+- **`Host` is forwarded unchanged.** dsh compares the received `Host` with its accepted authorities and requires `Origin` to point at the same authority (DNS-rebinding and cross-site protection). So the console does not rewrite `Host`; it passes the public address to each instance's dsh via `--trusted-host`. Rewriting it to the listener address would make dsh's Origin check fail every time.
 
-The token's lifetime is strictly confined to the gateway process's memory: **never written to disk, never logged, never shown in the startup banner.** When dsh-gate forwards dsh's startup output, it redacts `token=xxx` to `token=***` before writing anything to the log.
+The token's lifetime is strictly limited to the console process memory: **never written to disk, never logged, never shown in a start banner.** When the console relays dsh's start-up output, it first redacts `token=xxx` to `token=***`.
 
 ---
 
-> Just want it running? See the one-page [QUICKSTART.md](QUICKSTART.md) (Chinese; it ships
-> with every release package).
+> Just want it running? Read the one-page [QUICKSTART.md](QUICKSTART.md) (also shipped in every release archive).
 
-## Portal: one entry point, many dsh instances
+## Admin console: one entry point, many dsh instances
 
-The single-instance setup below is "one gateway + one dsh". The portal lifts **accounts and
-instances to portal level**: one entry point, one admin page, N independent dsh instances, and
-each user only sees the instances they were granted.
+The console lifts **accounts, instances and grants to the console level**: one entry point, one admin page and N independent dsh processes. Each user only sees the instances granted to them.
+
+The easiest path is entirely in the browser:
 
 ```sh
-# 1. Create the first portal account (administrator)
+dsh-gate install --start      # create the admin, start the console in the background; starts no dsh
+# open http://<this machine>:12020/admin as printed
+#   → "Create instance" → click "Install" → grant it on the "Instance grants" page
+```
+
+The command line uses the same data and the same code paths:
+
+```sh
+# 1. Create a console account (the first admin; skip if install already created one)
 dsh-gate manage user add admin --role admin --password-stdin
 
-# 2. Create instances (each with its own DSH_HOME; opaque id and loopback port are assigned)
-dsh-gate manage instance add alice-main --dsh-home /srv/dsh/alice --owner alice
-dsh-gate manage instance add bob-main   --dsh-home /srv/dsh/bob   --owner bob
+# 2. Create two instances (each with its own DSH_HOME; opaque id and loopback port assigned)
+dsh-gate dsh add alice-main --dsh-home /srv/dsh/alice --owner alice
+dsh-gate dsh add bob-main   --dsh-home /srv/dsh/bob   --owner bob
 
-# 3. Grant instances to users
+# 3. Install dsh for each instance (synchronous on the CLI; the console does it in the background)
+dsh-gate dsh install alice-main --install-mode npx
+dsh-gate dsh install bob-main   --install-mode npx
+
+# 4. Grant instances to users (--owner is display-only and grants nothing)
 dsh-gate manage grant add alice alice-main
 dsh-gate manage grant add bob   bob-main
 
-# 4. Start the portal
-dsh-gate manage run --port 3082
+# 5. Start the console (skip if it is already running)
+dsh-gate start --port 12020
 ```
 
-After logging in at `http://<server>:3082/`, a normal user sees "My instances" cards; opening
-one lands straight in that dsh (the portal performs the launch-token handover server-side, so
-the browser never needs to know any token). Administrators additionally get `/admin`: user
-management, instance creation and dsh installation, a grant checkbox matrix and the audit log.
+After logging in at `http://<server>:12020/`, a normal user sees "my instances" cards; clicking one enters that instance's dsh directly (the console performs the token handoff server-side, so the browser never needs a token). Admins get an extra `/admin` console for users, instances, grants, the runtime environment and the audit log.
 
-![The dsh-gate admin page](docs/images/admin.png)
+![dsh-gate admin console](docs/images/admin.png)
 
-<sub>The whole admin page at a glance: users and roles, the instance grant matrix, the runtime
-environment check, instances and installation, and the audit log. Below are the instances
-section (one example per install mode) and the "installing" state — both instance installs and
-runtime-environment fixes are background jobs; refresh the page to watch progress.</sub>
+<sub>The console in one page: users and roles, the instance grant matrix, runtime detection,
+instances and installation, audit. Below are the instance block (one card per instance, one
+example per install mode) and an "installing" state — installs and runtime bootstrapping are
+background tasks; the page keeps its progress up to date by itself.</sub>
 
 <p>
-  <img src="docs/images/admin-instances.png" width="620" alt="Instance list and the create-instance form">
-  <img src="docs/images/admin-installing.png" width="620" alt="A runtime fix in progress, showing “installing pnpm” and “installing”">
+  <img src="docs/images/admin-instances.png" width="620" alt="Instance cards and create-instance form">
+  <img src="docs/images/admin-installing.png" width="620" alt="Install in progress, card showing the 'installing' badge and the current step 'installing dsh'">
 </p>
 
-### Installing dsh from the admin page
+<sub>At phone width each instance is still one whole card, and the action buttons reflow into
+two rows ("enter" alone, the rest sharing the second row) with no horizontal scrolling.</sub>
 
-The admin page **does not require dsh to be installed beforehand**. It runs an environment
-check as soon as you open it, then lets you pick an install mode per instance. The order is
-deliberate: **create the instance record first** (you immediately get the opaque id and the
-port, visible on the page), **then install in the background** — an install takes many minutes
-and must not hold an HTTP request open.
+<p>
+  <img src="docs/images/admin-mobile.png" width="300" alt="Instance cards and action buttons at phone width">
+</p>
 
-`/admin` contains:
+### Installing dsh from the admin console
 
-- **dsh environment check**: status, version and path for node / npm / npx / pnpm / git / dsh,
-  with a hint for anything missing, plus the platform, the gateway's own Node and pnpm, and any
-  dsh already on the machine. No system Node needed — the gateway downloads its own.
-- **A missing pnpm can be installed with one click**: dsh's plugin installer uses pnpm, while
-  Node only ships npm/npx — on a clean server, "add plugin" fails with `spawn pnpm ENOENT`.
-  One click fixes it: pnpm goes into the gateway state dir (`<state dir>/pnpm`), the system is
-  untouched, no root required, and `uninstall --purge` removes it. Like the dsh install it runs
-  in the background — refresh for progress, and the row turns into a version once done.
-  (git gets no button: it needs the system package manager, and the distro differences are too
-  wide to automate safely, so it stays a command in the hint.)
+You do **not** need dsh installed beforehand. The console runs a **runtime check** and lets you pick an install mode per instance. The order is deliberate: **create the instance record first** (you get the opaque id and port immediately, visible on the page), **install in the background afterwards** — installs take many minutes and must not hold an HTTP request open.
 
-  ![The dsh environment check](docs/images/admin-env.png)
-- **Create instance** form: name → dsh data dir (`DSH_HOME`) → **config dir** → workspace →
-  **port** → **listen host** → **start mode** → **install mode** → install dir.
-- **Instance list**: each row shows install phase and progress (queued / installing / done /
-  failed, with the current step and any error), an install-mode dropdown, the install dir, and
-  "install" / "delete" buttons. Re-installing is idempotent: the install dir does not nest
-  deeper on every run.
-- **Usable on a phone**: on narrow screens the tables turn into cards, each value carrying its
-  own column label, action buttons laid out full-width instead of being pushed off-screen, and
-  the create form stacked. Breakpoint 720px; the desktop layout is unchanged.
+The console has five sections at the bottom, in this order: **instances → users → instance grants → runtime → audit**; it **opens on "instances"**, because looking after instances is what you do most there.
 
-  <img src="docs/images/admin-mobile.png" width="340" alt="The admin console on a phone: each user is a card with labelled fields and full-width buttons">
+- **Instances**: each instance is a card. The header holds the name and four badges (enabled,
+  run state (running / starting / stopped), the source of the running dsh ("started by the
+  gateway" or "adopted external instance"), install state); the body lists the port, instance
+  directory, listen host, start mode, pid, the **install mode**, the pinned **dsh version**,
+  the **launch command** and the **launch flags**,
+  plus the install phase and progress (queued / installing / done / failed, with the current
+  step and any error); the footer offers the applicable "start / stop / restart" buttons plus
+  "install / reinstall", "edit" and "delete". Running and starting cards carry a green / yellow
+  bar on the left edge. The **mode and the command are two separate lines on purpose**: a
+  half-failed install leaves the previous command in place, so the mode alone would mislead.
+  The **dsh version** gets its own line too: whether the record pins `0.2.2-alpha.2` or follows
+  latest decides which release the next install produces, so it has to be visible before you
+  install (a source build shows the pin as inactive — it uses a branch or tag instead). The
+  **launch flags** line is what the runtime appends after the command
+  (`web --host <listen host> --port <port> --no-open`): the command only says where dsh comes
+  from, this line shows whether the configured port is actually used.
+  - **Edit** is collapsed into a form: instance directory, config directory, workspace, port,
+    listen host, start mode, install mode, dsh version and install directory. Saving only writes
+    the record and **does not restart**; click "restart" to make it take effect.
+  - **Delete** is optional in what it removes: the form offers "delete data directory
+    (`DSH_HOME`)" and "delete install directory", both unchecked by default (which only
+    removes the console record). Deletion cannot be undone, so check the paths first; the
+    console only deletes absolute paths and refuses targets such as the root directory or the
+    current user's home. If the instance is running, it is stopped first.
+- **Users**: list, create, change password, disable / enable, change role (admin / user),
+  delete. The first registered account is the **super administrator** (badged under its name):
+  nobody — not even it — can change its role, disable, rename or delete it. Changing its
+  password stays allowed, otherwise a forgotten password would lock the console shut.
+  Among the remaining accounts, the last admin cannot be disabled, demoted or deleted.
+- **Instance grants**: a user × instance checkbox matrix submitted as one diff. Admins can
+  enter every instance by default.
+- **Runtime**: status, version and path of node / npm / npx / pnpm / git / dsh, with a hint on
+  how to install whatever is missing. Also the platform, the console's own Node and pnpm, and
+  any dsh already on the machine. You do not need to install Node beforehand; the console
+  downloads its own copy into the state directory.
+- **Audit**: logins, entering instances, user / instance / grant changes, instance
+  start/stop, and failed attempts — the most recent entries.
+- **Install pnpm with one click when it is missing**: dsh's plugin installer uses pnpm while
+  Node ships only npm/npx, so on a clean server "add plugin" fails with `spawn pnpm ENOENT`.
+  One click installs it into the console state directory (`<state-dir>/pnpm`) without touching
+  the system or needing root, and `uninstall --purge` removes it. Like dsh installs it is a
+  background task; progress updates on its own. (git gets no button: it needs the system package
+  manager, which differs too much between distributions — a command is the honest answer.)
 
-Three install modes:
+  ![Runtime detection](docs/images/admin-env.png)
 
-| Mode | Best for | What it does | Resulting launch command |
+The **create instance** form is ordered: name → dsh data directory (`DSH_HOME`) → **config
+directory** → workspace → **port** → **listen host** → **start mode** → **install mode** →
+**dsh version** → install directory. **One directory is enough**: the instance directory (`DSH_HOME`) is dsh's
+only data root; the config directory is just another spelling of it (it overrides `DSH_HOME`,
+usually left blank); the install directory only matters for the git / pnpm / local methods (npx
+uses the npm cache) and defaults to `<instance dir>/install` for git and pnpm; a blank workspace
+falls back to `<instance dir>/workspace`. Every field carries its default hint, plus an
+expandable "What goes in each directory?" note. A blank port is auto-assigned, and so is the id.
+
+Four install modes, pick according to your machine:
+
+| Mode | Good for | What it does | Resulting launch command |
 |---|---|---|---|
-| **npx** (default) | Getting going fast, no dsh on the machine | `npx --yes @deepseek-ai/dsh`, smoke-verified afterwards | `<own Node>/bin/npx --yes @deepseek-ai/dsh` |
-| **git** | Reading or modifying the source | `git clone` the official repo → `pnpm install` → `pnpm run build` | `node <install dir>/deepseek-harness/apps/cli/lib/bin.js` |
-| **pnpm** | Offline reuse, a pinned version per instance | pnpm installs dsh into the **instance's own directory** (not globally) | `<install dir>/dsh/node_modules/.bin/dsh` |
+| **npx** (default) | Getting going quickly, no dsh on the machine | `npx --yes @deepseek-ai/dsh`, fetched on demand, with one smoke test after install | `<bundled Node>/bin/npx --yes @deepseek-ai/dsh` |
+| **git** | Reading or changing the source, tracking upstream | `git clone` the official repo → `pnpm install` → `pnpm run build` | `node <install dir>/deepseek-harness/apps/cli/lib/bin.js` |
+| **local** | You want to clone and build yourself (private mirrors, proxies, offline) | **Installs nothing**: validates the checkout, then starts it the official Run-from-source way, `pnpm dsh web` | `pnpm --dir '<source dir>' run dsh` |
+| **pnpm** | Offline reuse, a pinned version per instance | Install dsh into the **instance's own directory** (not globally) | `<install dir>/dsh/node_modules/.bin/dsh` |
 
-git and pnpm modes provision Node and pnpm themselves (into the state dir, never touching the
-system). The CLI and the page share the same data and the same code path:
+git, local and pnpm also provision the Node runtime and pnpm into the state directory without touching
+the system. The command line and the page share **the same data and code paths**:
+
+**local (local source)** is for "I clone and build by hand, the gateway only starts it": clone the
+official repo elsewhere, run `pnpm install` and `pnpm run build`, then point the install directory
+at that repo root (its parent works too when the repo sits at `<dir>/deepseek-harness`). The
+gateway does not clone, install dependencies or build — it checks three things (a `package.json`
+with a `dsh` script, an existing `node_modules`, and a reachable `node` plus `pnpm`) and stores
+`pnpm --dir '<source dir>' run dsh` as the launch command. The gateway appends `web --host …
+--port …` when it starts dsh. That sidesteps the "building from source always fails" class of
+problems (clone timeouts, private mirrors, node-gyp): if it builds locally, the gateway can run it.
+Version probing is best-effort — shown when it works, never a reason to fail.
+
+**Which dsh version** is the `dsh version` field (`--dsh-version` on the command line). Leave it
+alone by default: blank means `latest`. To run a release newer than `latest` (an `alpha` / `rc`
+channel), fill in the npm **version** (`0.2.2-alpha.2`) or a **dist-tag** (`next`, `alpha`) — both
+the npx and the pnpm mode accept it. Which names are available:
 
 ```sh
-# Decide the install mode while creating the record (same as the page's "create instance")
-dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
-    --workspace /srv/ui/work --port 18104 --listen-host 127.0.0.1 \
-    --install-mode pnpm --install-dir /srv/ui/inst
-
-# Or create the record first and install later (or reinstall with a different mode)
-dsh-gate manage instance install ui-app --install-mode pnpm
+npm view @deepseek-ai/dsh dist-tags        # which version latest / next / alpha point at
+npm view @deepseek-ai/dsh versions --json  # every published version
 ```
 
-`instance install` runs **synchronously on the CLI** (you are sitting at the terminal watching
-progress print) and as a **background job in the admin page** (refresh to see progress). A
-failed install does not remove the record: the instance is still there, fix it and install again.
+Two rules worth knowing:
 
-Key points:
+- **A pin never falls back.** When the field is blank and `latest` cannot run on this machine, the
+  gateway quietly steps back to an older version it has measured to work — that behaviour exists
+  for "I did not name a version, just give me something that runs". Once you name one, a failed
+  install says *this version could not be installed*; it never substitutes another version and
+  lets you believe you got the one you asked for.
+- **Source methods (git / local) ignore this field**: git takes a branch or tag (`--git-ref`),
+  local takes the directory you point at. Filling both in the same form is rejected when the
+  instance is created, not halfway through the install.
 
-- **Sub-path mounting**: every instance lives under `/i/<opaque id>/`. All instances share one
-  hostname and therefore one set of cookie names, so the portal rewrites upstream `Set-Cookie`
-  `Path` values to the matching mount prefix. That rewrite is what keeps sessions from bleeding
-  across instances, and `go/tests/portal-e2e.sh` verifies it.
-- **Denied looks like missing**: an instance you were not granted returns the same 404 response
-  as an instance that does not exist.
-- **Every dsh stays on loopback**: each dsh binds `127.0.0.1:<auto-assigned port>`; the portal
-  is the only public listener. Instances created with `--on-demand` start when a user first
-  opens them.
-- **CLI parity**: `manage user|instance|grant` covers everything the admin page does (including
-  instance creation and dsh installation); `--lang zh-CN|en` switches CLI output (also
-  `DSH_GATE_LANG` / `LC_ALL` / `LANG`).
-- The portal database is `<state dir>/portal.db` (SQLite, mode 0600). On upgrade, an existing
-  single-instance `users.json` is imported on first start (the first user becomes an
-  administrator) and existing passwords keep working. Older databases gain the new columns with
-  defaults that reproduce the pre-upgrade behaviour, so existing instances are unaffected.
+The version belongs to the instance record: what you typed at creation, what `dsh edit` changed
+and what `dsh install --dsh-version` installed all write into that one record, and the version
+cell in the instance list shows what is pinned now (blank shows "follows latest"). **Instances
+that were never installed honour it too** — the launch command the runtime probes for carries the
+pinned version instead of falling back to `latest`.
 
-Current limitations (details in [docs/portal.md](docs/portal.md)):
+```sh
+# Fix the install mode while creating the record (same as the page's "create instance")
+dsh-gate dsh add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
+    --workspace /srv/ui/work --dsh-port 18104 --listen-host 127.0.0.1 \
+    --install-mode pnpm --install-dir /srv/ui/inst
 
-- The admin page can create instances, install dsh, grant access and show the audit log;
-  starting, stopping, restarting and reading instance logs are still CLI-only.
-- `localStorage` is shared per origin, so one browser visiting two instances shares UI state
-  (credentials do not leak).
-- Changing a password or disabling a user from the CLI does not immediately disconnect them
-  from a running portal (restart it, or use the admin page, which revokes sessions at once).
+# Or create the record first and install later (or reinstall with another mode)
+dsh-gate dsh install ui-app --install-mode pnpm
+
+# Install the build that is newer than latest: version or dist-tag, both write back to the record
+dsh-gate dsh install ui-app --dsh-version 0.2.2-alpha.2
+
+# Drop the pin and follow latest again
+dsh-gate dsh edit ui-app --dsh-version ""
+```
+
+`dsh install` is **synchronous on the command line** (you are waiting at the terminal, so
+progress goes straight to it) and a **background task in the console** (the page
+keeps itself up to date). Failure keeps the record: the instance is still there, fix it and install again.
+
+**Good to know**
+
+- **Sub-path mounts**: every instance lives under `/i/<opaque id>/`. All instances on one
+  domain share cookie names, so the console rewrites upstream cookie `Path`s to the respective
+  mount prefix — that is what keeps sessions apart, and it is what `go/tests/portal-e2e.sh`
+  checks.
+- **Unauthorised and missing look identical**: accessing an instance you are not granted
+  returns 404 with the same body as "no such instance", so the console does not leak whether
+  an instance exists.
+- **Every dsh listens on loopback only**: an instance's dsh binds `127.0.0.1:<auto port>`;
+  only the console is public. `ondemand` instances start at the moment a user opens them.
+- **CLI and page are equivalent**: the `dsh` subcommands cover instance CRUD, install and
+  start/stop; `manage user|grant` covers users and grants; `--lang zh-CN|en` switches output
+  language (also via `DSH_GATE_LANG` / `LC_ALL` / `LANG`).
+- **All state lives in the console database**: `<state-dir>/portal.db` (0600, SQLite). On
+  upgrade, an old single-instance `users.json` is imported automatically on first start (its
+  first user becomes an admin) and the old passwords keep working. Missing columns in an old
+  database are backfilled with the pre-upgrade behaviour, so existing instances are unchanged.
+- **Local control API**: actions that need to touch processes — `dsh start|stop|restart|rm` —
+  go through the console's loopback-only endpoint
+  (`POST http://127.0.0.1:<port>/_portal/api/local`), authenticated by the random token in
+  `<state-dir>/portal.token` (refreshed on every start). These commands therefore require the
+  console to be running; the CLI never bypasses it to start an orphan dsh.
+
+**Current limitations** (details in [docs/portal.md](docs/portal.md))
+
+- `localStorage` is shared per origin, not per path, so entering two instances in one browser
+  shows each other's UI state (credentials do not leak);
+- after changing a password or disabling a user from the CLI, the running console does **not**
+  kick that user out immediately (restart the console, or do it on the page, to revoke sessions
+  at once);
+- PWA / "add to home screen" behaviour under a sub-path is not promised, and upstream plugins
+  that hard-code absolute asset paths may 404 under the sub-path.
 
 ## Getting started in 30 seconds
 
-```sh
-# 1. Create a login account (password is prompted for interactively)
-dsh-gate user add admin
-
-# 2. Start the gateway
-dsh-gate run
-
-# 3. Open the address printed in the terminal, log in
-```
-
-Managing it:
+One command installs the console (it asks a few questions, shows a summary, creates the admin
+and starts according to your choice):
 
 ```sh
-dsh-gate status           # which instances run, and where each one lives
-dsh-gate stop personal    # stop one instance (write all for everything; bare lists only)
-dsh-gate restart personal # restart one instance with its original arguments, log in ~/.dsh-gate/run/logs/
+dsh-gate install --start
 ```
 
-To keep it running after you close the terminal, add `--background` (or `-d`); to
-have it start on boot/login use `dsh-gate service install` (systemd on Linux, launchd
-on macOS, Task Scheduler on Windows):
+It prints `http://127.0.0.1:<port>/` and `…/admin`. Open the console and do two things:
+
+1. **Instances** → "Create instance": fill in the name (required), the instance directory
+   (blank means `~/.dsh`) and the install mode;
+2. Click "Install" in the instance list, wait for the background task, then click "Start" (the
+   first time it downloads a Node runtime, so it takes a little longer).
+
+To share an instance, tick it on the "Instance grants" page; the other person logs in with
+their own account and sees it under "my instances".
+
+For scripts / CI, pass everything up front:
 
 ```sh
-dsh-gate run --background     # detached, log in ~/.dsh-gate/run/logs/
-dsh-gate service install      # start automatically at boot/login, and start now
-dsh-gate service uninstall    # turn auto-start off
-dsh-gate uninstall            # done with it: turn auto-start off + stop instances
-dsh-gate uninstall --purge    # ... and delete the state directory as well
+echo "$PASSWORD" | dsh-gate install --port 12020 --password-stdin --start
+# or let it generate a random password and print it once
+dsh-gate install --random --start
 ```
 
-Step 2 prints a banner like this:
+`install` also copies `dsh-gate` into a fixed location (`--bin-dir` changes it, empty skips the
+copy): `/usr/local/bin` on Linux / macOS, `%LOCALAPPDATA%\dsh-gate\bin` on Windows. You can then
+type `dsh-gate` directly (that Windows directory is not on `PATH` by default — add it yourself if
+you want that); it also asks whether to enable autostart (the `--service` flag).
 
-```
-dsh-gate 0.3.14 · 共 1 个实例
-实例 default 已启动
-  访问地址（网关端口 3082）
-  本机      http://127.0.0.1:3082/
-  局域网    http://192.168.1.20:3082/
-  dsh       127.0.0.1:3080（启动中，稍后会自动就绪）
-  实例目录  /Users/you/.dsh
-  账号      1 个（/Users/you/.dsh-gate/users.json）
-按 Ctrl-C 停止。
-```
-
-(The banner is printed in Chinese; it is generated by the program, not by this README.)
-
-Port 3082 is the default. It avoids dsh's own 3080 and the usual 80/443, 3000, 5173 and 8080.
-
-If you would rather not invent a password, `--random` generates a strong one and prints it once:
+Day-to-day:
 
 ```sh
-dsh-gate user add admin --random
+dsh-gate status            # is the console running, how many instances, their state
+dsh-gate dsh list          # instances and run state (definitions readable even when the console is down)
+dsh-gate dsh restart app   # restart one instance from its saved config (console must be running)
+dsh-gate stop              # stop the console (and the instances it supervises)
 ```
 
-To check the current state at any time:
+The log is `~/.dsh-gate/run/logs/portal.log`. To bring it back after a reboot, install the
+autostart unit:
 
 ```sh
-dsh-gate check
+dsh-gate service install   # systemd on Linux, launchd on macOS, Task Scheduler on Windows
 ```
 
 ### The login page on a phone, and in light mode
@@ -353,213 +441,248 @@ dsh-gate check
   <img src="docs/images/login-light.png" width="480" alt="Login page in light mode">
 </p>
 
-The login page is a **single self-contained HTML file** (styles and scripts inlined, no
-external requests), so it renders fine on an offline server; it follows the system
-light/dark preference and does not break down to 320px wide.
+The login page is **a single self-contained HTML file** (inline styles and scripts, no external
+requests), so it renders on an offline server too; it follows the system dark/light preference by
+default, and the footer has a one-click switch to light or dark (remembered in a cookie, shared by
+all three pages). It does not break below 320px.
 
 
 ## Tutorial
 
-A walk-through in the order you will actually do things: from a downloaded binary to a
-usable agent on your LAN. Each step says what you should see and where to look when it
-goes wrong.
+This section walks the **real order**: from a binary in your hand to using agents from the LAN.
+Each step tells you what you will see and where to look when something is wrong.
 
 ### Step 0 — What you need
 
+Very little:
+
 | Requirement | Notes |
 |---|---|
-| A machine | The one that runs dsh and the gateway. Linux / macOS / Windows; a headless Linux server is the main case |
-| One binary | Take the matching package from [dist](dist/), or build it with `sh go/build.sh` |
-| **No Node.js needed** | If the machine has no Node, the gateway downloads an official runtime itself (step 2) |
-| **No public IP needed** | LAN use; see [Remote access](#remote-access-using-your-office-dsh-from-home) for outside access |
+| A machine | The one running dsh and the console. Linux / macOS / Windows; a headless server is the main case |
+| One binary | Take the package for your platform from [dist](dist/), or build it with `sh go/build.sh` |
+| **No** Node.js | The console downloads the official runtime if Node is missing (see step 2) |
+| **No** public IP | It is for the LAN; for remote access see [Remote access](#remote-access-using-your-office-dsh-from-home) |
+
+Put the binary somewhere stable. On Linux/macOS, install it into `PATH`:
 
 ```sh
+# Unpack (on Windows it is a .zip containing dsh-gate.exe)
 tar -xzf dsh-gate_<version>_linux_amd64.tar.gz
 cd dsh-gate_<version>_linux_amd64
+
+# Put it in PATH; you can also run ./dsh-gate for now — step 1 installs it again for you
 sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
-dsh-gate version        # sanity check
+dsh-gate version        # make sure it runs
 ```
 
-### Step 1 — One command to initialise
+> Not sure which package? `uname -m` shows the architecture (`x86_64` → amd64,
+> `aarch64`/`arm64` → arm64) and `uname -s` the system. On Windows take
+> `windows_amd64` (or `arm64`).
+
+### Step 1 — Install the admin console
 
 ```sh
-dsh-gate setup               # run it as yourself; macOS auto-start needs no root
+dsh-gate install             # run as yourself; macOS autostart needs no root
 ```
 
-> **Do not run `sudo dsh-gate setup`.** `sudo` keeps `$HOME` (that is how macOS behaves),
-> so `~/.dsh` still points at your own instance directory, yet the `settings.yaml` and
-> `.credentials.yaml` written by root are owned by root (0600) — your own dsh (including
-> the DSH desktop app) can then neither read nor change them. The tool refuses such a call
-> outright and prints two safe alternatives; pass `--allow-root-write` if you really mean it.
-> To merely put the command in `PATH`, run `sudo install -m755 dsh-gate /usr/local/bin/`
-> first and then `dsh-gate setup` as yourself.
+> **Do not run `sudo dsh-gate install`.** sudo keeps `$HOME` (on macOS at least), so
+> `~/.dsh-gate` still points at your own state directory, while the database and token written
+> as root are root-owned (0600) — afterwards your own `dsh-gate status` / console cannot read
+> them. If all you want is the command in `PATH`, first
+> `sudo install -m755 dsh-gate /usr/local/bin/`, then run `dsh-gate install` as yourself.
 
-It asks a few questions; pressing Enter accepts the bracketed default (**the capital letter
-is the default**: `[Y/n]` Enter = yes, `[y/N]` Enter = no):
+In an interactive terminal it asks the following; press Enter to accept the value in brackets
+(**the capital letter is the default**: Enter on `[Y/n]` means yes, Enter on `[y/N]` means no):
 
 ```
-实例名 [default]: test
-dsh 端口 [3080]: 12080            # the port dsh itself listens on (loopback only)
-对外端口 [3082]: 12081            # the port you open in the browser
-dsh 实例目录 [~/.dsh]:            # dsh's data (sessions, plugins, config)
-会话默认工作目录 [/root]: /www/wwwroot   # ★ which directory the agent may read and write
-确认一下: …  确认以上设置？[Y/n]
-管理员用户名 [admin]:
-请输入口令:                        # input is hidden
-DeepSeek API Key（输入不回显，直接回车跳过）：
-现在安装开机（登录）自启并立即启动？[y/N] y
+Listen address [0.0.0.0]:
+Console port [12020]:
+Install directory [/usr/local/bin]:
+Config and database directory [/Users/you/.dsh-gate]:
+Admin user name [admin]:
+Password for admin (input is shown as *):     # entered twice, must match
+Start the console now? [y/N]
 ```
 
-Two things worth getting right:
+A few things worth knowing:
 
-- **Ports are validated on the spot**: a non-number, something outside 1–65535, two
-  identical ports, or a port that is already in use is rejected right there and you are
-  asked again (when the port is busy the wizard also says what holds it). Do not skip
-  this — discovering it at startup means the account and auto-start are already installed
-  and you have to start over.
+- **The port is checked on the spot**: not a number, out of range, or already in use — the
+  wizard rejects it and asks again (and names the process that owns it). Do not skip this: by
+  the time a start fails, the account and the autostart unit are already in place.
+- **It creates the admin only, no instances**: `install` prints the next two steps (create an
+  instance, grant it) and **starts no dsh at all**. Instances belong to the console, and there
+  are none yet when you install it.
+- **Re-running is safe**: when the console already has accounts it changes nobody's password
+  and creates no duplicate; the wizard also stops asking for an account name and a display name
+  and instead lists the existing accounts (name, display name, role, status) on the confirmation
+  page, marking the super administrator as such.
+- **Where the password comes from**: asked twice in a terminal; in scripts you must use
+  `--random` or `--password-stdin`, otherwise it fails immediately (a non-terminal cannot read
+  a password safely).
 
-- **The session workspace** decides which files the agent can touch. Point it at the
-  directory you actually want the agent to work in — not your home directory, not `/`.
-  A wrong value is accepted silently, which is why the gateway prints the effective
-  「工作目录」 in its startup banner on every run.
-- **The DeepSeek API key** can be entered now or skipped (just press Enter) and added
-  later with `dsh-gate model key set DEEPSEEK_API_KEY --stdin`. If you skip it, dsh starts
-  but has no usable model.
-- **Missing directories are created for you**: the paths given to `--state-dir`,
-  `--dsh-home` and `--workspace` are created before startup (and printed), so you can
-  skip `mkdir`.
+When it finishes it has created the admin, copied `dsh-gate` into `PATH`, and started the
+console in the background (`--start`) or installed the autostart unit (`--service`, which
+implies starting it). **Writing a systemd unit on Linux needs root**: if you run as a normal
+user and choose autostart, that step fails — run `install` as yourself first, then
+`sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER"` (see
+[server deployment](#server-deployment-linux--systemd)).
 
-When it finishes, `setup` has: created the account, set the default model
-(`deepseek-official / deepseek-chat`), copied `dsh-gate` onto your `PATH`, installed
-auto-start if you asked, and tried to install the `dsh-dock` plugin (it provides the
-in-browser model settings page; if it fails you get the manual command).
+### Step 2 — Create an instance and install dsh
 
-### Step 2 — Wait for dsh (the first run is slow)
+The console is up, but there is no dsh yet. Two equivalent ways:
 
-The gateway listens immediately and the login page opens right away; what takes time is
-preparing dsh, and that happens in the background. Follow it in the log:
+**The page (recommended the first time)**: open `http://<this machine>:12020/admin`; it opens on
+"instances":
+
+1. "Create instance": the name is required, a blank instance directory means `~/.dsh`, a blank
+   port is auto-assigned, the install mode can stay on the default `npx`, and a blank
+   **dsh version** means `latest` (put a version or `next` there to run something newer);
+2. Click "Install" in the row — it is a background task, progress updates automatically;
+3. When it is done click "Start". The first time downloads the Node runtime and the dsh
+   package, 3–5 minutes; later restarts take seconds.
+
+**The command line**:
 
 ```sh
-journalctl -u dsh-gate -f        # when installed as a service
-tail -f ~/.dsh-gate/run/logs/<name>.log   # foreground/background runs
+dsh-gate dsh add app --dsh-home ~/.dsh-app --start-mode auto
+dsh-gate dsh install app --install-mode npx
+dsh-gate dsh start app
 ```
 
-You should see this sequence (timings measured in a clean container):
+The first install shows, in order (timings measured in a clean container):
 
 ```
-本机没有 npx，正在下载 Node.js 运行时（不改系统，只放进网关状态目录）   ← ~15 s
-Node.js 运行时已就绪  bin=~/.dsh-gate/node/node-vXX/bin
-pnpm 已就绪（dsh 的插件安装器会用它）
-dsh 启动命令已就绪（npx --yes @deepseek-ai/dsh）
-dsh 已就绪  addr=127.0.0.1:12080
+No npx on this machine; downloading the Node.js runtime (system untouched, state directory only)   <- about 15s
+Node.js runtime ready  bin=~/.dsh-gate/node/node-vXX/bin
+pnpm ready (dsh's plugin installer uses it)                                                        <- needed to add plugins
+dsh launch command ready (npx --yes @deepseek-ai/dsh)
 ```
 
-**This step needs network access** (it downloads Node and the dsh package). When the
-official registry is slow or unreachable the gateway switches to a mirror
-(`registry.npmmirror.com`) on its own and logs `改用镜像源重试`. Everything is usually
-ready within 3–5 minutes; later restarts take seconds.
+**This step uses the network**: it downloads Node and the dsh package. When the official
+registry is slow or unreachable it switches to a mirror (`registry.npmmirror.com`
+automatically), and the log says "retrying with the mirror". Everything ready usually takes
+3–5 minutes; later restarts take seconds (Node is not downloaded again and dsh comes from the
+npx cache).
 
-To check the configuration without changing anything:
-
-```sh
-dsh-gate check
-```
+The console **is listening immediately** and the login page opens at once; only the dsh
+preparation inside an instance is slow.
 
 ### Step 3 — Open it and log in
 
-Open the **LAN** address from the banner (or the loopback one):
+Open the console's **LAN** address in a browser:
 
 ```
-http://192.168.1.20:12081/
+http://192.168.1.20:12020/
 ```
 
-1. Connection refused → the gateway is not running: `dsh-gate status`;
-2. A login page → log in with the account from step 1;
-3. "DSH is starting" page → normal; it refreshes every 2 seconds until dsh is ready;
-4. Straight into the app → start talking to the agent.
+1. Connection refused → the console is not running: `dsh-gate status`;
+2. You see the login page → log in with the account from step 1;
+3. After login you get "my instances"; admins also reach `/admin`;
+4. Click an instance → while dsh is starting you see a waiting page that refreshes every 2
+   seconds; once ready you can start chatting.
 
-> Works locally but not from another machine? Usually the firewall: `ufw allow 12081/tcp`
-> on Linux, plus the security group on a cloud host.
+> Reachable on this machine but not from another computer/phone? Usually the firewall: on
+> Linux `ufw allow 12020/tcp`; on a cloud server also open the security group.
 
 ### Step 4 — Configure a model (works without any plugin)
 
-**Official DeepSeek** (the route ships with dsh; only the key is needed):
+Models live in **each instance's own** `DSH_HOME`, so every command uses `--instance <name|id>`
+(see `dsh-gate dsh list`); `--dsh-home` is no longer needed just to pick a directory.
+
+**Official DeepSeek** (dsh ships this route, you only need the key):
 
 ```sh
-printf 'sk-your-key' | dsh-gate model key set DEEPSEEK_API_KEY --stdin
-dsh-gate model default deepseek-official deepseek-chat
-dsh-gate model list
+printf 'sk-your-key' | dsh-gate model key set DEEPSEEK_API_KEY --stdin --instance app
+dsh-gate model default deepseek-official deepseek-chat --instance app
+dsh-gate model list --instance app        # confirm it was written
 ```
 
-**Third-party or self-hosted gateway** (anything speaking the OpenAI protocol):
+**Third-party / self-hosted gateways** (anything OpenAI-compatible):
 
 ```sh
-printf 'your-key' | dsh-gate model key set MY_GW_API_KEY --stdin
+printf 'your-key' | dsh-gate model key set MY_GW_API_KEY --stdin --instance app
 dsh-gate model provider add my-gw --base-url https://api.example.com/v1 \
-    --name my-gateway --key-env MY_GW_API_KEY --models qwen3-max,glm-5
-dsh-gate model default my-gw qwen3-max
+    --name "My gateway" --key-env MY_GW_API_KEY --models qwen3-max,glm-5 --instance app
+dsh-gate model default my-gw qwen3-max --instance app
 ```
 
-Restart dsh if the running instance does not pick it up: `dsh-gate restart <name>`.
+The instance may need a restart to pick this up: `dsh-gate dsh restart app`.
 
-> The in-browser "Settings → Models" page also works, but it depends on the `dsh-dock`
-> plugin (next step). When that plugin cannot be installed, these commands are the only
-> way — they edit dsh's own settings files and need no plugin or web page.
+> The browser's "Settings → Models" page also works, but it depends on the `dsh-dock` plugin
+> (next step). When the plugin cannot be installed, the commands above are the only way — they
+> edit dsh's own settings files, with no plugin or page involved.
 
 ### Step 5 — Install the plugin (optional, recommended)
 
+`dsh-dock` provides the model settings page, balance and notification dock panels. The console
+can install it directly, bypassing the browser plugin page:
+
 ```sh
-dsh-gate plugin list                                     # what is installed
-dsh-gate plugin add dsh-dock                             # mirror fallback is automatic
-dsh-gate restart all                                     # dsh loads it on restart
+dsh-gate plugin list --instance app               # what is installed
+dsh-gate plugin add dsh-dock --instance app       # falls back to the mirror on failure
+dsh-gate dsh restart app                                 # restart that instance to load it
 ```
 
-`plugin list` also checks a common failure: a settings page reporting `settings are
-unavailable in this browser` usually means the profile is missing
-`@deepseek-ai/dsh-web-app` — the list says so.
+`plugin list` also checks a common failure: when the browser settings page reports
+`settings are unavailable in this browser`, the profile is usually missing
+`@deepseek-ai/dsh-web-app` — the list points that out.
 
 ### Step 6 — Day-to-day
 
 ```sh
-dsh-gate status                  # which instances run, on which ports and directories
-dsh-gate check                   # ports, dsh state, which address to open
-dsh-gate stop test               # stop test (name required; `all` means everything)
-dsh-gate restart test            # restart with the original arguments
-dsh-gate service status          # is auto-start installed, and where is the unit
+dsh-gate status                  # console state + instance definitions and run state
+dsh-gate dsh list                # instances (name, id, port, run state)
+dsh-gate dsh stop app            # stop one instance (console keeps running)
+dsh-gate dsh start app           # start one instance
+dsh-gate dsh restart app         # restart one instance from its latest config
+dsh-gate restart                 # restart the console (stop, then start from the saved config)
+dsh-gate service status          # is autostart installed, where is the unit
 ```
 
-Logs:
+Where the logs are:
 
-| How it runs | Where the log is |
+| How it runs | Log location |
 |---|---|
-| Foreground | the terminal |
-| `run --background` | `<registry dir>/logs/<name>.log` (`~/.dsh-gate/run/logs/` by default) |
-| `service install` (Linux) | `journalctl -u dsh-gate -f` |
-| `service install` (macOS) | `~/Library/Logs/dsh-gate.log` |
+| Foreground (`start --foreground`, or service-managed) | The terminal / `journalctl -u dsh-gate -f` |
+| Background (`start` default) | `~/.dsh-gate/run/logs/portal.log` |
+| Service-managed (Linux) | `journalctl -u dsh-gate -f` |
+| Service-managed (macOS) | `~/Library/Logs/dsh-gate.log` |
+
+Instance dsh output is relayed into the console log too (launch tokens redacted).
 
 ### Step 7 — Removing it
 
+Outside in:
+
+A single instance: `dsh-gate dsh rm app` only drops the registration and keeps the data
+directory; add `--purge` to delete the data too, plus `--purge-install` for the install directory.
+
+The whole console:
+
 ```sh
-dsh-gate uninstall test --service            # stop test + remove auto-start, keep the data
-dsh-gate uninstall test --service --purge    # only if you really do not need the data
+dsh-gate uninstall                  # interactive: asks before deleting all instance data
+dsh-gate uninstall --yes            # non-interactive: keep instance data
+dsh-gate uninstall --yes --remove-data          # delete instance data and sessions too
+dsh-gate uninstall --yes --remove-data --purge  # also the console state directory
 ```
 
-`dsh-gate service uninstall` removes auto-start only. `uninstall` **requires a target**
-(`all` for everything); passing nothing just lists what is running — deliberately, because
-"everything by default" costs one slip of the finger on a machine with several instances.
+The order is fixed: **stop and delete all instances first** (directories are only touched when
+data deletion was chosen), **then stop the console**, **then remove the service**. Instance data
+directories are kept by default (they hold your sessions, credentials and workspace) and listed
+at the end. `--purge` deletes `~/.dsh-gate`, irreversibly. The `dsh-gate` executable is not
+deleted either: remove it the way you installed it.
 
 ### Three places to look when something is wrong
 
-1. **`dsh-gate status`** — is the gateway running, and on which port;
-2. **`journalctl -u dsh-gate -f`** (or the log file) — why dsh did not start, where the
-   download is stuck;
-3. **`dsh-gate check`** — who holds the port, whether the dsh command can be found, which
-   address to use.
+1. **`dsh-gate status`** — is the console running, on which port, what state are the instances in;
+2. **`journalctl -u dsh-gate -f` (or `~/.dsh-gate/run/logs/portal.log`)** — why dsh did not
+   start, where a download stalled, what an install task reported;
+3. **The "runtime" page in `/admin`** — whether node / npm / npx / pnpm / git / dsh can be
+   found, and a one-click fix for whatever is missing.
 
-For specific symptoms see [Frequently asked questions](#frequently-asked-questions):
-`npx` not found, `spawn pnpm ENOENT` when installing plugins,
-`settings are unavailable in this browser`, `dsh web authentication required`, and a
-session workspace that did not take effect.
+For common symptoms search the [FAQ](#faq): missing npx, `spawn pnpm ENOENT`,
+`settings are unavailable in this browser`, `dsh web authentication required`, a workspace
+setting that did not take effect — each has a procedure.
 
 ---
 
@@ -567,26 +690,24 @@ session workspace that did not take effect.
 
 ### Download a prebuilt binary
 
-If you would rather not touch Go, grab the archive for your platform from the release
-page (Linux / macOS / Windows on amd64 and arm64, plus armv7 for boards like the
-Raspberry Pi):
+If you do not want to touch Go, download the archive for your platform (Linux / macOS /
+Windows × amd64, arm64, plus armv7 for Raspberry Pi class boards):
 
 - GitHub: <https://github.com/wycto/dsh-gate/releases>
-- Gitee (for networks that cannot reach GitHub): <https://gitee.com/wycto/dsh-gate/releases>
+- Gitee (when GitHub is unreachable): <https://gitee.com/wycto/dsh-gate/releases>
 
-Unpacking gives you the executable, plus `LICENSE`, `README.md` and the one-page
-`QUICKSTART.md`. `SHA256SUMS` in the release root lets you verify the download:
+Unpacking gives you the executable; the archive also contains `LICENSE`, `README.md` and the
+one-page `QUICKSTART.md`. The release root carries `SHA256SUMS` for verifying the download:
 
 ```sh
-shasum -a 256 -c SHA256SUMS      # use sha256sum -c SHA256SUMS on Linux
+shasum -a 256 -c SHA256SUMS      # on Linux: sha256sum -c SHA256SUMS
 ```
 
-The target machine needs neither a Go toolchain nor a C runtime — these binaries are
-static.
+The target machine needs neither a Go toolchain nor any C runtime — these binaries are static.
 
 ### Build from source
 
-The Go code lives in the `go/` subdirectory:
+The Go code is in `go/`:
 
 ```sh
 git clone https://github.com/wycto/dsh-gate.git
@@ -594,752 +715,694 @@ cd dsh-gate/go
 go build -o dsh-gate ./cmd/dsh-gate
 ```
 
-The result is `go/dsh-gate`. Copy it anywhere on your PATH; the target machine needs no Go toolchain.
+The result is `go/dsh-gate`; copy it into `PATH` on the target machine, which needs no Go
+toolchain.
 
-Go 1.24 or newer is required. The project uses nothing but the standard library, so `go build` downloads no dependencies.
+Go 1.24 or newer is required. `go build` only resolves the SQLite driver used by the console;
+everything else is standard library.
 
-You do not have to copy it by hand: `dsh-gate setup` and `sudo dsh-gate service install`
-both copy the executable to `/usr/local/bin` by default (`--bin-dir` changes that, an
-empty value skips it), so `dsh-gate` works as a command right away. It is a **copy**,
-not a symlink: the original directory can be cleaned up later, and the service unit
-points at the copy.
+There are two ready-made paths if you do not want to copy by hand: `dsh-gate install` and
+`sudo dsh-gate service install` both copy the executable into a fixed directory by default
+(`/usr/local/bin`, or `%LOCALAPPDATA%\dsh-gate\bin` on Windows; `--bin-dir` changes it, empty
+skips the copy), so you can type `dsh-gate` directly instead of `./dsh-gate`. It is a **copy**,
+not a symlink: cleaning the original directory cannot break the command, and the service unit
+(scheduled task) records the copied path.
 
-You also do not need to install Node.js first: when npx is missing, the gateway
-downloads the official Node.js runtime into its state directory (`~/.dsh-gate/node` by
-default — no root, no system changes) and uses it to start dsh. `uninstall --purge`
-removes it along with the rest.
+Node.js is not required on the target machine either: the console downloads the official
+runtime into the state directory on start (default `~/.dsh-gate/node`, no root, system
+untouched) and uses it for instance dsh processes; `uninstall --purge` removes it too.
 
 ### Cross-compiling and packaging
 
-The repository ships a build script that produces every platform at once:
+The repo ships a build script that produces binaries and archives for every platform at once:
 
 ```sh
 sh go/build.sh                 # all targets
 sh go/build.sh linux/arm64     # one target
 ```
 
-Output lands in `dist/<version>/` — one directory per platform (binary + LICENSE +
-README), a `.tar.gz` per target (`.zip` on Windows), and `SHA256SUMS`:
+Artifacts land in `dist/<version>/`, one directory per platform (executable + LICENSE + README)
+plus `.tar.gz` (Windows: `.zip`) and `SHA256SUMS`:
 
 ```
-dist/0.3.14/
-├── dsh-gate_0.3.14_darwin_arm64/dsh-gate        dsh-gate_0.3.14_linux_arm64/dsh-gate
-├── dsh-gate_0.3.14_darwin_arm64.tar.gz          dsh-gate_0.3.14_linux_arm64.tar.gz
-├── dsh-gate_0.3.14_darwin_amd64/…               dsh-gate_0.3.14_linux_arm/dsh-gate   (armv7, e.g. Raspberry Pi)
-├── dsh-gate_0.3.14_darwin_amd64.tar.gz           dsh-gate_0.3.14_windows_amd64/dsh-gate.exe
-├── …                                           dsh-gate_0.3.14_windows_arm64/…
+dist/0.3.20/
+├── dsh-gate_0.3.20_darwin_arm64/dsh-gate        dsh-gate_0.3.20_linux_arm64/dsh-gate
+├── dsh-gate_0.3.20_darwin_arm64.tar.gz          dsh-gate_0.3.20_linux_arm64.tar.gz
+├── dsh-gate_0.3.20_darwin_amd64/…               dsh-gate_0.3.20_linux_arm/dsh-gate   (armv7, Raspberry Pi)
+├── dsh-gate_0.3.20_darwin_amd64.tar.gz           dsh-gate_0.3.20_windows_amd64/dsh-gate.exe
+├── …                                           dsh-gate_0.3.20_windows_arm64/…
 └── SHA256SUMS
 ```
 
-dsh-gate is **pure Go** and builds with `CGO_ENABLED=0`, so every binary is static:
-`scp` it over and run it — no Go toolchain and no C runtime required on the target.
+dsh-gate is **pure Go** and `CGO_ENABLED=0` (the SQLite driver is pure Go too), so these
+binaries are static: `scp` one to the target and run it, with no Go and no C runtime required.
 
-The script is thin; cross-compiling by hand works just as well:
+The script is simple, and cross-compiling by hand is one command:
 
 ```sh
 GOOS=windows GOARCH=amd64 go build -o dsh-gate.exe ./cmd/dsh-gate
 GOOS=linux   GOARCH=arm64 go build -o dsh-gate      ./cmd/dsh-gate
 ```
 
-Without an override the version falls back to the value in the source; releases inject
-it with `-ldflags`:
+The version defaults to `Version` in `go/internal/version/version.go` (the single source of
+truth); the script injects it with `-ldflags`, and so can you:
 
 ```sh
-go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.14" -o dsh-gate ./cmd/dsh-gate
+go build -ldflags "-X github.com/wycto/dsh-gate/internal/version.Version=0.3.20" -o dsh-gate ./cmd/dsh-gate
 ```
-
-`go/internal/version/version.go` is the single source of truth for the version — you
-can also just edit it.
 
 ---
 
 ## Command reference
 
-With no subcommand, `run` is assumed: `dsh-gate` is equivalent to `dsh-gate run`, and `dsh-gate --port 8080` is equivalent to `dsh-gate run --port 8080`.
+dsh-gate has exactly one form: **the admin console**. The top-level subcommands cover the
+console's whole lifecycle, plus helpers for instances, users and grants, plugins and models.
+With no subcommand it prints the overall help; options without a subcommand now report that a
+subcommand is required (it no longer guesses what to start by default).
+
+```
+dsh-gate install [options]        Install the console: create an admin, optionally start / autostart
+dsh-gate start [options]          Start the console (background; delegates when service-managed)
+dsh-gate stop [options]           Stop the whole console
+dsh-gate restart [options]        Restart the whole console (saved config or service manager)
+dsh-gate status [options]         Console state + instance definitions
+dsh-gate uninstall [options]      Stop/delete all instances, then uninstall the console service
+dsh-gate service <subcommand>     Autostart (supervises the console only)
+dsh-gate dsh <subcommand>         Manage dsh instances
+dsh-gate manage <subcommand>      Users and instance grants
+dsh-gate plugin / model           Plugin and model helpers
+dsh-gate version                  Print the version
+```
 
 Exit codes: `0` success, `1` runtime failure, `2` usage error.
 
-### dsh-gate run
+Common options: `--lang zh-CN|en` works before any subcommand (also via `DSH_GATE_LANG` /
+`LC_ALL` / `LANG`); the `dsh` and `manage` subcommands accept `--db` and `--state-dir`.
 
-Starts the gateway: listens on a LAN-reachable port, serves the login page, forwards requests to the local dsh.
+`--state-dir` defaults to `~/.dsh-gate`; `--db` defaults to `<state-dir>/portal.db`. The **run
+registry** is fixed at `~/.dsh-gate/run` (`--run-dir` overrides it) and does not follow
+`--state-dir`: "which console runs on this machine" is a machine-level fact, and fixing it is
+what lets `status` / `stop` / `restart` find the console without knowing its configuration.
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--name` | `default` | Instance name, used to distinguish instances and prefix logs in multi-instance runs |
-| `--host` | `0.0.0.0` | Gateway listen address; `0.0.0.0` accepts connections from every device on the LAN |
-| `--port` | `3082` | Gateway listen port (the port clients use) |
-| `--dsh-host` | `127.0.0.1` | dsh listen address. Must be one concrete address; `0.0.0.0` is rejected by dsh |
-| `--dsh-port` | `3080` | dsh listen port (local access only) |
-| `--dsh-home` | `~/.dsh` | dsh instance directory (`DSH_HOME`). Different directories mean fully independent dsh instances |
-| `--dsh-cmd` | empty | Command used to start dsh; supports the placeholders `{host} {port} {home} {workspace} {url} {trusted}`. Empty means auto-detect |
-| `--dsh-token` | empty | A known dsh startup token; only needed when adopting an external dsh whose token cannot be obtained |
-| `--npm-registry` | empty | npm registry used to fetch dsh. Empty means npm's default, with one automatic retry against a mirror when that source fails or is too slow; setting it explicitly pins the source |
-| `--workspace` | empty | Working directory of the dsh child process (decides which files sessions can see by default). Empty means "inherit the gateway process's cwd": the current directory when run in a foreground shell, but the unit's `WorkingDirectory` (the user's home) when managed by a service — **`setup` writes an absolute path and passes it to the service unit** so those two "current directories" cannot diverge |
-| `--state-dir` | `~/.dsh-gate` | The gateway's own state directory (holds the account file); never written into the dsh instance directory |
-| `--users` | empty | Account file path; empty means `<state-dir>/users.json` |
-| `--public-url` | empty | Publicly announced URL; derived from the LAN IP when empty |
-| `--trusted-host` | empty | Extra trusted addresses, repeatable. LAN IPs are added automatically and rarely need to be set by hand |
-| `--tls-cert` | empty | HTTPS certificate file, must be paired with `--tls-key` |
-| `--tls-key` | empty | HTTPS private key file, must be paired with `--tls-cert` |
-| `--auto-start` | `true` | Start dsh when its port is free |
-| `--adopt` | `true` | Adopt an existing instance when the dsh port is taken, instead of failing |
-| `--restart` | `true` | Restart dsh automatically after it exits unexpectedly |
-| `--background` / `-d` | off | Run detached: closing the terminal does not stop it, output goes to `<run-dir>/logs/<name>.log` |
-| `--run-dir DIR` | `~/.dsh-gate/run` | Run registry directory that `status` / `stop` / `restart` read from |
-| `--session-ttl` | `168h` | Login session lifetime |
-| `--max-login-fails` | `5` | Number of consecutive failures from one IP before a lockout starts |
-| `--lockout` | `1m` | Base lockout duration; each further failure doubles it |
-| `--dsh-start-timeout` | `1m30s` | Longest time to wait for a freshly started dsh to become ready |
-| `--config` | empty | Multi-instance configuration file (JSON); do not combine it with any instance option |
-| `--log-level` | `info` | Log level: `debug` / `info` / `warn` / `error` |
-| `--log-json` | `false` | Emit logs as JSON |
-| `--allow-root-write` | off | Allow writing data owned by another user while running as root. Off by default: it creates root-owned `settings.yaml` / `.credentials.yaml` that the other user's dsh (including the desktop app) can neither read nor change |
+### dsh-gate install
 
-Examples:
+Install the console: create an admin account, optionally start it in the background or set up
+autostart. **Starts no dsh instance.**
+
+In an interactive terminal it asks each item (Enter accepts the default), **shows a summary
+and asks for confirmation; answering `n` starts another round with the current answers**, no
+need to redo everything; in a pipe / CI it asks nothing.
 
 ```sh
-# Default: listen on 0.0.0.0:3082, forward to 127.0.0.1:3080, instance dir ~/.dsh
-dsh-gate run
+dsh-gate install
+# fully interactive
 
-# Proxy the office dsh: public port 8080, local port 8081, separate instance dir
-dsh-gate run --port 8080 --dsh-port 8081 --dsh-home ~/.dsh-company --name company
+dsh-gate install --port 12099 --random --start
+# script mode: give the non-defaults as flags, start in the background
 
-# Start several instances at once from a configuration file
-dsh-gate run --config dsh-gate.json
+echo "$PASSWORD" | dsh-gate install --password-stdin --service
+# CI / scripts: set the password and install autostart
 ```
 
-Placeholders supported by `--dsh-cmd`:
+| Option | Default | Description |
+|---|---|---|
+| `--host` | `0.0.0.0` | Console listen address |
+| `--port` | `12020` | Console listen port |
+| `--state-dir` | `~/.dsh-gate` | Config and database directory |
+| `--admin` | `admin` | Admin account (ASCII login name; use `--display` for a non-ASCII name) |
+| `--display` | — | Display name (may be non-ASCII; blank falls back to the account) |
+| `--random` | off | Generate a strong password and print it once |
+| `--password-stdin` | off | Read the password from stdin |
+| `--start` | off | Start the console in the background when done |
+| `--service` | off | Install login autostart and start now (implies `--start`) |
+| `--bin-dir` | `/usr/local/bin` on Linux/macOS, `%LOCALAPPDATA%\dsh-gate\bin` on Windows | Copy dsh-gate here; empty means no copy. The service unit / scheduled task uses the copy, so deleting the original directory does not break autostart |
 
-| Placeholder | Replaced with |
-| --- | --- |
-| `{host}` | dsh's listen address |
-| `{port}` | dsh's listen port |
-| `{home}` | dsh instance directory |
-| `{workspace}` | Working directory of the dsh child process |
-| `{url}` | Publicly announced URL (`--public-url`) |
-| `{noopen}` | the literal `--no-open` |
-| `{trusted}` | the next trusted address; repeat it to pass several |
+When the console already has accounts, `install` only does the start / autostart step and
+changes nobody's password; re-running is safe. On Linux `--service` needs root: run `install`
+as a normal user first, then
+`sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER"`
+(see [server deployment](#server-deployment-linux--systemd)).
 
-When left empty, dsh-gate auto-detects: it looks for `dsh` on `PATH` first, then falls back to `npx @deepseek-ai/dsh`.
+### dsh-gate start
 
-### dsh-gate status
+Start the console. **Background by default**: the command returns quickly and the log goes to
+`<run dir>/logs/portal.log`; `--foreground` keeps it in the foreground (used by service units
+and when debugging).
 
-Lists the gateway instances **currently running on this machine**: name, gateway port,
-dsh port, dsh directory, account file, PID, uptime and access URL.
+**With no start options it reuses the last saved configuration**
+(`<state-dir>/portal.json`) — the natural reading of `dsh-gate start` is "come back the way you
+were", not "silently revert the port to 12020". Any start option means "start with these
+values", and they are saved for `restart` / `status`.
 
+| Option | Default | Description |
+|---|---|---|
+| `--host` | `0.0.0.0` | Console listen address |
+| `--port` | `12020` | Console listen port |
+| `--tls-cert` | empty | HTTPS certificate, paired with `--tls-key` |
+| `--tls-key` | empty | HTTPS private key, paired with `--tls-cert` |
+| `--public-url` | empty | Public URL to announce (e.g. `https://dsh.example.com/`); derived from LAN IPs when empty |
+| `--state-dir` | `~/.dsh-gate` | Console state directory |
+| `--db` | `<state-dir>/portal.db` | Console database path |
+| `--npm-registry` | empty | npm registry for dsh installs; default, with automatic mirror fallback |
+| `--trusted-host` | empty | Extra trusted authority, repeatable |
+| `--foreground` | off | Run in the foreground (background by default) |
+
+```sh
+dsh-gate start                           # background, from the last config
+dsh-gate start --port 8080               # background on another port (and remember it)
+dsh-gate start --foreground              # foreground
 ```
-$ dsh-gate status
-instance personal
-  gateway port  0.0.0.0:3082
-  dsh port      127.0.0.1:3080
-  dsh dir       /Users/me/.dsh-web-home
-  accounts      /Users/me/.dsh-gate/users.json
-  pid           51234
-  uptime        2 hours 13 minutes
-  access URL    http://192.168.1.20:3082/ (plain HTTP)
 
-1 instance running (1 registered).
-stop: dsh-gate stop [name...]     restart: dsh-gate restart [name...]
-```
-
-How it differs from `check`: `check` answers "what would happen if I ran with this
-configuration" (is the port taken, is the dsh command installed); `status` answers
-"what is running right now". The first looks at configuration, the second at the run
-registry, so `status` works without remembering how anything was started.
-
-An instance registers itself at `~/.dsh-gate/run/<name>.json` (including the full
-command line, which restart needs) and deregisters on clean shutdown. A process that
-was killed hard leaves its entry behind; `status` marks it as "not running" rather
-than pretending it is alive.
-
-Options: `--run-dir DIR` to use a different registry directory, `-v` to also print
-the command line.
+The console is a machine-level singleton: one console database, one process. Starting it
+refreshes the local control token (`<state-dir>/portal.token`) and starts the `auto` instances
+that should be up.
 
 ### dsh-gate stop
 
-Stops gateway instances running on this machine, **together with the dsh they
-manage**.
+Stop the console, **along with the dsh instances it supervises**. If it is not running, nothing
+happens (a stale registry entry is cleaned up, and the exit code is still 0).
 
-**You must say which ones.** Name them to stop those; `all` means everything. With
-no arguments it performs **no action at all** and just lists what is currently
-running — "everything" should be something you typed on purpose, not a default.
-
-```
-dsh-gate stop personal        stop just personal
-dsh-gate stop personal work   stop both
-dsh-gate stop all             stop everything
+```sh
+dsh-gate stop
+dsh-gate stop --wait 60s     # give it more time to wind down
 ```
 
-It asks the gateway to shut down through its own control endpoint
-(`POST /__dsh_gate/shutdown`, loopback only), so the behaviour is identical on all
-three platforms and the instance winds down through exactly the same path as Ctrl-C:
-new requests stop first, then dsh gets SIGTERM and 10 seconds to dispose itself.
+It uses the console's own shutdown endpoint (`POST /__dsh_gate/shutdown`, loopback-only), so
+behaviour is identical on all three platforms: stop accepting requests, then let instance dsh
+processes exit gracefully. Avoiding PID files and signals is deliberate: signals need one
+implementation per platform, and Windows has no SIGTERM at all, which would degrade to a hard
+kill.
 
-The PID-file-plus-signal approach is deliberately avoided: signals need per-platform
-code, and Windows has no SIGTERM at all, so it would degrade to a hard kill and dsh
-would never get to finish.
+`stop` takes no positional arguments — **to stop a single instance use
+`dsh-gate dsh stop <name>`**.
 
-Pressing `Ctrl-C` in a foreground run is equivalent — both go through the same
-shutdown path.
-
-Options: `--wait DUR` (default 20s) for how long to wait for the port to close,
-`--run-dir DIR`.
+Options: `--wait DUR` (how long to wait for the port, default 20s), `--run-dir DIR`.
 
 ### dsh-gate restart
 
-Restarts instances with **the arguments they were started with**. Like `stop`, you
-must say which ones: name them, or write `all` for everything. With no arguments it
-only lists what is running and changes nothing.
-
-```
-dsh-gate restart personal     restart just personal
-dsh-gate restart all          restart everything
-```
-
-It stops and relaunches rather than signalling the running process: listen address,
-account file and environment are all decided at startup, so a hot restart cannot
-change them.
-
-The new process runs **detached from the terminal** and writes to
-`~/.dsh-gate/run/logs/<name>.log`, so the command returns immediately instead of
-holding your terminal. The log is appended to, so history survives restarts.
-
-> When you started with `--config`, the registry stores the whole command line;
-> `restart <name>` relaunches with the same configuration and pins the instance name
-> back to the registered one.
-
-**Running several instances detached:** with `--background`, `--config` gives **each
-instance its own process** (rather than one process hosting them all) — because
-`stop` / `restart` work per instance and a single process can only be stopped as a
-whole:
+Restart the console from **the last saved configuration**: stop it, then start with the
+arguments in `<state-dir>/portal.json`.
 
 ```sh
-dsh-gate run --config dsh-gate.json --background    # one process per instance
-dsh-gate run --config dsh-gate.json                # one process for all (foreground logs)
+dsh-gate restart
 ```
 
-`--config` is the one case where `--name` may also appear; there it does not set the
-instance name but **selects one instance out of the file**:
+With no saved configuration it fails and tells you to `install` / `start` first, rather than
+guessing defaults: the default port may be taken by something else, and a guessed "restart
+succeeded" would just be an empty shell on another port.
 
-```sh
-dsh-gate run --config dsh-gate.json --name company --background
+Options: `--state-dir DIR`, `--wait DUR` (default 20s), `--run-dir DIR`.
+
+### dsh-gate status
+
+Show whether the console is running, the last start configuration, and the registered dsh
+instances. It works while the console is down (definitions live in the database), which makes
+it the first thing to check when "it will not open".
+
+```
+$ dsh-gate status
+Console: running
+  Listen address  0.0.0.0:12020
+  Access URL      http://192.168.1.20:12020/
+  PID             51234
+  Version         0.3.20
+  Uptime          2h13m
+  Log             /Users/me/.dsh-gate/run/logs/portal.log
+
+Instances: 2
+  alice-main           k3m9f2qa   :32101  running
+  bob-main             p7d2xw1c   :32102  stopped
+
+Next: dsh-gate dsh list / dsh-gate dsh restart <name>; page: /admin
 ```
 
+When the console is down it shows the "last configuration" and suggests `dsh-gate start`;
+instance run state is marked as "as shown in the console".
 
-Options: `--wait DUR` (default 30s) for how long to wait for the port to come back,
+Options: `--state-dir DIR`, `--db PATH`, `-v` (also show the console's start command),
 `--run-dir DIR`.
-
-### Bypassing the gateway to reach dsh directly (for debugging)
-
-Once the gateway has read dsh's startup token it logs the **native dsh URL, token
-included**:
-
-```
-已记录 dsh 启动令牌，本机可直接打开（该地址只在回环上有用）
-  本机地址=http://127.0.0.1:3080/?token=…
-```
-
-Open it and you are at dsh itself — no login page, no token hand-off. When you
-cannot log in, when the page keeps spinning, or when you simply need to know
-whether the problem is in dsh or in the gateway, this is the fastest way to tell.
-
-The token only works over loopback: dsh listens on `127.0.0.1`, so the same URL is
-useless from another machine. dsh prints the very same URL on its own stdout too.
-
-When running detached (`--background`) the line lands in the log file:
-
-```sh
-grep 本机地址 ~/.dsh-gate/run/logs/<name>.log
-```
-
-### dsh-gate user
-
-Manages login accounts. With no subcommand it prints usage.
-
-| Subcommand | Description |
-| --- | --- |
-| `user add <name>` | Add or update an account (password is prompted twice) |
-| `user list` | List accounts |
-| `user rm <name>` | Remove an account |
-
-Options for `user add`:
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--iterations` | `600000` | PBKDF2 iteration count (higher is more secure and slower) |
-| `--random` | `false` | Generate a strong random password and print it once |
-| `--password-stdin` | `false` | Read the password from standard input (for scripts) |
-
-`user add` / `list` / `rm` all accept these two options:
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--users` | empty | Account file path; derived from the instance directory when empty |
-| `--dsh-home` | empty | dsh instance directory, used to derive the account file path |
-
-```sh
-# Create the first account
-dsh-gate user add admin
-
-# Manage the accounts of a specific instance (each instance keeps its own
-# account file inside its instance directory)
-dsh-gate user add admin --dsh-home ~/.dsh-company
-
-# Setting a password from a script or in CI
-echo "$PASSWORD" | dsh-gate user add admin --password-stdin
-
-# Random password, so you do not have to invent one
-dsh-gate user add admin --random
-
-# List / remove
-dsh-gate user list
-dsh-gate user rm olduser
-```
-
-Options may appear before or after the positional argument: `user add admin --dsh-home ~/.dsh-company` and `user add --dsh-home ~/.dsh-company admin` are equivalent.
-
-`user rm` refuses to remove the last remaining account.
-
-### dsh-gate manage
-
-The portal form: accounts and instances are lifted to portal level — one entry point and N
-independent dsh instances. With no subcommand it prints usage.
-
-```text
-# Users
-dsh-gate manage user add <name> [--role admin|user] [--random|--password-stdin]
-dsh-gate manage user passwd <name> [--random|--password-stdin]
-dsh-gate manage user role <name> <admin|user>
-dsh-gate manage user disable|enable <name>
-dsh-gate manage user list
-dsh-gate manage user rm <name>
-
-# Instances
-dsh-gate manage instance list
-dsh-gate manage instance add <name> --dsh-home <dir> [options]
-dsh-gate manage instance install <name> [--install-mode npx|git|pnpm]
-dsh-gate manage instance rename <old name or id> <new name>
-dsh-gate manage instance rm <name or id>
-
-# Grants
-dsh-gate manage grant list [<name>]
-dsh-gate manage grant add <user> <instance name or id>
-dsh-gate manage grant rm  <user> <instance name or id>
-
-# Common options (accepted by every subcommand)
---db <path>         portal database (default <state dir>/portal.db)
---state-dir <dir>   gateway state directory (default ~/.dsh-gate)
---lang <zh-CN|en>   output language (also DSH_GATE_LANG / LC_ALL / LANG)
-```
-
-Options for `instance add`:
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--dsh-home` | required | that instance's dsh data directory (`DSH_HOME`) |
-| `--config-dir` | empty | config directory; empty means the same as `--dsh-home` |
-| `--workspace` | empty | that instance's default working directory (what the agent may read/write) |
-| `--port` | auto-assigned | dsh listen port (loopback only) |
-| `--listen-host` | `127.0.0.1` | listen address; use `0.0.0.0` to let clients reach that dsh directly |
-| `--owner` | empty | default owner (login name). **A display field only — it does not grant access**; use `manage grant add` for that |
-| `--on-demand` | `false` | start on demand: launch dsh only when someone opens it |
-| `--install-mode` | `npx` | one of `npx` / `git` / `pnpm` |
-| `--install-dir` | `<dsh-home>/install` | install directory (not needed for npx) |
-
-Options for `instance install`: `--install-mode`, `--install-dir`, `--npm-registry` (use a
-mirror, e.g. `https://registry.npmmirror.com`), `--git-url`, `--git-ref`.
-
-```sh
-# Portal account (the first administrator)
-dsh-gate manage user add admin --role admin --password-stdin
-
-# Create an instance and fix the install mode at the same time
-dsh-gate manage instance add ui-app --dsh-home /srv/ui --config-dir /srv/ui/config \
-    --workspace /srv/ui/work --port 18104 --install-mode pnpm --install-dir /srv/ui/inst
-
-# Create the record first, install later (or reinstall with another mode)
-dsh-gate manage instance install ui-app --install-mode pnpm
-
-# Slow network: switch registries
-dsh-gate manage instance install ui-app --install-mode npx \
-    --npm-registry https://registry.npmmirror.com
-
-# Grant and start the portal
-dsh-gate manage grant add alice ui-app
-dsh-gate manage run --port 3082
-```
-
-`instance install` runs **synchronously** on the CLI: progress prints to the terminal and the
-command returns when it is done. On the `/admin` page it is a **background job** (refresh to
-see progress), because a long install must not hold an HTTP request open. A failed install does
-**not** remove the instance record: the record stays, fix the problem and install again.
-
-An instance's **workspace** is pre-registered as dsh's default workspace before dsh is launched, so
-you can start chatting straight away instead of picking one from "select a workspace" first. An
-instance where you have already picked your own workspace is left untouched.
-
-`instance rm` only unregisters the instance from the portal; it does **not** touch the dsh data
-directory (sessions and workspace are the user's data).
-
-### dsh-gate check
-
-A pre-flight check: accounts, port usage, whether dsh is ready, and the addresses clients should use. It changes no state.
-
-The options are the same as for `dsh-gate run` (minus `--log-level` / `--log-json`), plus `--config`. A non-zero exit code means there is a problem that must be resolved first.
-
-Diagnostics go to stdout and logs go to stderr, so `dsh-gate check > report.txt` gives you clean output.
-
-### dsh-gate service
-
-Hands the gateway to the **system's service manager** so it starts automatically at
-boot / login. Supported on all three platforms:
-
-| Platform | Mechanism | Where | Needs root |
-|---|---|---|---|
-| Linux | systemd system service | `/etc/systemd/system/dsh-gate.service` | yes |
-| macOS | launchd LaunchAgent | `~/Library/LaunchAgents/com.wycto.dsh-gate.plist` | no |
-| Windows | Scheduled task (on logon) | `dsh-gate` in Task Scheduler | no |
-
-```sh
-dsh-gate service install [options]  # install and start now
-dsh-gate service status             # current managed state
-dsh-gate service unit [options]     # just print what would be installed
-dsh-gate service uninstall          # turn auto-start off
-```
-
-Options are the same as `dsh-gate run`, plus:
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--binary PATH` | the real path of the running binary | absolute path to the dsh-gate executable |
-| `--working-dir DIR` | current user's home | working directory; dsh treats it as the session's default workspace |
-| `--user NAME` | current user | which user to run as (Linux) |
-
-What gets managed is always `dsh-gate run` (foreground) — the service manager owns
-restarting and logging, so the gateway does not background itself a second time. To
-auto-start one specific instance, install with exactly its options:
-
-```sh
-dsh-gate service install --name personal --port 3082 --dsh-home ~/.dsh-web-home
-```
-
-**Multiple instances**: one `service install` manages a single command line. To
-manage several, point it at a config file: `dsh-gate service install --config ~/dsh-gate.json`.
-
-Day-to-day:
-
-| Platform | Status | Logs |
-|---|---|---|
-| Linux | `systemctl status dsh-gate` | `journalctl -u dsh-gate -f` |
-| macOS | `dsh-gate service status` | `log stream --predicate 'process == "dsh-gate"'` |
-| Windows | `dsh-gate service status` | `dsh-gate status -v` |
-
-> Once an instance is managed by the service manager, do **not** stop it with
-> `dsh-gate stop` — the manager will immediately bring it back. Use
-> `systemctl stop` (or `launchctl bootout`) instead.
 
 ### dsh-gate uninstall
 
-The clean-up for one instance (or the whole machine): **stop the instances you
-name**, and optionally turn auto-start off and delete data. Those three things are
-separate and each has to be asked for explicitly.
+Uninstall the whole console, in a fixed order:
+
+1. ask whether to delete instance data and sessions (`--yes` leaves it to `--remove-data`);
+2. stop and delete **all** dsh instances (via the local control API when the console runs,
+   otherwise straight against the database);
+3. stop the console (through the service manager when service-managed, so `Restart=always`
+   cannot bring it back);
+4. finally remove the system service.
 
 ```sh
-dsh-gate uninstall test                  # stop only test; other instances are untouched
-dsh-gate uninstall personal work         # stop these two
-dsh-gate uninstall all --service --purge # whole machine: stop everything, no auto-start, delete data
+dsh-gate uninstall                  # interactive confirmation (straight through with no instances)
+dsh-gate uninstall --yes            # non-interactive, keep instance data
+dsh-gate uninstall --remove-data    # delete instance data directories and sessions too
+dsh-gate uninstall --purge          # also delete the console state directory
 ```
 
-**You must name a target** (same rule as `stop` / `restart`): instance names stop
-those, `all` means everything, and writing nothing only lists the running instances
-and does nothing (exit code 2). "Everything by default" costs one slip of the finger
-on a machine running several instances.
+**Instance data directories are kept by default** (sessions, credentials, workspace); when
+kept they are listed at the end. dsh **install directories are never deleted**. The
+`dsh-gate` executable is not deleted either.
 
-| Option | Default | Meaning |
+Options: `--yes`, `--remove-data`, `--purge`, `--state-dir DIR`, `--wait DUR`, `--run-dir DIR`.
+`--service` is kept only for compatibility (uninstall always removes the service now).
+`uninstall` takes no positional arguments — **delete one instance with
+`dsh-gate dsh rm <name>`**.
+
+### dsh-gate service
+
+Hand the **console** to the system service manager so it starts at boot / login. All three
+platforms are supported:
+
+| Platform | Mechanism | Location | Needs root |
+|---|---|---|---|
+| Linux | systemd system service | `/etc/systemd/system/dsh-gate.service` | yes |
+| macOS | launchd LaunchAgent | `~/Library/LaunchAgents/com.wycto.dsh-gate.plist` | no |
+| Windows | Scheduled Task (at logon) | the `dsh-gate` task | no |
+
+```sh
+dsh-gate service unit [options]       # print what would be installed, change nothing
+sudo dsh-gate service install [options]   # install and start now
+dsh-gate service status               # show the current state
+sudo dsh-gate service uninstall       # cancel autostart
+```
+
+The supervised command is always **`dsh-gate start --foreground`** plus the options below — the
+service manager handles restarts and logging, so the console must not background itself twice:
+
+| Option | Default | Description |
 |---|---|---|
-| `--service` | off | also turn boot/login auto-start off. **The service unit is machine-level — there is exactly one per platform**, so it cannot be per-instance; the command that it managed is printed so you can see exactly what was removed |
-| `--purge` | off | delete the state directory (accounts, logs, self-provisioned Node/pnpm) and the run registry directory; irreversible |
-| `--state-dir DIR` | `~/.dsh-gate` | the state directory `--purge` removes |
-| `--run-dir DIR` | `~/.dsh-gate/run` | the run registry directory |
-| `--wait DUR` | `20s` | how long to wait for an instance's port to close |
+| `--host` | `0.0.0.0` | Console listen address |
+| `--port` | `12020` | Console listen port |
+| `--state-dir` | `~/.dsh-gate` | Console state directory |
+| `--tls-cert` / `--tls-key` | empty | HTTPS certificate and key (as a pair) |
+| `--public-url` | empty | Public URL to announce |
+| `--db` | `<state-dir>/portal.db` | Console database path |
+| `--npm-registry` | empty | npm registry for dsh installs |
+| `--trusted-host` | empty | Extra trusted authority, repeatable |
+| `--user` | current user | Run as this user (Linux) |
+| `--working-dir` | user home | Working directory of the console process |
+| `--binary` | real path of this executable | Absolute path of the dsh-gate binary |
+| `--bin-dir` | `/usr/local/bin` on Linux/macOS, `%LOCALAPPDATA%\dsh-gate\bin` on Windows | Copy dsh-gate here; empty means no copy. The service unit / scheduled task uses the copy, so deleting the original directory does not break autostart |
 
-Data is **kept by default** — a deleted account table cannot be recovered; an
-interactive terminal is asked once, and piped/CI runs never guess (use `--purge`
-explicitly).
+The unit's `ExecStart` looks like:
 
-`--purge` is **refused** while other instances are still running: the state and
-registry directories are machine-wide, and deleting them would leave those instances
-without an identity (they would become invisible to `status` / `stop`). Use
-`uninstall all --purge` for a full clean-up, or point `--state-dir` elsewhere.
+```
+ExecStart=/usr/local/bin/dsh-gate start --foreground --host 0.0.0.0 --port 12020 --state-dir /home/you/.dsh-gate
+```
 
-Three boundaries are deliberate:
+`--bin-dir` copies the command into the target directory before writing the unit, and the unit
+uses the copied path — cleaning the original directory later cannot break autostart.
 
-- **dsh's own data (`~/.dsh`) is never touched.** Sessions, plugins and config belong
-  to dsh; uninstalling the gateway should not take them away. The self-provisioned
-  Node.js runtime (`~/.dsh-gate/node`) and pnpm (`~/.dsh-gate/pnpm`) belong to the
-  gateway and are removed by `--purge`.
-- **The dsh-gate executable is not deleted.** A running program deleting itself is
-  messy on every platform, and it may have been installed by a package manager; the
-  command prints its path so you can remove it your own way. The copy that was placed
-  on your `PATH` (`/usr/local/bin/dsh-gate` by default) is left behind too — remove it
-  for a complete clean-up.
-- **Only what you name is touched.** `--service` removes that one unit, `--purge`
-  removes that one state directory; unmentioned things stay.
+On macOS this is a **user-level** LaunchAgent (started at login) and belongs to the login user,
+not root: plain `dsh-gate service install` works without sudo; it cannot be installed in a
+root-only login session (no GUI domain available), and the tool says so instead of echoing a
+launchd error.
 
-`--purge` takes its paths from the command line, so a single typo could point at your
-home directory or the root — targets like `/` or the home directory itself are refused.
+On Windows this is a **logon-triggered** Task Scheduler task that runs as the current user with
+least privileges: plain `dsh-gate service install` works and **needs no administrator rights**.
+Registration uses a task XML (not the `schtasks /SC ONLOGON` switches, which require stored
+credentials); `service unit` prints that XML and it can also be imported by hand into Task
+Scheduler.
 
-> `dsh-gate service uninstall` is just the auto-start step on its own: it removes the
-> single machine-level service unit (whether it manages one instance or a list from
-> `--config`) without touching instances or data.
+The task action is `dsh-gate service run`, which is only a **launcher**: it spawns the console
+as a child process with **no console at all** (`DETACHED_PROCESS`) and exits immediately. The
+terminal window therefore flashes for a moment, and **no window can stop the service** — a
+process attached to a console is force-killed by the console host as soon as that window
+closes (a `CTRL_CLOSE_EVENT` handler gets a few seconds, then `TerminateProcess`), so
+swallowing the signal cannot save it; the only way out is not to be on that console in the
+first place. The process also never frees its own console (`FreeConsole`): when the console is
+exclusively its own, freeing it makes the Go runtime abort with a fatal error — seen in the
+field as `runtime.preemptM: duplicatehandle failed` and `runtime: netpoll failed`. Use
+`dsh-gate stop` to stop it (it calls the console's own shutdown endpoint rather than sending a
+signal, and has nothing to do with "End Task"). Logs go to
+`<state dir>/run/logs/portal.log`. The command is copied to
+`%LOCALAPPDATA%\dsh-gate\bin` by default (`--bin-dir` overrides it) and the task points at
+that copy, so deleting the unpacked directory does not break autostart; an upgrade stops the
+running console first and then replaces it.
+
+> Once the console is service-managed, `dsh-gate start` / `stop` / `restart` delegate to the
+> service manager automatically (the systemd unit uses `Restart=always`, so killing the process
+> directly brings it back); raw systemctl commands still work.
+
+### dsh-gate dsh
+
+Manage dsh instances; equivalent to the instance section of `/admin`. Definitions live in the
+console database; actions that touch processes — **start / stop / restart / delete** — go
+through the console's local control API, so they require the console to be running (with it
+down, `dsh list` / `add` / `edit` / `rm` still read and write the database directly).
+
+```
+dsh-gate dsh list
+dsh-gate dsh add <name> [field options]
+dsh-gate dsh edit <name|id> [same fields, only those given are changed]
+dsh-gate dsh rename <old name|id> <new name>
+dsh-gate dsh start|stop|restart <name|id>
+dsh-gate dsh install <name|id> [--install-mode …] [--dsh-version …]
+dsh-gate dsh rm <name|id> [--purge] [--purge-install]
+```
+
+- `list`: all instances (name, opaque id, port, run state, `DSH_HOME`). With the console down it
+  shows definitions only and suggests `dsh-gate start`.
+- `add`: create the instance record; it **does not install dsh** (that is the next command, or
+  the "install" button on the page). A blank port is auto-assigned and the id is generated.
+  `--owner` is display-only and grants nothing.
+- `edit`: changes only the fields explicitly given; everything else keeps its value. Changes
+  take effect after the instance is restarted (the command reminds you).
+- `rename`: changes the display name only; id, grants and existing sessions are untouched, and
+  names may be Chinese.
+- `start|stop|restart`: through the local control API, executed by the console's supervisor.
+- `install`: install / reinstall dsh synchronously and write the launch command back to the
+  record.
+- `rm`: delete the instance. By default only the console registration goes; `--purge` deletes
+  the instance data directory (the effective `DSH_HOME`) and `--purge-install` the install
+  directory. When the console is running it stops the instance before deleting; when it is
+  down the database is edited directly, with a reminder to check for leftover dsh processes.
+
+Fields accepted by `add` / `edit`:
+
+| Option | Default | Description |
+|---|---|---|
+| `--dsh-home` | `~/.dsh` | Instance directory (`DSH_HOME`); blank uses dsh's own default |
+| `--config-dir` | empty | Config directory; blank means the instance directory. When set it **overrides** `DSH_HOME` (dsh has no separate config directory) |
+| `--workspace` | `<instance dir>/workspace` | Default workspace for this instance (what agents can read and write) |
+| `--dsh-port` | auto-assigned | dsh loopback port |
+| `--listen-host` | `127.0.0.1` | dsh listen address; `0.0.0.0` exposes that dsh directly (not recommended) |
+| `--start-mode` | `auto` | `auto` (started with the console) / `ondemand` (started on access) |
+| `--on-demand` | off | Alias for `--start-mode ondemand` (`--start-mode` wins) |
+| `--idle-timeout` | `0` | Idle reclaim in seconds (`0` = never; the field exists, the reclaimer is not implemented yet) |
+| `--install-mode` | `npx` | `npx` / `git` / `local` / `pnpm` |
+| `--install-dir` | `<instance dir>/install` | Where the dsh program lives (not needed for npx); `local` takes the repo root you already cloned and built |
+| `--dsh-version` | blank (follows `latest`) | dsh version or dist-tag to install (`0.2.2-alpha.2`, `next`, `alpha`). Naming one **pins** it: an install that cannot get it fails outright instead of quietly taking another version. Source modes (`git`, `local`) ignore this field |
+
+`install` options: `--install-mode`, `--install-dir`, `--dsh-version` (a version or dist-tag;
+blank reuses whatever the instance record already pins, and the value is written back to the
+record after a successful install), `--npm-registry` (switch mirrors, e.g.
+`https://registry.npmmirror.com`), `--git-url`, `--git-ref`.
+
+```sh
+# Create an instance (port and id auto-assigned)
+dsh-gate dsh add app --dsh-home ~/.dsh-app --start-mode auto
+
+# Switch to on-demand and pin the port
+dsh-gate dsh edit app --start-mode ondemand --dsh-port 18104
+
+# Reinstall with another mode (synchronous; progress goes to the terminal)
+dsh-gate dsh install app --install-mode pnpm --npm-registry https://registry.npmmirror.com
+
+# Install the build newer than latest: a version number or a dist-tag both work
+dsh-gate dsh install app --dsh-version next
+
+# Start/stop and rename
+dsh-gate dsh restart app
+dsh-gate dsh rename app my-assistant
+
+# Delete: data kept by default; delete directories only when you are sure
+dsh-gate dsh rm my-assistant --purge --purge-install
+```
+
+`--purge` deletions are guarded: only absolute paths, and targets such as the root directory
+or the current user's home are refused.
+
+### dsh-gate manage
+
+Console-level users and grants. The admin page lives in the browser (`/admin`); this is the
+equivalent command-line entry point.
+
+```
+dsh-gate manage user add <account> [--display <full name>] [--role admin|user] [--random|--password-stdin]
+dsh-gate manage user passwd <account> [--random|--password-stdin]
+dsh-gate manage user role <account> <admin|user>
+dsh-gate manage user disable|enable <account>
+dsh-gate manage user list
+dsh-gate manage user rm <account>
+
+dsh-gate manage grant list [<account>]
+dsh-gate manage grant add <user> <instance name or id>
+dsh-gate manage grant rm  <user> <instance name or id>
+```
+
+`user add`'s `--role` defaults to `user`; **the first account in the table unconditionally
+becomes an admin and the super administrator** (even if `--role user` is given here) — it is
+the console's fallback identity. **The account is the machine-facing login name**: it must
+start with a letter or digit and may contain letters, digits and `. _ -` — non-ASCII (e.g.
+Chinese) is not accepted; the human-facing name goes in `--display` (labelled “Full name” on
+the page; blank falls back to the account). Passwords
+are prompted twice (shown as `*`), or passed with `--random` / `--password-stdin` in scripts. A
+password is 8 to 256 characters (counted as characters, so a Chinese password is not counted
+longer because of UTF-8).
+
+`user rm`, `user disable` and `user role` all refuse to touch the super administrator (the
+first registered account), and refuse to leave the console without an admin.
+
+**Where the command line stops**: console sessions live **in process memory**, so after changing
+a password or disabling a user from the CLI the running console does not kick that user out at
+once — restart the console, or do it on the page, to revoke sessions immediately.
 
 ### dsh-gate plugin
 
-Manage the plugins inside a dsh profile directly: add the dependency, install the package,
-register it in the bundle list. It does exactly what dsh's own "Add plugin" button does,
-but with the gateway's self-provisioned Node/pnpm and automatic registry fallback —
-**when a server lacks those, the browser plugin page cannot install anything**
-(measured: `spawn pnpm ENOENT`, or a 180-second timeout against the official registry).
+Manage the plugins in a given instance's dsh profile: pass `--instance`, add the dependency, install the package, add it
+to the bundle list. This is exactly what dsh's own "add plugin" does, but with the console's
+bundled Node/pnpm and automatic mirror fallback — **on a server missing those, the browser
+plugin page cannot install anything** (measured: `spawn pnpm ENOENT`, or a 180-second timeout
+against the official registry).
 
 ```sh
-dsh-gate plugin list                  # what is installed, and is the bundle list sane
-dsh-gate plugin add dsh-dock          # official registry first, mirror on failure
-dsh-gate plugin add dsh-dock @deepseek-ai/dsh-web-app
+dsh-gate plugin list --instance app                  # what is installed
+dsh-gate plugin add dsh-dock --instance app          # install (mirror fallback built in)
+dsh-gate plugin add dsh-dock @deepseek-ai/dsh-web-app --instance app
 ```
 
-Mechanism (identical to dsh's plugin manager): run `pnpm add <name>` inside
-`<dsh-home>/profiles/web/`, then append the name to `dsh.profile.bundles` in that
-directory's `package.json`. **dsh only picks it up after a restart** — the profile is
-resolved at process start, and the command tells you to run `dsh-gate restart all`.
+The mechanism matches dsh's plugin manager: run `pnpm add <package>` in
+`<dsh-home>/profiles/web/`, then append the package to `dsh.profile.bundles` in that
+directory's `package.json` (dsh decides which bundles to load from that list). **Restart that
+instance's dsh to load it** — profile resolution happens at process start.
 
-The profile directory is created by dsh itself on first start; if it does not exist yet
-the command says so instead of inventing a profile that might be missing mount points.
+The profile directory is created by dsh itself (on first start). If dsh has never been started,
+the command says so instead of inventing a profile that may be missing mount points.
 
-| Option | Default | Meaning |
+| Option | Default | Description |
 |---|---|---|
-| `--dsh-home DIR` | `~/.dsh` | dsh instance directory |
-| `--profile NAME` | `web` | profile name; the gateway runs `dsh web`, hence `web` |
-| `--npm-registry URL` | empty | npm registry for the install; empty means automatic (official, then mirror) |
-| `--state-dir DIR` | `~/.dsh-gate` | gateway state directory (holds the self-provisioned pnpm) |
-| `--timeout DUR` | `10m` | install timeout |
+| `--dsh-home DIR` | `~/.dsh` | dsh instance directory (the one you are configuring) |
+| `--profile NAME` | `web` | Profile name; the console launches `dsh web`, so `web` |
+| `--npm-registry URL` | empty | npm registry for installs; automatic (official, then mirror) when empty |
+| `--state-dir DIR` | `~/.dsh-gate` | Console state directory (the bundled pnpm lives here) |
+| `--timeout DUR` | `10m` | Install timeout |
 
-**It also diagnoses a common "settings page is broken"**: the browser settings page
-(models, credentials) comes from `ctx.remote.settings`, mounted by the
-`@deepseek-ai/dsh-web-app` bundle. Without it in the list, the page can only say
-`settings are unavailable in this browser`. `plugin list` checks for that — but note that
-this bundle ships with dsh itself and most `@deepseek-ai/*` packages are not public on npm
-(measured: `pnpm view @deepseek-ai/dsh-client-ui-command` asks for authorization), so a
-missing one means reinstall/upgrade dsh. For immediate use, install the public `dsh-dock`
-instead: it ships its own model-settings page, which is exactly what this command installs.
+**It also diagnoses a common "settings page will not open"**: the browser settings page
+(models, credentials) is provided by `ctx.remote.settings` from `@deepseek-ai/dsh-web-app`; when
+the bundle list lacks it, the page only shows `settings are unavailable in this browser`.
+`plugin list` checks for this. Note that this bundle ships with dsh and is not on the public npm
+registry (most `@deepseek-ai/*` packages need authorisation), so the fix is upgrading or
+reinstalling dsh; for an immediate workaround install the public `dsh-dock`, whose "model
+settings" page is exactly what this command is good at.
 
 ### dsh-gate model
 
-Configure models without installing any plugin. It edits DSH's own two files:
+Configure models without installing a plugin. Pass `--instance` and it writes **that instance's own** DSH files:
 
-- `~/.dsh/.credentials.yaml` under `refs:` — secrets are stored **by environment
-  variable name** (official DeepSeek reads `DEEPSEEK_API_KEY` by default);
-- `~/.dsh/settings.yaml` under `agent-default-model` (default provider and model)
-  and `llm-pi-ai.providers` (custom providers).
+- `refs:` in `<dsh-home>/.credentials.yaml` — keys stored **by environment variable name**
+  (official DeepSeek reads `DEEPSEEK_API_KEY`, see DSH's `dsh-llm-deepseek-api-key`);
+- `agent-default-model` (default provider and model) and `llm-pi-ai.providers` (custom
+  providers) in `<dsh-home>/settings.yaml`.
 
 ```sh
-dsh-gate model list                                   # show the current configuration
-dsh-gate model default deepseek-official deepseek-chat # set the default
-printf 'sk-…' | dsh-gate model key set DEEPSEEK_API_KEY --stdin
+dsh-gate model list --instance app                                   # current config
+dsh-gate model default deepseek-official deepseek-chat --instance app # set the default
+printf 'sk-…' | dsh-gate model key set DEEPSEEK_API_KEY --stdin --instance app
 dsh-gate model provider add my-gw --base-url https://api.example.com/v1 \
-    --key-env MY_GW_API_KEY --models qwen3-max,glm-5
-dsh-gate model provider remove my-gw
+    --key-env MY_GW_API_KEY --models qwen3-max,glm-5 --instance app  # custom provider
+dsh-gate model provider remove my-gw --instance app
 ```
 
-| Option | Default | Meaning |
+| Option | Default | Description |
 |---|---|---|
-| `--dsh-home DIR` | `~/.dsh` | dsh instance directory (same flag as `run`) |
+| `--dsh-home DIR` | `~/.dsh` | dsh instance directory (the one you are configuring) |
 
-Secrets can only be supplied on **standard input** (`--stdin`): passing them on the
-command line leaves them in shell history and in the process list.
+Keys are **read from stdin only** (`--stdin`): on the command line they would end up in shell
+history and the process list. There is no plaintext flag.
 
-The rewrite is surgical: only the block of the target key is replaced, everything else
-(preferences, other providers…) is left byte-for-byte intact. The previous content is
-kept as `<file>.dsh-gate.bak`, the result is read back and verified, and a mismatch
-rolls the file back. Names or values containing colons, quotes, spaces or `#` are
-rejected outright — a corrupted settings file means DSH cannot start.
+Edits are **surgical**: only the block containing the target key is replaced; everything else
+(UI preferences, other providers…) stays byte-for-byte identical. A `<file>.dsh-gate.bak` is
+written first, and the result is read back and verified, restoring the backup on mismatch.
+Names or values containing colons, quotes, spaces or `#` are rejected on the spot — corrupting
+that file means DSH cannot start.
+
+The instance may need a restart to pick this up (the command reminds you).
 
 ### dsh-gate version
 
-Prints the version.
+Print the version.
 
 ```sh
 $ dsh-gate version
-dsh-gate 0.3.14
+dsh-gate 0.3.20
 ```
 
 ---
 
-On macOS the unit is a **per-user** LaunchAgent (started at login), so it belongs to the
-**logged-in user**, not to root:
-
-- `dsh-gate service install` needs no sudo;
-- if you used sudo to put the binary into `/usr/local/bin`, the agent is still installed
-  for the user who invoked sudo (detected via `SUDO_UID` / `SUDO_USER`);
-- in a root-only environment it cannot be installed — there is no usable GUI domain, and
-  the tool says so explicitly instead of printing a raw launchd error.
-
 ## Multiple instances
 
-One instance = one gateway port + one dsh + one `--dsh-home`. Different values of `--dsh-home` are completely independent dsh installations: session history, plugins and configuration all separate. Several can run inside a single process.
+One instance = one dsh process + one `DSH_HOME` + one loopback port. Different `DSH_HOME`
+directories are independent dsh setups: session history, plugins and configuration are all
+separate. **One console per machine** (one console database, one process); instances are
+records in that database, installed and supervised by the console.
 
-**Command line**, one `dsh-gate run` per instance:
+| Concept | Description |
+| --- | --- |
+| Instance id | Opaque random short string (lowercase letters and digits) used in `/i/<id>/`; leaks no meaning |
+| Instance name | Display name, may be Chinese; renaming keeps the id, grants and sessions |
+| `DSH_HOME` | The instance's data root (sessions, plugins, credentials, settings); default `~/.dsh` |
+| Workspace | The directory agents read and write by default; defaults to `<DSH_HOME>/workspace` |
+| Install dir | The dsh program itself (git / pnpm modes); defaults to `<DSH_HOME>/install` |
+| Loopback port | The port dsh itself listens on; auto-assigned by the console (or fixed by you) |
+| Start mode | `auto` (started with the console) / `ondemand` (started on access) |
 
-```sh
-# Terminal 1: the office dsh
-dsh-gate run --name company   --port 8080 --dsh-port 8081 --dsh-home ~/.dsh-company
+A few rules:
 
-# Terminal 2: my own dsh
-dsh-gate run --name personal  --port 3082 --dsh-port 3080 --dsh-home ~/.dsh
-```
+- **Accounts do not follow instances**: accounts, grants and instance definitions all live in
+  the console database (`<state-dir>/portal.db`); all instances share one account set, and who
+  may enter which instance is decided by instance grants.
+- **A grant is the only access ticket**: owner is a display field; to let someone in you must
+  grant the instance. Admins can enter every instance by default.
+- **Unauthorised and missing are indistinguishable**: an instance you are not granted returns
+  404, exactly like one that does not exist.
+- **Ports do not collide**: the console picks a free port from a fixed range when creating an
+  instance; you can also pin one with `--dsh-port` or the port field on the page.
+- **Sessions are isolated by mount path**: the console rewrites dsh cookie `Path`s while
+  proxying, so instances never share sessions. `localStorage`, however, is per origin, so UI
+  state is visible across instances in the same browser (credentials are not).
 
-**Configuration file**, all instances in one process:
-
-```sh
-dsh-gate run --config examples/multi-instance.json
-```
-
-The configuration file is JSON with exactly two keys, `defaults` and `instances`:
-
-```json
-{
-  "defaults": {
-    "host": "0.0.0.0",
-    "dshHost": "127.0.0.1",
-    "autoStart": true,
-    "adopt": true,
-    "restart": true
-  },
-  "instances": [
-    {
-      "name": "company",
-      "port": 8080,
-      "dshPort": 3080,
-      "dshHome": "~/.dsh-company",
-      "workspace": "~/work/company"
-    },
-    {
-      "name": "personal",
-      "port": 3082,
-      "dshPort": 3081,
-      "dshHome": "~/.dsh",
-      "workspace": "~/work/personal"
-    }
-  ]
-}
-```
-
-That is the contents of [`examples/multi-instance.json`](examples/multi-instance.json), ready to copy and edit. A few things to know:
-
-- **Field names use JSON camelCase** (`dshHome`, `dshPort`) and are *not* the same as the command line option names (`--dsh-home`).
-- A misspelled field name is **reported as an error**, never silently ignored — typo `dshhome` gets you an immediate message rather than a silent no-op that leaves you unprotected.
-- Fields you leave out keep their defaults; you do not have to spell out the whole configuration.
-- **No instance option may be given together with `--config`** (`--port` and friends); dsh-gate rejects the combination and tells you to put them in the file instead.
-- Instance names must be unique within one process, and listen addresses must differ.
-- The account file does **not** follow the instance directory: it lives at `<state-dir>/users.json` (default `~/.dsh-gate/users.json`) because accounts belong to the gateway, not to dsh. To share one set of accounts across instances, point `users` at the same file.
-- Paths may start with `~`, which expands to the current user's home directory.
+**Page or command line?** Either: every action on the page has a `dsh` / `manage` counterpart,
+both reading the same database and using the same runtime path. The CLI is better for batch
+creation; the page is better for watching state and clicking install.
 
 ---
 
 ## Server deployment (Linux + systemd)
 
-A headless Linux server is the most typical scenario. The whole flow:
+A headless Linux server is the most typical setup. The whole flow:
 
 ```sh
-# 1. Make sure dsh runs (dsh-gate has to be able to find it)
-npm i -g @deepseek-ai/dsh
+# 1. Put the binary in PATH (the one from the release archive)
+sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
 
-# 2. Copy the binary over, or build it there
-scp dsh-gate server:/usr/local/bin/
+# 2. Install as yourself: create the admin, write the state directory and start config
+dsh-gate install                    # interactive; use --password-stdin / --random in scripts
+#    Or have it start in the background when done
+dsh-gate install --start
 
-# 3. Check: accounts, ports and the dsh command
-dsh-gate check --dsh-home /var/lib/dsh
+# 3. Hand the console to systemd (writing the unit needs root; --state-dir and --user are
+#    expanded by your shell before sudo, so they point at your directory and user, not root's)
+sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
 
-# 4. Create an account (interactive; or use --random to generate one)
-dsh-gate user add admin --dsh-home /var/lib/dsh
-
-# 5. Install the systemd unit and start it immediately
-sudo dsh-gate service install --dsh-home /var/lib/dsh --port 3082
-
-# 6. Confirm it came up
+# 4. Confirm it is up
+dsh-gate status
 systemctl status dsh-gate
 ```
 
-`service install` writes the unit to `/etc/systemd/system/dsh-gate.service` and then runs `daemon-reload`, `enable` and `restart`, in that order.
+> Do not use `sudo dsh-gate install --service`: under sudo `~` may resolve to root's home, so
+> the account database and token land in `/root` and your own `dsh-gate status` can no longer
+> read them. On Linux keep "create the account" and "write the system unit" as two steps, each
+> with the right user (as above).
 
-Day-to-day operations:
+`service install` writes the unit to `/etc/systemd/system/dsh-gate.service`, then runs
+`daemon-reload`, `enable` and `start`.
+
+Next, open `http://server-ip:12020/admin` to create instances, install dsh and grant access
+(see [step 2](#step-2--create-an-instance-and-install-dsh)).
+
+Day-to-day:
 
 ```sh
-systemctl status dsh-gate      # status
-journalctl -u dsh-gate -f      # follow the logs
-systemctl restart dsh-gate     # restart
-systemctl stop dsh-gate        # stop
+dsh-gate status                # console and instance status
+dsh-gate stop / start / restart    # stop, start, restart the whole console
+journalctl -u dsh-gate -f      # follow the log
 ```
 
-You can print the full unit without installing anything:
+Print the full unit with `service unit`:
 
 ```sh
-dsh-gate service unit --dsh-home /var/lib/dsh --port 3082
+dsh-gate service unit --port 12020
 ```
 
-[`examples/dsh-gate.service`](examples/dsh-gate.service) is a sample unit matching that output. To change the port or the instance directory, do not edit the unit file directly — use `systemctl edit dsh-gate` and add an `ExecStart=` override.
+[`examples/dsh-gate.service`](examples/dsh-gate.service) is a sample unit matching that output.
+To change the port or state directory, do not edit the unit directly; use
+`systemctl edit dsh-gate` to override `ExecStart=`, or re-run `service install` with the new
+options.
+
+Undo:
+
+```sh
+dsh-gate service uninstall     # cancel autostart only (disable + remove the unit)
+dsh-gate uninstall             # stop/delete all instances, then remove the service (asks about data)
+dsh-gate uninstall --yes --remove-data --purge   # remove data and the state directory too, no questions
+```
 
 Worth knowing:
 
-- **`WorkingDirectory` is not optional.** dsh treats the current directory at startup as the default workspace root, and systemd's default of `/` would give sessions a meaningless root. `--working-dir` defaults to the current user's home directory.
-- **`User=` defaults to the user who ran the install command.** To run as someone else, pass `--user` at install time. Note that the dsh instance directory must be writable by that user.
-- **Multiple instances work with a single unit too**: put the configuration in a file, then `sudo dsh-gate service install --config /etc/dsh-gate.json`, and `ExecStart` becomes `--config /etc/dsh-gate.json`.
-- **The service logs JSON by default** (`service unit` adds `--log-json`), because journalctl handles structured logs better. Running in the foreground defaults to text.
-- Ports below 1024 require root; pick something above 1024 as an ordinary user.
+- **`WorkingDirectory` is the console process's own cwd**, defaulting to the current user's
+  home. Each instance's workspace is recorded in its own configuration and is unaffected.
+- **`User=` defaults to the user running the install command**. Use `--user` to run as someone
+  else, and make sure that user can write the state and instance directories.
+- **Read service logs with `journalctl -u dsh-gate -f`**; the format matches a foreground run
+  (text). The console also writes its own log to `~/.dsh-gate/run/logs/portal.log`.
+- **Ports below 1024 need root**; use a port above 1024 as a normal user.
+- **Several instances need no extra units**: one console supervises them all.
 
 ---
 
 ## Remote access (using your office DSH from home)
 
-**Warning: over plain HTTP, dsh's session cookies travel over the network in clear text. That is acceptable inside a LAN, but do not expose a plaintext gateway port directly to the public internet.** The three approaches below are ordered by recommendation.
+**Warning: over plain HTTP, dsh's session cookies cross the network in clear text. That is
+acceptable inside one LAN, but never expose a plain-HTTP console port directly to the internet.**
+The three options below are ordered by recommendation.
+
+These are all **console** start options (the same names on `start` / `service install`); set
+them once and they apply to every instance.
 
 ### Option 1: a tunneling service (least effort)
 
-Publish the gateway port to a public domain with any tunnelling tool. Tunnels are themselves encrypted, so traffic goes over an encrypted channel while the host keeps serving plain HTTP:
+Expose the console port through any tunnelling service. The tunnel itself is usually encrypted,
+so traffic crosses the encrypted channel while the host still speaks plain HTTP:
 
 ```sh
-dsh-gate run --port 3082 --public-url https://your-tunnel.example.com
+dsh-gate start --port 12020 --public-url https://your-tunnel.example.com
 ```
 
-The tool hands you an address like `https://xxx.example.com`; just open that. Because the outside is HTTPS, browser-side cookies get the `Secure` flag.
+The service gives you an address such as `https://xxx.example.com`; use that. Because the
+public side is HTTPS, browser cookies get the `Secure` flag.
 
 ### Option 2: an overlay network such as Tailscale or ZeroTier
 
-Put home and office on the same virtual LAN. The address still looks like a LAN address, but it travels over an encrypted virtual network. Install the client on both ends and join the same tailnet / network:
+Put home and office on the same virtual LAN: the address is still LAN-shaped, but traffic goes
+over the encrypted virtual network. Install the client on both ends and join the same tailnet /
+network:
 
 ```sh
 # On the office machine
-dsh-gate run --port 3082 --public-url http://100.x.y.z:3082
+dsh-gate start --port 12020 --public-url http://100.x.y.z:12020
 
-# From home
-# http://100.x.y.z:3082
+# From home just open
+# http://100.x.y.z:12020
 ```
 
-If the machine has no non-loopback address (headless servers, isolated container networks), you must set `--public-url` explicitly — otherwise dsh-gate cannot derive a public address.
-> **About `--public-url`**: it is passed to dsh as `--public-url`, which **not every dsh
-> release accepts** (as of `0.2.0-rc.2` the web profile only has `--host`, `--port`,
-> `--no-open` and `--trusted-host`). dsh-gate runs `dsh web --help` once before starting
-> dsh and silently skips options the installed version does not know, logging one line
-> when it does — so upgrading dsh turns the option on without any config change. It only
-> affects the URL dsh prints and the `DSH_WEB_URL` the agent sees; **forwarding is
-> unaffected**.
+If the machine has no non-loopback address (headless server, isolated container network), set
+`--public-url` explicitly, otherwise the console cannot derive a public address.
 
+> **About `--public-url`**: this option is passed to dsh as `--public-url`, and **not every dsh
+> version supports it** (measured: `0.2.0-rc.2` only has `--host` / `--port` / `--no-open` /
+> `--trusted-host`). Before launching an instance the console runs `dsh web --help`; if the
+> option is unknown it is skipped with a log line, so it starts working after a dsh upgrade
+> with no config change. It only affects the URL dsh prints and the `DSH_WEB_URL` agents see;
+> it **does not affect proxying**.
 
-### Option 3: let the gateway serve HTTPS itself
+### Option 3: the console serves HTTPS itself
 
-If you have your own domain and certificate, let the gateway terminate HTTPS:
+With your own domain and certificate, let the console terminate TLS:
 
 ```sh
-dsh-gate run \
+dsh-gate start \
   --port 443 \
   --tls-cert /etc/letsencrypt/live/dsh.example.com/fullchain.pem \
   --tls-key  /etc/letsencrypt/live/dsh.example.com/privkey.pem \
@@ -1347,287 +1410,471 @@ dsh-gate run \
   --trusted-host dsh.example.com
 ```
 
-Two things to note:
+For autostart, pass the same options to `service install`:
 
-- `--tls-cert` and `--tls-key` must be given together; supplying only one is rejected.
-- With a custom domain you **must** add it to `--trusted-host`, otherwise dsh refuses to forward (403). LAN IPs are added automatically; domain names are not.
+```sh
+sudo dsh-gate service install \
+  --port 443 \
+  --tls-cert /etc/letsencrypt/live/dsh.example.com/fullchain.pem \
+  --tls-key  /etc/letsencrypt/live/dsh.example.com/privkey.pem \
+  --public-url https://dsh.example.com \
+  --trusted-host dsh.example.com
+```
+
+Two points:
+
+- `--tls-cert` and `--tls-key` must be given together; one alone is rejected.
+- With a custom domain you **must** add it to `--trusted-host`, or dsh refuses to proxy (403).
+  LAN IPs are added automatically; domain names are not.
 
 ---
 
-WebSocket travels over an HTTP/1.1 upgrade (which is what the browser `WebSocket` API
-does anyway), so when debugging with `curl` add `--http1.1`: on an HTTP/2 connection
-`curl` does not send the `Upgrade` header and dsh answers 404.
+WebSockets use HTTP/1.1 upgrade (the browser `WebSocket` API always does), so when debugging
+with `curl` add `--http1.1`: on an HTTP/2 connection `curl` does not send `Upgrade`, and dsh
+answers 404.
 
 ## Security notes
 
-**How passwords are stored.** The account file is JSON with mode `0600` in a `0700` directory, by default at `~/.dsh-gate/users.json` (the gateway's own state directory, **never inside the dsh instance directory**). Passwords are hashed with PBKDF2-HMAC-SHA256 from the Go 1.24 standard library (`crypto/pbkdf2`) at 600,000 iterations, each record with its own random salt, in the format `pbkdf2-sha256$iterations$salt$digest`. Plaintext passwords are never written. Writes are atomic (temp file plus rename), so losing power halfway through cannot leave a half-written file locking everyone out.
+**How accounts are stored.** The console database is a `0600` SQLite file inside a `0700`
+directory, default `~/.dsh-gate/portal.db` (the console's own state directory, **not inside any
+dsh instance directory**). Passwords use PBKDF2-HMAC-SHA256 from the Go 1.24 standard library,
+600000 iterations, a per-record random salt, encoded as `pbkdf2-sha256$iterations$salt$digest`.
+Plaintext passwords are never written to disk.
 
-Login attempts for accounts that do not exist still run a full KDF verification, matching the timing of a wrong password — otherwise an attacker could enumerate accounts by timing alone.
+A nonexistent account still runs the full KDF, so the timing matches "wrong password" —
+otherwise an attacker could enumerate accounts.
 
-**Where sessions live.** Login sessions exist only in the gateway process's memory and are **never written to disk**. A gateway restart invalidates every session, so everyone logs in again. For a self-hosted home or office gateway that is entirely acceptable, and it buys "restart clears everything", with no stale sessions lingering. The trade-off is that sessions are not shared between gateway instances — each instance should have its own accounts anyway.
+**Where sessions live.** Login sessions exist only in the console process memory and are
+**never persisted**. Restarting the console invalidates all of them and everyone logs in again.
+For a home / office gateway that is entirely acceptable, and it buys "restart clears
+everything": no stale sessions linger. The session cookie is `dsh_gate_sid`, `HttpOnly` +
+`SameSite=Lax`, plus `Secure` when TLS is on.
 
-The session cookie is `dsh_gate_sid`, marked `HttpOnly` and `SameSite=Lax`, plus `Secure` when TLS is enabled.
+**Login rate limiting.** After 5 consecutive failures from one IP, lockout starts at 1 minute
+and doubles on each further failure, capped at 15 minutes. A successful login resets it.
+Global rate limiting is deliberately absent: dozens of people behind one office NAT would be
+collateral damage.
 
-**Login rate limiting.** After `--max-login-fails` consecutive failures (5 by default) from one IP, a lockout begins. The duration starts at `--lockout` (1 minute), doubles with each further failure, and is capped at 15 minutes. A successful login resets the counter. There is deliberately no global rate limit: dozens of people in one office share a single egress IP, and a global limit would lock out legitimate users.
+**The local control token.** `dsh-gate dsh start|stop|restart|rm` do not use an admin password;
+they call the loopback-only control API with the random token in `<state-dir>/portal.token`.
+The file is `0600`, **rotated on every start** (the old token dies with the previous process, so
+a leftover file cannot become a permanent backdoor), and the endpoint only accepts loopback
+sources. The CLI reads the file on each call, so rotation is invisible to users.
 
-**Why the token is never persisted.** dsh's startup token is the master key to dsh. It exists only in the gateway process's memory: not on disk, not in logs, not in the startup banner. When forwarding dsh's startup output, dsh-gate redacts `token=xxx` to `token=***` before recording anything.
+**Why dsh's launch token never touches disk.** It is the master key to dsh. It lives only in
+the console process memory: never written to disk, never logged, never printed in a banner.
+When relaying dsh's start-up output the console redacts `token=xxx` to `token=***` first.
 
-**Why dsh keeps listening on 127.0.0.1 by default.** dsh has no security design aimed at the LAN: plain HTTP, and the startup token printed straight to stdout. Exposing exactly one entry point — the gateway with its login page — is the simplest and least error-prone boundary between the two.
+**Why dsh listens on 127.0.0.1 by default.** dsh has no LAN-facing security design: plain
+HTTP, launch token printed to stdout. Exposing one login-protected console port and keeping
+every dsh on loopback is the simplest, hardest-to-get-wrong boundary between the two.
 
-**A pitfall worth internalising: changing the port on your own does nothing.** dsh compares the incoming `Host` against its accepted authorities and requires `Origin` to point at the same authority. The gateway forwards `Host` verbatim, so whichever address you use in the browser must be named to dsh via `--trusted-host`.
+**The usual trap: changing the address by hand does not work.** dsh compares the request `Host`
+with its accepted authorities and requires `Origin` to point at the same authority. The console
+forwards `Host` unchanged, so whatever address you type in the browser must be named to dsh via
+`--trusted-host`.
 
-- LAN IPs are added to the trusted list automatically and rarely need to be set by hand;
-- **hostnames, mDNS names and tunnelling domains are not added automatically** and must be passed explicitly with `--trusted-host`;
-- the symptom of a missing entry is **403 on every API call**.
+- LAN IPs are added to the trusted list automatically;
+- **hostnames, mDNS names and tunnel domains are not** — name them explicitly with
+  `--trusted-host`;
+- the symptom is **403** on every API call.
 
-Likewise, `--dsh-host` rejects `0.0.0.0`: dsh refuses wildcard listen addresses for security reasons, and dsh-gate intercepts that early with an actionable message.
+Likewise, an instance `--listen-host 0.0.0.0` exposes that dsh directly to the LAN — an
+explicit choice by the user, but **do not do it**: dsh has no login page, and whoever connects
+is the agent.
 
-The upstream address comes from local configuration only and is never taken from a request header or query parameter, so the gateway cannot be turned into a jump box to arbitrary URLs. Rate limiting uses the TCP peer address and deliberately ignores `X-Forwarded-For` / `X-Real-IP` — unless you know for certain that your own reverse proxy sits in front, those headers are trivially forged.
+Upstream addresses always come from the instance record in the local database, never from a
+request header or query parameter, so the console cannot be turned into an open URL relay.
+Rate limiting keys on the TCP peer IP and ignores `X-Forwarded-For` / `X-Real-IP` (anyone can
+forge those unless you knowingly run another reverse proxy in front).
 
 ---
 
 ## Environment variables
 
-Precedence: **command line > environment variables > configuration file > defaults.**
+Priority: **command line > environment > saved start configuration > defaults**.
 
-Environment variables exist so that systemd units, Docker containers and ad-hoc shells can be configured without touching the command line.
+With the console-only CLI the surface is small: **instance network settings are no longer read
+from the environment** (they come from the `start` command line, the saved `portal.json`, or the
+instance record). The following are the ones that actually take effect.
 
-| Environment variable | Option | Description |
+| Variable | Option / effect | Description |
 | --- | --- | --- |
-| `DSH_GATE_NAME` | `--name` | Instance name |
-| `DSH_GATE_HOST` | `--host` | Gateway listen address |
-| `DSH_GATE_PORT` | `--port` | Gateway listen port |
-| `DSH_GATE_DSH_HOST` | `--dsh-host` | dsh listen address |
-| `DSH_GATE_DSH_PORT` | `--dsh-port` | dsh listen port |
-| `DSH_GATE_DSH_HOME` | `--dsh-home` | dsh instance directory |
-| `DSH_GATE_DSH_CMD` | `--dsh-cmd` | Command used to start dsh |
-| `DSH_GATE_DSH_TOKEN` | `--dsh-token` | A known dsh startup token |
-| `DSH_GATE_NPM_REGISTRY` | `--npm-registry` | npm registry used to fetch dsh; empty means automatic (fall back to a mirror) |
-| `DSH_GATE_WORKSPACE` | `--workspace` | Working directory of the dsh child process |
-| `DSH_GATE_USERS` | `--users` | Account file path |
-| `DSH_GATE_PUBLIC_URL` | `--public-url` | Publicly announced URL |
-| `DSH_GATE_TRUSTED_HOSTS` | `--trusted-host` | Extra trusted addresses, comma-separated |
-| `DSH_GATE_TLS_CERT` | `--tls-cert` | HTTPS certificate file |
-| `DSH_GATE_TLS_KEY` | `--tls-key` | HTTPS private key file |
-| `DSH_GATE_AUTOSTART` | `--auto-start` | Whether to start dsh when its port is free; `true` / `false` |
-| `DSH_GATE_ADOPT` | `--adopt` | Whether to adopt an instance holding the port; `true` / `false` |
-| `DSH_GATE_RESTART` | `--restart` | Whether to restart dsh after an unexpected exit; `true` / `false` |
-| `DSH_GATE_SESSION_TTL` | `--session-ttl` | Login session lifetime, e.g. `168h` |
-| `DSH_GATE_MAX_LOGIN_FAILS` | `--max-login-fails` | Lockout threshold |
-| `DSH_GATE_LOCKOUT` | `--lockout` | Base lockout duration, e.g. `1m` |
+| `DSH_GATE_STATE_DIR` | `--state-dir` | Console state directory (database, token, registry, bundled runtime); default `~/.dsh-gate` |
+| `DSH_GATE_LANG` | `--lang` | CLI and page language: `zh-CN` / `en` |
+| `LC_ALL` / `LANG` | same as `DSH_GATE_LANG` | Fallback when neither of the above is set |
 
-When `--config` is used these variables have no effect; the file wins.
+Language priority: `--lang` > `DSH_GATE_LANG` > `LC_ALL` > `LANG` > Chinese default. In the
+browser it is `?lang=` > cookie > `Accept-Language`, with the same rules as the CLI.
+
+Service units written by `install` / `service install` put the listen address, port and state
+directory **explicitly into `ExecStart`**, so they do not depend on systemd environment
+variables — changing an env var on the machine cannot silently move an installed service to
+another port.
 
 ---
 
-## Frequently asked questions
+## FAQ
 
-**The page loads but every request returns 401.**
+**After entering an instance it keeps saying "reconnecting"; refreshing fixes it.**
 
-dsh's session is bound to the authority. Switching between an IP, a hostname and a tunnelling domain — or dsh restarting with a new token — invalidates the dsh session the browser holds. The gateway clears the marker and retries automatically, which usually looks like "the page fixed itself". If it does not, paste dsh's full startup URL after the gateway address once:
+dsh generates a **new launch token on every start**, which invalidates the dsh session in any
+open tab. dsh's front end only shows "reconnecting" and retries forever; **it will not redo the
+token handshake itself** — that is dsh client behaviour and the console cannot change it (a
+rejected WebSocket handshake cannot redirect).
 
-```
-http://192.168.1.20:3082/?token=6f1c...
-```
+Just refresh: a refresh is a navigation, and the console re-handshakes with the new token
+during it. **So after every console restart, or after an instance restarted, open tabs need one
+refresh.**
 
-The gateway stores that token in memory and never logs it. When adopting a dsh that somebody else started, this is the only workable source of the token; you can also supply it directly with `--dsh-token`.
+**The page opens but everything is 401.**
 
-**Inside an instance it stays on "reconnecting" — reload the page.**
-
-Every dsh launch mints a **new launch token**, which invalidates the dsh session in any tab you
-already had open. The dsh frontend only shows "reconnecting" and retries forever; **it does not
-redo the token handoff by itself** — that is dsh client behaviour the gateway cannot change (a
-rejected WebSocket handshake cannot be redirected).
-
-A page reload is enough: a reload is a navigation, and the gateway performs the handoff with the
-new token during it. **So after restarting the gateway, or after an instance restarts, any open
-tab needs one reload.**
-
-**The page loads but every API call returns 403 (inside an instance it stays on "reconnecting" and the workspace will not open).**
-
-`--trusted-host` does not cover the address you are using. dsh trusts loopback addresses, its own bind address and the authorities named explicitly, so it rejects every `/api` request and the WebSocket. The symptom is misleading: **the page itself loads fine** (`GET /` is the launch-token exchange, which is not behind that fence); only the conversation and workspace spin.
-
-LAN IPs and hostnames are added automatically, so usually there is nothing to do. Three cases cannot be derived: custom domains, mDNS names and tunnelling domains — plus **container port mapping / NAT**, where the interface address the gateway sees inside the container is not the one you typed in the browser. Name it explicitly:
+dsh sessions are bound to the authority. Changing the access address (IP ↔ hostname ↔ tunnel
+domain), or dsh restarting with a new token, invalidates the browser's dsh session. The console
+clears the handoff marker and retries automatically, which usually looks like "the page fixed
+itself". If it still fails, restart that instance so the console learns the token again:
 
 ```sh
-dsh-gate run --trusted-host dsh.example.com --trusted-host my-mac.local
-
-# Management form: --public-url makes the gateway derive the hostname too
-dsh-gate manage run --port 3082 --public-url http://172.18.98.20:12090/
-# Or name the authority directly (with a port = that exact authority only)
-dsh-gate manage run --port 3082 --trusted-host 172.18.98.20:12090
+dsh-gate dsh restart app
 ```
 
-**The port is already in use.**
+If you started that instance yourself outside the console (so the console adopted it but never
+got its token), there is nothing to recover from the log — let the console own it:
+`pkill -f "dsh web"`, then `dsh-gate dsh restart app`.
 
-```
-网关端口 3082 已被占用。
-换一个端口：加 --port <其它端口>
-或者先停掉占用它的程序。
-```
+**The page opens but every API is 403 (reconnecting, workspace will not open).**
 
-Run `dsh-gate check` first to see who holds it. If the port is below 1024 the message is about permissions; pick something above 1024 instead.
+`--trusted-host` does not cover the address you are using. dsh trusts only loopback, its own
+bind address and explicitly named authorities, so it rejects every `/api` request and
+WebSocket. The symptom is deceptive: **the page loads fine** (`GET /` is the token exchange,
+which bypasses that fence), only conversations and the workspace spin.
 
-**`--dsh-host 0.0.0.0` is rejected.**
-
-On purpose. dsh refuses wildcard listen addresses and only allows binding one concrete address. The default `127.0.0.1` is what you want — public access belongs to the gateway port.
-
-**I cannot type a password for `user add` on Windows.**
-
-Outside an interactive terminal (in CI, or under some PowerShell configurations) the program refuses outright and points you at the two alternatives:
+LAN IPs and hostnames are added automatically. The three cases the console cannot derive are:
+custom domains, mDNS names and tunnel domains; plus **container port mapping / NAT** — the
+interface address the console sees inside a container is not the one in your browser, and
+nothing can derive it. Name one explicitly:
 
 ```sh
-dsh-gate user add admin --random
-echo "$PASSWORD" | dsh-gate user add admin --password-stdin
+dsh-gate start --trusted-host dsh.example.com --trusted-host my-mac.local
+
+# Console form: let --public-url bring the hostname along
+dsh-gate start --port 12020 --public-url http://192.168.1.20:12090/
+# Or name the authority directly (with a port = only that authority)
+dsh-gate start --port 12020 --trusted-host 192.168.1.20:12090
 ```
 
-Passwords must be between 8 and 256 characters, counted in characters so that non-ASCII passwords are not penalised for their UTF-8 encoding.
+`start` saves these options; a console that is already running needs `dsh-gate restart` to pick
+them up. Under a service manager, re-run `service install` with the same options.
 
-**The first startup is slow.**
+**The port is taken.**
 
-dsh downloads plugins and initialises its profile on first run, which can take a minute or two. The gateway port is already open during that time, so you get a "DSH is starting" page that refreshes every two seconds rather than a connection refused. How long it waits is controlled by `--dsh-start-timeout` (1 minute 30 seconds by default).
-
-If the machine does not even have Node.js, the runtime is downloaded first (about 15 seconds) and npx then fetches the dsh package — a cold machine can take a few minutes end to end. None of that blocks the service: the gateway listens first, the login page opens, and `dsh-gate status` shows the instance immediately. The preparation runs in the background and the waiting page moves on to the login page by itself. The log shows the sequence `正在下载官方 Node.js 运行时` → `Node.js 运行时已就绪` → `dsh 启动命令已就绪` → `dsh 已就绪`.
-
-**The npm registry is too slow, or dsh cannot be fetched (the log says "长时间无响应").**
-
-The gateway switches sources by itself: if the official registry (`registry.npmjs.org`) or
-nodejs.org cannot be reached or times out, it retries once against a mirror
-(`registry.npmmirror.com`) and injects the source that actually worked into dsh as
-`npm_config_registry` — so dsh's own plugin installs use the same source. To pin a source
-(a corporate registry, a private proxy) just pass it explicitly; an explicit source is
-never replaced automatically:
+The `install` wizard checks it on the spot and lets you change it; when `start` fails the log
+says the address is in use. Run `dsh-gate status` first to see whether the console is already
+running, or use another port:
 
 ```sh
-dsh-gate run --npm-registry https://registry.npmmirror.com
-export DSH_GATE_NPM_REGISTRY=https://registry.npm.example.com   # env var or config file
+dsh-gate start --port 3083
 ```
 
-Switching sources only helps when the source is the problem. A silently skipped entry
-point, a missing native binding or a crash on an old Node.js are runtime incompatibilities:
-there the gateway falls back to a pinned dsh version instead.
+Below 1024 the error is about permissions; use a port above 1024.
+
+**On Windows `manage user add` cannot read a password.**
+
+When stdin is not an interactive terminal (CI, some PowerShell configurations) it refuses and
+tells you the two alternatives:
+
+```sh
+dsh-gate manage user add admin --role admin --random
+echo "$PASSWORD" | dsh-gate manage user add admin --role admin --password-stdin
+```
+
+**The first install is slow.**
+
+An instance's first install downloads the Node runtime and the dsh package and can take a few
+minutes; dsh then initialises its profile on start. The console and the login page stay
+available the whole time, the instance page shows "installing / starting", and progress
+updates on its own. The log contains the chain
+`downloading the official Node.js runtime` → `Node.js runtime ready` → `dsh launch command ready`.
+
+**The npm registry is slow / dsh will not download (log says "no response for a long time").**
+
+The console switches registries on its own: when the official registry (`registry.npmjs.org`)
+or nodejs.org stalls or times out, it retries once against a mirror
+(`registry.npmmirror.com`) and injects the working registry into dsh, so dsh's own plugin
+installs use it too. To pin a registry (an internal registry, a private proxy), say so:
+
+```sh
+dsh-gate start --npm-registry https://registry.npmmirror.com     # for console-driven installs
+dsh-gate dsh install app --npm-registry https://registry.npmmirror.com
+```
+
+Registry switching only helps "the registry is unreachable"; **silent entrypoint failure,
+missing native bindings and old-Node crashes** are runtime incompatibilities, and the console
+pins a known-good dsh version instead of switching registries.
+
+**I want a dsh newer than `latest` (the alpha / rc channels).**
+
+Fill in the **dsh version** field when creating or editing the instance on the page, or use the
+command line:
+
+```sh
+dsh-gate dsh install app --dsh-version 0.2.2-alpha.2   # a version number
+dsh-gate dsh install app --dsh-version next            # or a dist-tag (next / alpha)
+```
+
+What you can type is whatever npm actually publishes:
+`npm view @deepseek-ai/dsh dist-tags` shows which version each channel points at,
+`npm view @deepseek-ai/dsh versions --json` lists every version. **A pin disables the automatic
+fallback** — if that exact version cannot be installed you get an error (the "pins a known-good
+dsh version" behaviour above only happens when the field is blank). Source modes
+(`--install-mode git` / `local`) ignore this field; git takes branches and tags through
+`--git-ref`, local takes the directory you point at. To drop
+the pin and follow `latest` again:
+
+```sh
+dsh-gate dsh edit app --dsh-version ""
+```
 
 **dsh will not start.**
 
-dsh failing to start does not take the gateway down: it keeps retrying with exponential backoff (starting at 1 second, capped at 30) and the waiting page shows the most recent failure reason. Run `dsh-gate check` to see whether the dsh command can be found; if not, install dsh or give an explicit command with `--dsh-cmd`.
+When dsh fails, the instance does not take the console down — the console keeps serving, the
+log keeps the reason, and the supervisor retries with exponential backoff (1 second up to 30
+seconds); the instance row shows the latest error. Use the "runtime" page to see whether the
+dsh command is found; if not, reinstall:
+
+```sh
+dsh-gate dsh install app --install-mode npx
+```
+
+**There is no Node.js on the server (the page says npx is missing).**
+
+Do not install it yourself: the console checks for npx on start and, when missing, downloads the
+**official Node.js binary package** into the state directory (default `~/.dsh-gate/node`),
+verifies it against the official `SHASUMS256.txt` and unpacks it — no root, no system packages.
+The installed copy is reused forever (no repeated downloads) and `dsh-gate uninstall --purge`
+removes it. Official glibc binaries do not run on musl systems such as Alpine; use
+`apk add nodejs` there.
+
+**The default workspace setting did not take effect (it lands in `/root` or similar).**
+
+An instance's workspace defaults to `<instance dir>/workspace`, stored in the instance record,
+independent of the console's own working directory. If it did not take effect, it usually just
+was not restarted:
+
+```sh
+dsh-gate dsh edit app --workspace /www/wwwroot/app
+dsh-gate dsh restart app        # saving does not restart
+```
+
+To confirm the effective directory: the "workspace" column on the instance row, or the
+`DSH_HOME` and record shown by `dsh-gate dsh list`.
+
+**Pressing "Stop" leaves the instance running (most visible on Windows).**
+
+Before 0.3.45 there were two ways this happened, and neither was a broken button:
+
+- The dsh holding that port **was not started by the gateway** (you ran `dsh web` yourself, or
+  the console crashed while the old dsh survived). The gateway only knows how to end a process
+  it started itself, so an adopted one was "stopped" successfully on screen while the process
+  kept listening.
+- The stop did land, then a **request** started it again: instances start on demand, and the
+  browser tab you left open refreshes. The symptom was "I pressed stop, it came back with a
+  different PID".
+
+Both are fixed in 0.3.45: an adopted instance is now stopped by looking up the process that
+owns the port and ending its whole process tree, and success is only reported once the port is
+actually free; an instance you stopped on purpose is no longer resurrected by requests — the
+proxy page says so plainly and waits for you to press Start. If a new build still won't stop
+something, check who owns the port:
+
+```bat
+netstat -ano | findstr :32100
+tasklist /FI "PID eq the number above"
+```
+
+When that external dsh cannot be resolved to a PID (a stripped system without `taskkill`), the
+console now admits it cannot stop it and tells you to do it manually, instead of pretending.
+
+**The page says "DSH requires you to log in again" (adopted an externally started dsh).**
+
+dsh's launch token is **random per process, printed once at start, never persisted**. If that
+dsh was not started by the console (you ran `dsh web` yourself, or the console process changed
+while an old dsh survived), the console cannot get its token: the home page opens but
+conversations report unauthorised. Let the console own it:
+
+```sh
+pkill -f "dsh web"          # stop the external dsh (or find its PID with ps)
+dsh-gate dsh restart app    # the console starts it again — the token lands in memory
+```
+
+**The page reports `fork/exec …/node/bin/npx: no such file or directory`.**
+
+The console's bundled Node.js runtime directory vanished after preparation (smoke test cleanup,
+state directory removed, replaced by another process) while PATH still points at the old path.
+Delete the `node/` directory in the state directory and restart the instance; it downloads
+again:
+
+```sh
+rm -rf ~/.dsh-gate/node      # or <state-dir>/node if you moved it
+dsh-gate dsh restart app
+```
+
+**Clicking "add plugin" in DSH reports `spawn pnpm ENOENT` (or spins forever).**
+
+DSH's plugin installer uses pnpm while Node only ships npm/npx. Before preparing dsh, the
+console uses npm to install pnpm into a separate prefix in the state directory
+(`<state-dir>/pnpm`, not system-wide, no root) and puts it first in PATH; an existing system
+pnpm is left alone. You can also click install on the "runtime" page in the console.
+
+**You do not need the browser plugin page**: install with the console command, which uses the
+same pnpm and mirror fallback:
+
+```sh
+dsh-gate plugin add dsh-dock --instance app
+dsh-gate dsh restart app         # restart that instance to load it
+```
+
+**Installing dsh from the console reports `Ignored build scripts: node-pty, koffi, …`.**
+
+Since pnpm 10, dependency `postinstall` scripts are **refused by default** (supply-chain
+safety), while dsh's native dependencies rely on them to prepare platform artifacts
+(`node-pty` / `koffi` compile or copy native bindings, `protobufjs` / `@google/genai` generate
+runtime code). Without permission pnpm **exits with failure** (not a warning), and dsh cannot be
+installed.
+
+The console's pnpm and git modes already allow these packages one by one with
+`--allow-build=<package>`, so this normally cannot happen. If you run pnpm **by hand**, or
+upstream adds another native dependency, add the named packages:
+
+```sh
+pnpm add @deepseek-ai/dsh --allow-build=node-pty --allow-build=koffi \
+    --allow-build=protobufjs --allow-build=@google/genai \
+    --allow-build=@deepseek-ai/dsh-subprocess-local
+```
+
+Do not take the shortcut `--allow-build=*`: that opens up the whole dependency chain, which is
+exactly what pnpm refuses by default.
+
+**git installs stall in `pnpm install` and finally report `ERR_PNPM_FETCH_TIMEOUT`.**
+
+The upstream monorepo is heavy (clone + install + build measured in tens of minutes), and a few
+packages (e.g. `xlsx` from `cdn.sheetjs.com`) are not on the main npm registry, timing out on
+slow networks. This is not dsh-gate's problem:
+
+```sh
+# A closer npm mirror (affects npm dependencies; upstream CDN dependencies still use their origin)
+dsh-gate dsh install app --install-mode git \
+    --npm-registry https://registry.npmmirror.com
+
+# Or use npx / pnpm, which only pull dsh from npm and never touch upstream monorepo CDN dependencies
+dsh-gate dsh install app --install-mode pnpm
+
+# Or do the clone / install / build yourself somewhere it works, then let the gateway only start it
+git clone https://github.com/deepseek-ai/deepseek-harness && cd deepseek-harness
+pnpm install && pnpm run build
+dsh-gate dsh install app --install-mode local --install-dir "$PWD"
+```
+
+The console falls back from `--frozen-lockfile` to a plain `install` **only when the lockfile
+and package.json disagree**; network failures are reported in place instead of making you wait
+for the same packages to time out twice.
+
+**Install progress on the console page does not move / stays "installing".**
+
+The console keeps its state up to date by itself (a small inline script polls a same-origin
+endpoint and patches the page in place instead of reloading it, so forms you are filling in
+survive). No manual browser refresh is needed. Task state also lives in memory (after a
+console restart, "installing" tasks are not inherited — nothing could advance them), so start
+the install again. A failure keeps the instance record:
+it is still there, change the mode and install again.
+
+**It will not run on Alpine (`exec format error`, or Node fails to start).**
+
+Official Node.js binaries are glibc-based and Alpine is musl, so they do not run. Install the
+distribution Node with `apk add nodejs`; the console prefers it. Or use Debian / Ubuntu. Minimal
+images also often lack `ca-certificates`, which produces
+`x509: certificate signed by unknown authority`; install `ca-certificates`.
 
 **The page shows `dsh web authentication required; reopen the URL printed by dsh web.`**
 
-That is dsh's own 401 body: the browser-trust cookie does not match the current authority.
-The gateway's handoff marker used to be a plain boolean, so after dsh restarted with a new
-token — or after the session expired or the access authority changed — the marker survived
-and the gateway **never injected a token again**: reloading and logging in again both did
-nothing. The marker now stores a fingerprint of the token used for the handshake, so a new
-dsh token makes every browser re-handshake automatically on its next `/` load, and a 401
-from dsh clears the marker and 303s the browser back to `/`. Only if the gateway itself
-holds the wrong token (for example it adopted an external dsh without learning the token)
-do you need to act: paste dsh's full startup URL once, or run `dsh-gate restart <name>`.
+That is dsh's 401 body (it received a request whose trusted cookie does not match the current
+authority). The console's handoff marker stores a fingerprint of the last token: when dsh
+changes tokens, the next visit re-handshakes automatically; when a session dies for another
+reason (401), the console clears the marker and re-handshakes, invisibly to the user. If you
+still see this message, the console has the wrong token for this start (e.g. it adopted an
+external dsh), so follow the "adopted an externally started dsh" item above.
 
-**The server has no Node.js (the page says npx cannot be found).**
+**The model page will not open: `failed to load the provider catalog: settings are unavailable in this browser`.**
 
-You do not have to install it yourself: at startup the gateway checks for npx and, if it
-is missing, downloads the **official Node.js binary** into its state directory
-(`~/.dsh-gate/node` by default), verifies it against the official `SHASUMS256.txt` and
-uses the extracted runtime — no root, no system packages touched. If the download fails,
-the page shows why; you can install Node.js by hand (<https://nodejs.org/>) or point at
-your own command with `--dsh-cmd`. musl systems such as Alpine cannot run the official
-glibc binaries — use `apk add nodejs` there.
-
-An already installed runtime is reused (no repeated downloads) and `dsh-gate uninstall
---purge` removes it.
-
-**The session's default workspace did not take effect (DSH says it cannot create the default workspace).**
-
-With an empty `--workspace` the semantics are "inherit the gateway process's current
-directory" — and when the gateway is managed by systemd/launchd that directory is the
-unit's `WorkingDirectory` (the user's home, `/root`), not the directory where you ran
-`setup`. The wizard used to print "current directory" without recording it, so the
-promise was never kept. It now shows the real absolute path, records it, and passes
-`--workspace` into the service unit. Already installed? Re-run with the directory you want:
+This is not a broken proxy: the settings surface on the dsh side is missing. The browser model /
+credential settings are backed by `ctx.remote.settings` from the `@deepseek-ai/dsh-web-app`
+bundle; without it in the profile's bundle list, the front end can only say this. Check the
+list:
 
 ```sh
-cd /the/directory/agents/should/use
-sudo dsh-gate service install --workspace "$PWD" --dsh-home /www/wwwroot/dsh-test
+dsh-gate plugin list --instance app     # checks whether dsh-web-app is present
 ```
 
-**The page says "DSH 要求重新登录" (an externally started dsh was adopted).**
-
-dsh's startup token is **generated per process, printed once at startup, and never written to
-disk**. If the running dsh was not started by the gateway (you ran `dsh web` yourself, or the
-gateway process was replaced while the old dsh kept running), the gateway cannot know it: the
-home page opens, but conversations report unauthorized.
-
-Two ways out; the second always works:
+That bundle is part of dsh itself, and most `@deepseek-ai/*` packages are not on the public npm
+registry (measured: `pnpm view @deepseek-ai/dsh-client-ui-command` asks for authorisation), so
+`plugin add` cannot fix it — upgrade / reinstall dsh. **The immediate workaround is `dsh-dock`**:
+a public package (`dsh-dock@0.14.0`) with its own "model settings" page:
 
 ```sh
-pkill -f "dsh web"          # stop the stray dsh
-dsh-gate restart <name>     # the gateway starts dsh itself and captures the token
+dsh-gate plugin add dsh-dock --instance app
+dsh-gate dsh restart app
 ```
 
-**The page shows `fork/exec …/node/bin/npx: no such file or directory`.**
+**`dsh-gate` says command not found.**
 
-The self-provisioned Node.js runtime disappeared after preparation (cleaned up after a
-failed smoke test, state directory deleted, replaced by another process) while PATH still
-points at the old path. Delete it and let the gateway fetch it again:
+It is not in `PATH`: you are running `./dsh-gate`, or copied the binary somewhere else. Run
+`dsh-gate install` or `sudo dsh-gate service install` once (copies to `/usr/local/bin` by
+default), and it works directly; use `--bin-dir` for another location. If it is still missing,
+check that the directory is in `PATH` (`echo $PATH`).
 
-```sh
-rm -rf <state-dir>/node      # e.g. /www/wwwroot/dsh-gate-test/node
-dsh-gate restart <name>
-```
+**After a console restart everyone has to log in again.**
 
-**Installing a plugin in DSH fails with `spawn pnpm ENOENT`.**
+That is intentional: sessions exist only in memory and a restart clears them.
 
-DSH's plugin installer uses pnpm, while Node.js only ships npm/npx. The gateway now
-installs pnpm into a private prefix inside its state directory (`<state-dir>/pnpm`, no
-system changes, no root) before preparing dsh, and prepends its bin directory to PATH.
-An existing pnpm is left alone. The log shows `已自备 pnpm：…`; if the install fails the
-original npm error is printed (usually a slow registry — switch with `--npm-registry`).
+**Where is the account table?**
 
-**`dsh-gate: command not found`.**
+Inside the console database `<state-dir>/portal.db`, by default `~/.dsh-gate/portal.db`. Change
+it with `--db` or `--state-dir`.
 
-It is not on your `PATH`: either you are running `./dsh-gate` directly, or the binary was
-copied somewhere outside `PATH`. Run `dsh-gate setup` or `sudo dsh-gate service install`
-once (they copy it to `/usr/local/bin` by default; `--bin-dir` picks another directory).
-If it still is not found, check that the directory is on your `PATH` (`echo $PATH`).
+**How do I migrate the old single-instance accounts?**
 
-**Everyone has to log in again after a gateway restart.**
+On first start, if the console database has no accounts and a legacy `users.json` exists in the
+state directory, the accounts are imported automatically (first user becomes admin) and the old
+passwords keep working. Instances are not migrated automatically: recreate one with
+`dsh-gate dsh add` using the same `--dsh-home`.
 
-By design: sessions live only in memory, and a restart invalidates all of them.
+### The console is up, but an instance still says "DSH is starting"
 
-**Where is the account file?**
+Look at the console log first (`journalctl -u dsh-gate -f`, or
+`~/.dsh-gate/run/logs/portal.log`). A first install downloads Node and the dsh package and can
+take minutes. If it never succeeds, the log replays dsh's own errors; common causes:
 
-By default at `~/.dsh-gate/users.json`. Change it with `--users` / `--state-dir`, or with the `users` / `stateDir` fields in the configuration file.
-
-**Can `--config` be combined with command line options?**
-
-No. With `--config`, no instance option is allowed; dsh-gate rejects the combination and tells you to put them in the file instead. (`--log-level` and `--log-json` are not instance options.)
-
----
-
-### The gateway is up but the page keeps saying "DSH is starting"
-
-Check the gateway log (`journalctl -u dsh-gate -f`, or the terminal if you run it in the
-foreground). The first start downloads plugins and can take a minute or two. If it never
-succeeds, the log replays dsh's own error output. Common causes:
-
-- **dsh not found** — `dsh-gate check` reports whether it was found. Install it
-  (`npm i -g @deepseek-ai/dsh`) or point at it with `--dsh-cmd`.
-- **The dsh port is taken by something else** — pick another `--dsh-port`.
-- **`trustedHosts entry ... is not a bare host[:port] authority`** — a `--trusted-host`
-  value you passed contains a bare IPv6 address. IPv6 must be bracketed:
-  `[2408:...::1]`. Addresses the gateway adds automatically are already handled.
+- **dsh not found**: the "runtime" page says whether it was found; otherwise click install, or
+  `dsh-gate dsh install app`.
+- **The dsh port is taken by another program**: `dsh-gate dsh edit app --dsh-port <other port>`
+  and restart the instance.
+- **`trustedHosts entry ... is not a bare host[:port] authority`**: a manually supplied
+  `--trusted-host` contains a bare IPv6 address. IPv6 must be written with brackets, e.g.
+  `[2408:...::1]`; automatically added addresses are already handled.
 
 ## Contributing
 
-Issues and pull requests are welcome. Before you start, it is worth reading the package comment at the top of `go/internal/proxy/proxy.go` — the startup-token exchange is the most interesting part of the project, and almost every "the page loads but the API fails" symptom can be traced back to it.
+Issues and PRs are welcome. Before you start, read the header comment of
+`go/internal/proxy/proxy.go` — the launch-token handoff is the most important part of the
+project to understand, and most "page opens but APIs fail" problems are answered there; the
+sub-path mechanics live in `go/internal/mountproxy/`.
 
-A few ground rules:
+A few rules:
 
-- The project uses the Go standard library only. **Do not add third-party dependencies.**
-- Update the README and CHANGELOG alongside any behaviour change.
-- The Go code lives in the `go/` subdirectory; the module is `github.com/wycto/dsh-gate`.
-- Commit messages are written in Chinese in the form `类型：备注`.
+- Apart from the pure-Go SQLite driver behind the console database, **do not add third-party
+  dependencies**.
+- Update README and CHANGELOG when behaviour changes.
+- The Go code is in `go/`; the module is `github.com/wycto/dsh-gate`.
+- Commit messages are in Chinese with the format `type: note`.
 
 ## License
-
-[MIT](LICENSE). Copyright © 2026 wycto

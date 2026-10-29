@@ -15,7 +15,7 @@ func TestDefaultIsUsable(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatalf("默认配置应当开箱可用，实际报错: %v", err)
 	}
-	if cfg.ListenAddr() != "0.0.0.0:3082" {
+	if cfg.ListenAddr() != "0.0.0.0:12020" {
 		t.Errorf("默认网关地址 = %q", cfg.ListenAddr())
 	}
 	if cfg.DSHAddr() != "127.0.0.1:3080" {
@@ -239,7 +239,7 @@ func TestLoadFile(t *testing.T) {
 	  "defaults": { "host": "0.0.0.0", "users": "` + filepath.Join(dir, "users.json") + `" },
 	  "instances": [
 	    { "name": "personal", "port": 8081, "dshPort": 3081, "dshHome": "` + filepath.Join(dir, "personal") + `" },
-	    { "name": "company",  "port": 8082, "dshPort": 3082, "dshHome": "` + filepath.Join(dir, "company") + `" }
+	    { "name": "company",  "port": 8082, "dshPort": 12020, "dshHome": "` + filepath.Join(dir, "company") + `" }
 	  ]
 	}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -265,7 +265,7 @@ func TestLoadFile(t *testing.T) {
 	if instances[0].Name != "personal" || instances[1].Name != "company" {
 		t.Errorf("实例顺序不对: %s, %s", instances[0].Name, instances[1].Name)
 	}
-	if instances[1].DSHPort != 3082 {
+	if instances[1].DSHPort != 12020 {
 		t.Errorf("dsh 端口 = %d", instances[1].DSHPort)
 	}
 }

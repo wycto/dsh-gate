@@ -1,4 +1,4 @@
-// 三种安装方式与环境检测的测试。
+// 各安装方式与环境检测的测试。
 //
 // 这些测试不真的去下载 dsh：用假的可执行文件伪造 node / npx / pnpm / git，验证
 // 「选择方式 → 检查前置 → 组装出正确的启动命令」这条逻辑。真正需要网络的那一段
@@ -23,7 +23,7 @@ func prependPATH(t *testing.T, dir string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// TestParseInstallMode 锁定三种方式的解析与默认值。
+// TestParseInstallMode 锁定各方式的解析与默认值。
 func TestParseInstallMode(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -36,6 +36,8 @@ func TestParseInstallMode(t *testing.T) {
 		{"git", InstallGit},
 		{"Git", InstallGit},
 		{"pnpm", InstallPnpm},
+		{"local", InstallLocal},
+		{"LOCAL", InstallLocal},
 	} {
 		got, err := ParseInstallMode(tc.in)
 		if err != nil {
@@ -55,7 +57,7 @@ func TestParseInstallMode(t *testing.T) {
 
 // TestInstallModeValidAndLabel 锁定 Valid 与展示名（管理台下拉用 Label）。
 func TestInstallModeValidAndLabel(t *testing.T) {
-	for _, m := range []InstallMode{InstallNpx, InstallGit, InstallPnpm} {
+	for _, m := range []InstallMode{InstallNpx, InstallGit, InstallPnpm, InstallLocal} {
 		if !m.Valid() {
 			t.Errorf("%q 应有效", m)
 		}
@@ -370,7 +372,7 @@ func TestDetectEnvWithoutTools(t *testing.T) {
 		}
 	}
 	if report.CanNpx() || report.CanGit() || report.CanPnpm() {
-		t.Error("什么工具都没有时三种方式都不该可用")
+		t.Error("什么工具都没有时这些方式都不该可用")
 	}
 }
 
@@ -715,5 +717,303 @@ exit 0
 	}
 	if second.Dir != installDir {
 		t.Errorf("安装目录应始终是用户指定的根目录 %q，实际 %q", installDir, second.Dir)
+	}
+}
+
+// TestInstallGitRejectsPinnedVersion 源码构建不认 npm 版本：这一栏填了又选源码
+// 构建，静默按默认分支装完是最坏的结果（用户以为自己拿到的是那个版本）。
+// 报错要顺手给出改成源码构建的路——实例记录里钉住的版本会跟着每一次安装。
+func TestInstallGitRejectsPinnedVersion(t *testing.T) {
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{
+		Mode: InstallGit, Dir: t.TempDir(), Version: "next",
+	})
+	if err == nil {
+		t.Fatal("源码构建 + 钉版本应当报错")
+	}
+	text := err.Error()
+	for _, want := range []string{"不认", "next", "--git-ref", `--dsh-version ""`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("错误里应有 %q，实际: %s", want, text)
+		}
+	}
+}
+
+// TestInstallDSHRejectsBadVersion 非法版本名在任何命令跑起来之前拒绝。
+func TestInstallDSHRejectsBadVersion(t *testing.T) {
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{
+		Mode: InstallNpx, Version: "1.0.0 --registry=http://evil.example",
+	})
+	if err == nil || !strings.Contains(err.Error(), "不合法") {
+		t.Fatalf("非法版本名应被拒绝，实际: %v", err)
+	}
+}
+
+// TestInstallPnpmCarriesPinnedVersion pnpm 方式把版本钉进 `pnpm add <包>@<版本>`。
+func TestInstallPnpmCarriesPinnedVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 shell 脚本伪造命令，仅类 Unix 平台")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := filepath.Join(dir, "args.log")
+	writeExec(t, binDir, "pnpm", `
+if [ "$1" = "add" ]; then
+  echo "$2" >> `+args+`
+  shift
+  prefix=""
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--dir" ]; then prefix="$2"; shift 2; continue; fi
+    shift
+  done
+  mkdir -p "$prefix/node_modules/.bin"
+  printf '#!/bin/sh\necho 0.2.2-alpha.2\n' > "$prefix/node_modules/.bin/dsh"
+  chmod +x "$prefix/node_modules/.bin/dsh"
+  exit 0
+fi
+echo 11.28.5
+exit 0
+`)
+	prependPATH(t, binDir)
+
+	installDir := filepath.Join(dir, "install")
+	result, err := InstallDSH(context.Background(), nil, InstallRequest{
+		Mode: InstallPnpm, Dir: installDir, Version: "0.2.2-alpha.2",
+	})
+	if err != nil {
+		t.Fatalf("pnpm 钉版本安装应成功: %v", err)
+	}
+	if result.Version != "0.2.2-alpha.2" {
+		t.Errorf("装好的版本应为钉住的那个，实际 %q", result.Version)
+	}
+	logged, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatalf("读取 pnpm 参数记录失败: %v", err)
+	}
+	if !strings.Contains(string(logged), dshPackage+"@0.2.2-alpha.2") {
+		t.Errorf("pnpm add 的参数应带上钉住的版本，实际: %s", logged)
+	}
+	// 日志里也要写清装的是哪一份，用户看进度时才知道自己钉的版本真的生效了。
+	if !strings.Contains(strings.Join(result.Log, "\n"), dshPackage+"@0.2.2-alpha.2") {
+		t.Errorf("安装日志应带上包名与版本，实际: %v", result.Log)
+	}
+}
+
+// TestInstallLocalRequiresDir 本地源码方式必须指到一个目录：留空时要说清
+// 该填什么，而不是让 supervisor 拿着一句 `pnpm --dir ” run dsh` 去失败。
+func TestInstallLocalRequiresDir(t *testing.T) {
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{Mode: InstallLocal})
+	if err == nil || !strings.Contains(err.Error(), "源码目录") {
+		t.Fatalf("本地源码方式缺目录应报错并说明，实际 %v", err)
+	}
+}
+
+// TestInstallLocalNeedsPackageJSON 目录里没有 package.json 时点明两种可能的
+// 目录写法（仓库根 / git 方式的 <安装目录>/deepseek-harness）。
+func TestInstallLocalNeedsPackageJSON(t *testing.T) {
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{
+		Mode: InstallLocal, Dir: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "package.json") {
+		t.Fatalf("没有 package.json 应报错并点明，实际 %v", err)
+	}
+}
+
+// TestInstallLocalRejectsPinnedVersion 本地源码方式跑的是那个目录里的代码，
+// npm 版本号对它没有意义：静默忽略等于骗人。
+func TestInstallLocalRejectsPinnedVersion(t *testing.T) {
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{
+		Mode: InstallLocal, Dir: t.TempDir(), Version: "next",
+	})
+	if err == nil {
+		t.Fatal("本地源码 + 钉版本应当报错")
+	}
+	text := err.Error()
+	for _, want := range []string{"不认", "next", `--dsh-version ""`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("错误里应有 %q，实际: %s", want, text)
+		}
+	}
+}
+
+// TestInstallLocalProducesCommand 本地源码方式一个安装命令都不跑：只核对目录就绪，
+// 生成 `pnpm --dir <repo> run dsh`。supervisor 会在后面接 web --host --port。
+func TestInstallLocalProducesCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 shell 脚本伪造命令，仅类 Unix 平台")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 假的 pnpm：版本探测走 `--dir <repo> run --silent dsh --version`，直接报版本。
+	writeExec(t, binDir, "pnpm", "echo 0.2.2-alpha.2\n")
+	writeExec(t, binDir, "node", "echo v22.11.0\n")
+	prependPATH(t, binDir)
+
+	repo := filepath.Join(dir, "deepseek-harness")
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkg := `{"name":"deepseek-harness","scripts":{"dsh":"node --import tsx/esm apps/cli/src/bin.ts"}}`
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := InstallDSH(context.Background(), nil, InstallRequest{Mode: InstallLocal, Dir: repo})
+	if err != nil {
+		t.Fatalf("本地源码方式应成功: %v", err)
+	}
+	if result.Mode != InstallLocal {
+		t.Errorf("方式应为 local，实际 %q", result.Mode)
+	}
+	// Dir 回填用户给的那个：管理台会把它写回实例记录、下次重装读出来当 req.Dir。
+	if result.Dir != repo {
+		t.Errorf("安装目录应回填 %q，实际 %q", repo, result.Dir)
+	}
+	if result.Version != "0.2.2-alpha.2" {
+		t.Errorf("版本探测应为 0.2.2-alpha.2，实际 %q", result.Version)
+	}
+	// 关键断言：存进记录的启动命令必须能被 supervisor 的 SplitCommand 还原成
+	// 这几个参数（路径里可能有空格或反斜杠，直接字符串比较会掩盖引号问题）。
+	args, err := SplitCommand(result.Command)
+	if err != nil {
+		t.Fatalf("启动命令应能解析，实际 %q: %v", result.Command, err)
+	}
+	want := "pnpm\x00--dir\x00" + repo + "\x00run\x00dsh"
+	if got := strings.Join(args, "\x00"); got != want {
+		t.Errorf("启动命令参数应为 %q，实际 %q（整条命令 %q）", want, got, result.Command)
+	}
+}
+
+// TestInstallLocalAcceptsParentDir 用户填 git 方式那种 <安装目录>（仓库在它下面的
+// deepseek-harness）也认，省得记住哪种方式把仓库放在哪。
+func TestInstallLocalAcceptsParentDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 shell 脚本伪造命令，仅类 Unix 平台")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, binDir, "pnpm", "echo 0.2.2\n")
+	writeExec(t, binDir, "node", "echo v22.11.0\n")
+	prependPATH(t, binDir)
+
+	parent := filepath.Join(dir, "install")
+	repo := filepath.Join(parent, "deepseek-harness")
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkg := `{"scripts":{"dsh":"node apps/cli/src/bin.ts"}}`
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := InstallDSH(context.Background(), nil, InstallRequest{Mode: InstallLocal, Dir: parent})
+	if err != nil {
+		t.Fatalf("父目录写法应被接受: %v", err)
+	}
+	if !strings.Contains(result.Command, repo) {
+		t.Errorf("命令应指向解析出的仓库目录 %q，实际 %q", repo, result.Command)
+	}
+	if result.Dir != parent {
+		t.Errorf("Dir 应回填用户给的 %q，实际 %q", parent, result.Dir)
+	}
+}
+
+// TestInstallLocalNeedsBuiltDeps 依赖没装（node_modules 不在）时提前说清要跑
+// pnpm install，而不是等 supervisor 启动时抛一句 tsx 找不到。
+func TestInstallLocalNeedsBuiltDeps(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 shell 脚本伪造命令，仅类 Unix 平台")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, binDir, "pnpm", "echo 11.28.5\n")
+	writeExec(t, binDir, "node", "echo v22.11.0\n")
+	prependPATH(t, binDir)
+
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkg := `{"scripts":{"dsh":"node apps/cli/src/bin.ts"}}`
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{Mode: InstallLocal, Dir: repo})
+	if err == nil {
+		t.Fatal("没装依赖时应报错")
+	}
+	for _, want := range []string{"node_modules", "pnpm install"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误里应提到 %q，实际: %v", want, err)
+		}
+	}
+}
+
+// TestInstallLocalNeedsDshScript package.json 里没有 dsh 脚本时点明「可能不是
+// 这个仓库」，并给出 --dsh-cmd 这条退路。
+func TestInstallLocalNeedsDshScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("用 shell 脚本伪造命令，仅类 Unix 平台")
+	}
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, binDir, "pnpm", "echo 11.28.5\n")
+	writeExec(t, binDir, "node", "echo v22.11.0\n")
+	prependPATH(t, binDir)
+
+	repo := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(`{"scripts":{"build":"tsc"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := InstallDSH(context.Background(), nil, InstallRequest{Mode: InstallLocal, Dir: repo})
+	if err == nil {
+		t.Fatal("没有 dsh 脚本时应报错")
+	}
+	for _, want := range []string{"dsh 脚本", "--dsh-cmd"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误里应提到 %q，实际: %v", want, err)
+		}
+	}
+}
+
+// TestQuoteArgRoundTripsThroughSplitCommand 锁定 Windows 路径的引号问题：
+// 反斜杠在引号外是转义符，裸写会被拆成一个不存在的假路径；单引号内按字面量。
+func TestQuoteArgRoundTripsThroughSplitCommand(t *testing.T) {
+	for _, arg := range []string{
+		"pnpm",
+		"/srv/deepseek-harness",
+		"/srv/my repo/pnpm",
+		`C:\Users\me\AppData\Local\pnpm\pnpm.cmd`,
+		`C:\Program Files\pnpm\pnpm.cmd`,
+		`D:\home\dsh-web-home\deepseek-harness`,
+		"it's here",
+	} {
+		args, err := SplitCommand(quoteArg(arg))
+		if err != nil {
+			t.Errorf("quoteArg(%q) 的结果应能解析: %v", arg, err)
+			continue
+		}
+		if len(args) != 1 || args[0] != arg {
+			t.Errorf("quoteArg(%q) 往返后变成 %q", arg, args)
+		}
 	}
 }

@@ -383,6 +383,81 @@ func TestInstanceLinksOpenInNewWindow(t *testing.T) {
 	}
 }
 
+// TestPortalPageTheme 验证「我的实例」页也跟着配色偏好渲染。
+//
+// 与语言同一套做法：服务端在渲染前定稿，写进 <html data-theme>，页脚三个普通
+// 链接带 ?theme= 换配色。页面依旧零脚本。
+func TestPortalPageTheme(t *testing.T) {
+	f := newPortalFixture(t)
+	session := f.login(t, "alice", "alice-password-123")
+
+	// 默认：不写 data-theme，跟着系统走；data-scheme 则总在（缺省石墨蓝）。
+	body := f.get(t, "/", session).Body.String()
+	if !strings.Contains(body, `<html lang="zh-CN" data-scheme="slate" data-style="console">`) {
+		t.Error("没选过配色时不该写 data-theme，但应写缺省方案")
+	}
+	if !strings.Contains(body, `theme=auto" aria-current="true"`) {
+		t.Error("没选过配色时页脚的「跟随系统」应当是当前项")
+	}
+	// 方案切换：?scheme= 渲染 + 记住 + 链接留住明暗值。
+	recorder := f.get(t, "/?scheme=forest&theme=dark", session)
+	body = recorder.Body.String()
+	if !strings.Contains(body, `data-scheme="forest"`) {
+		t.Error("?scheme=forest 时应渲染墨绿方案")
+	}
+	if !strings.Contains(body, `scheme=forest&amp;style=console&amp;theme=dark" aria-current="true"`) {
+		t.Error("页脚方案胶囊里「墨绿」应当是当前项")
+	}
+	if !strings.Contains(body, `scheme=ocean&amp;style=console&amp;theme=dark`) {
+		t.Error("方案切换链接应带上当前明暗值，否则换色相会把明暗顺手重置")
+	}
+	var schemeCookie *http.Cookie
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == auth.SchemeCookie {
+			schemeCookie = c
+		}
+	}
+	if schemeCookie == nil || schemeCookie.Value != string(auth.SchemeForest) {
+		t.Errorf("显式选方案后应写回 %s=forest，实际 %+v", auth.SchemeCookie, schemeCookie)
+	}
+
+	// ?theme=dark：暗色渲染 + 记住偏好。
+	recorder = f.get(t, "/?theme=dark", session)
+	body = recorder.Body.String()
+	if !strings.Contains(body, `data-theme="dark"`) {
+		t.Error("?theme=dark 时应渲染暗色首页")
+	}
+	if !strings.Contains(body, `theme=dark" aria-current="true"`) {
+		t.Error("?theme=dark 时页脚的「暗色」应当是当前项")
+	}
+	var themeCookie *http.Cookie
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == auth.ThemeCookie {
+			themeCookie = c
+		}
+	}
+	if themeCookie == nil || themeCookie.Value != string(auth.ThemeDark) {
+		t.Fatalf("显式选配色后应写回 %s=dark，实际 %+v", auth.ThemeCookie, themeCookie)
+	}
+
+	// Cookie 记住偏好：下次访问不用再带参数。
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Host = "portal.test"
+	request.AddCookie(session)
+	request.AddCookie(&http.Cookie{Name: auth.ThemeCookie, Value: string(auth.ThemeLight)})
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, request)
+	if body := rec.Body.String(); !strings.Contains(body, `data-theme="light"`) {
+		t.Error("Cookie 里选了亮色时应渲染亮色首页")
+	}
+
+	// 切配色的链接要留住语言参数，免得切一次配色把界面语言也换掉。
+	body = f.get(t, "/?lang=en&theme=dark", session).Body.String()
+	if !strings.Contains(body, "lang=en") || !strings.Contains(body, "theme=light") {
+		t.Error("配色切换链接应保留 ?lang=")
+	}
+}
+
 // TestAdminInstanceNameLinksToInstance 验证管理台的实例名本身是入口。
 //
 // 管理台原先根本没有进入实例的入口——只能绕去「我的实例」。对管理员来说

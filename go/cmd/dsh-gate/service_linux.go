@@ -27,9 +27,9 @@ func platformServiceHelp() string {
 Linux 说明:
   install 需要 root：sudo dsh-gate service install [选项]
   装好之后：
-    systemctl status dsh-gate      查看状态
-    journalctl -u dsh-gate -f      跟踪日志
-    systemctl restart dsh-gate    重启
+    dsh-gate start / stop / restart   启动、停止、重启整个管理端
+    dsh-gate status                   查看状态
+    journalctl -u dsh-gate -f         跟踪日志（等价 systemctl status dsh-gate）
   想改端口或实例目录：systemctl edit dsh-gate，写一个 [Service] ExecStart= 覆盖。
 `
 }
@@ -105,6 +105,29 @@ func serviceUninstall(serviceOptions) error {
 	return nil
 }
 
+// serviceUnitInstalled 报告 systemd 单元是否已安装。
+func serviceUnitInstalled() bool {
+	_, err := os.Stat(unitPath())
+	return err == nil
+}
+
+// serviceStart 启动 systemd 单元。
+func serviceStart() error { return runSystemctl("start") }
+
+// serviceStop 停止 systemd 单元（管理端与它监督的实例一起收尾）。
+func serviceStop() error { return runSystemctl("stop") }
+
+// serviceRestart 重启 systemd 单元。
+func serviceRestart() error { return runSystemctl("restart") }
+
+func runSystemctl(action string) error {
+	output, err := runServiceCommand("systemctl", action, serviceName)
+	if err != nil {
+		return fmt.Errorf("systemctl %s %s 失败: %w\n%s", action, serviceName, err, output)
+	}
+	return nil
+}
+
 // serviceStatus 报告 systemd 里的状态。
 func serviceStatus() int {
 	output, err := runServiceCommand("systemctl", "is-active", serviceName)
@@ -136,15 +159,19 @@ func serviceStatus() int {
 }
 
 // serviceInstalledHint 是安装成功后的提示。
-func serviceInstalledHint() string {
+//
+// 参数里的 Tray 只有 Windows 用得着：Linux 上托管的就是 systemd 单元本身，没有
+// 「另一种自启形态」需要区别对待。
+func serviceInstalledHint(serviceOptions) string {
 	return fmt.Sprintf(`已安装并启动 %s
 
   systemctl status %s     查看状态
   journalctl -u %s -f     跟踪日志
   systemctl restart %s    重启
-  dsh-gate status         查看各个实例（多实例时更直观）
+  dsh-gate stop / start / restart   停止、启动、重启整个管理端（服务托管时等同 systemctl）
+  dsh-gate status         查看管理端与各实例状态
   dsh-gate service uninstall   只取消开机自启（它管的是这一个服务单元）
-  dsh-gate uninstall <实例名|all>  停掉指定实例；--service 取消自启、--purge 删数据
+  dsh-gate uninstall      停止并删除所有实例，最后卸载管理端服务（会问是否删数据）
 
 `, serviceName, serviceName, serviceName, serviceName)
 }

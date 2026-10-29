@@ -57,15 +57,17 @@ func pluginCommand(args []string) int {
 
 // printPluginUsage 打印 plugin 用法。
 func printPluginUsage(w *os.File) {
-	fmt.Fprint(w, `用法: dsh-gate plugin <list|add> [参数] [选项]
+	fmt.Fprint(w, `用法: dsh-gate plugin <list|add> --instance <实例名|id> [参数] [选项]
 
-管理 dsh 配置档（profile）里的插件：加依赖、装包、写进 bundle 清单。
+管理某个 dsh 实例的配置档（profile）里的插件：加依赖、装包、写进 bundle 清单。
 与 dsh 自己的「添加插件」做的是同一件事，但会用上网关自备的 Node/pnpm 与
 自动换源——服务器上缺这些时，浏览器里的插件页是装不动的。
 
-  dsh-gate plugin list                          看当前装了什么
-  dsh-gate plugin add dsh-dock                  装插件（会自动重启提示）
-  dsh-gate plugin add dsh-dock @deepseek-ai/dsh-web-app
+实例用 --instance 指定（dsh-gate dsh list 查看）；插件装在实例自己的 DSH_HOME 下。
+
+  dsh-gate plugin list --instance 演示实例
+  dsh-gate plugin add dsh-dock --instance 演示实例
+  dsh-gate plugin add dsh-dock @deepseek-ai/dsh-web-app --instance 演示实例
 
 选项:
 `)
@@ -73,6 +75,8 @@ func printPluginUsage(w *os.File) {
 
 // pluginOptions 是 list / add 共用的输入。
 type pluginOptions struct {
+	Instance  string
+	DB        string
 	DSHHome   string
 	Profile   string
 	Registry  string
@@ -83,24 +87,32 @@ type pluginOptions struct {
 
 // registerPluginFlags 注册两个子命令共用的选项。
 func registerPluginFlags(fs *flag.FlagSet, opts *pluginOptions) {
-	fs.StringVar(&opts.DSHHome, "dsh-home", "", "dsh 实例目录（默认 ~/.dsh，与 run 的同名选项一致）")
+	fs.StringVar(&opts.Instance, "instance", "", "dsh 实例名或 id（必填；dsh-gate dsh list 查看）")
+	fs.StringVar(&opts.Instance, "i", "", "同 --instance")
+	fs.StringVar(&opts.DB, "db", "", "管理端数据库路径（默认 <状态目录>/portal.db）")
+	fs.StringVar(&opts.DSHHome, "dsh-home", "", "直接指定 dsh 实例目录（兼容/高级用法，优先于 --instance）")
 	fs.StringVar(&opts.Profile, "profile", "web", "dsh 配置档名；网关跑的是 dsh web，所以默认 web")
 	fs.StringVar(&opts.Registry, "npm-registry", "", "拉包用的 npm 源；留空自动（官方失败退镜像）")
-	fs.StringVar(&opts.StateDir, "state-dir", "", "网关状态目录（自备 pnpm 放这里）；留空用默认")
+	fs.StringVar(&opts.StateDir, "state-dir", "", "网关状态目录（自备 pnpm 与 portal.db 都放这里）；留空用默认")
 	fs.DurationVar(&opts.Timeout, "timeout", 10*time.Minute, "安装超时")
 }
 
-// resolvedDSHHome 返回 dsh 实例目录（展开 ~）。
-func (o pluginOptions) resolvedDSHHome() string {
-	if strings.TrimSpace(o.DSHHome) == "" {
-		return config.ExpandPath("~/.dsh")
+// resolvedDSHHome 返回 dsh 实例目录：显式 --dsh-home 优先，否则按 --instance 从管理端库解析。
+func (o pluginOptions) resolvedDSHHome() (string, error) {
+	if strings.TrimSpace(o.DSHHome) != "" {
+		return config.ExpandPath(o.DSHHome), nil
 	}
-	return config.ExpandPath(o.DSHHome)
+	home, _, err := instanceHomeFromFlag(o.Instance, o.StateDir, o.DB)
+	return home, err
 }
 
 // profilePath 返回配置档目录。
-func (o pluginOptions) profilePath() string {
-	return filepath.Join(o.resolvedDSHHome(), "profiles", o.Profile)
+func (o pluginOptions) profilePath() (string, error) {
+	home, err := o.resolvedDSHHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "profiles", o.Profile), nil
 }
 
 // pluginListCommand 打印配置档里已装的插件与 bundle。
@@ -123,7 +135,11 @@ func pluginListCommand(args []string) int {
 		return usageError("plugin list 不接受位置参数（收到 %q）", strings.Join(rest, " "))
 	}
 
-	pkg, path, err := loadProfilePackage(opts.profilePath())
+	profileDir, err := opts.profilePath()
+	if err != nil {
+		return usageError("%v", err)
+	}
+	pkg, path, err := loadProfilePackage(profileDir)
 	if err != nil {
 		return fatal("%v", err)
 	}
@@ -167,7 +183,7 @@ func pluginListCommand(args []string) int {
 		fmt.Println("            缺了会报 settings are unavailable in this browser。")
 		fmt.Println("            它随 dsh 本体一起安装，不在 npm 公开包源里，装不了；")
 		fmt.Println("            先升级/重装 dsh，或用 dsh-dock 自带的「模型设置」页：")
-		fmt.Println("              dsh-gate plugin add dsh-dock && dsh-gate restart all")
+		fmt.Println("              dsh-gate plugin add dsh-dock && dsh-gate dsh restart <实例名>")
 	}
 	return 0
 }
@@ -198,9 +214,13 @@ func pluginAddCommand(args []string) int {
 	return runPluginAdd(context.Background(), opts, specs)
 }
 
-// runPluginAdd 是 setup 与 plugin add 共用的安装流程。
+// runPluginAdd 是 plugin add 的安装流程。
 func runPluginAdd(parent context.Context, opts pluginOptions, specs []string) int {
-	if _, _, err := loadProfilePackage(opts.profilePath()); err != nil {
+	profileDir, err := opts.profilePath()
+	if err != nil {
+		return usageError("%v", err)
+	}
+	if _, _, err := loadProfilePackage(profileDir); err != nil {
 		return fatal("%v", err)
 	}
 	ctx, cancel := context.WithTimeout(parent, opts.Timeout)
@@ -229,11 +249,11 @@ func runPluginAdd(parent context.Context, opts pluginOptions, specs []string) in
 
 	added := make([]string, 0, len(specs))
 	for _, spec := range specs {
-		if err := pnpmAdd(ctx, pnpm, opts.profilePath(), spec, registry); err != nil {
+		if err := pnpmAdd(ctx, pnpm, profileDir, spec, registry); err != nil {
 			return fatal("%v", err)
 		}
 		name := packageNameOf(spec)
-		if err := registerBundle(opts.profilePath(), name); err != nil {
+		if err := registerBundle(profileDir, name); err != nil {
 			return fatal("%v", err)
 		}
 		fmt.Printf("已安装并注册 %s\n", name)
@@ -243,7 +263,7 @@ func runPluginAdd(parent context.Context, opts pluginOptions, specs []string) in
 	if len(added) > 0 {
 		fmt.Println()
 		fmt.Println("重启 dsh 后生效（profile 解析在进程启动时建立）：")
-		fmt.Println("  dsh-gate restart all        # 或指定实例名")
+		fmt.Println("  dsh-gate dsh restart <实例名>   # 重启该实例让插件生效")
 	}
 	return 0
 }
@@ -313,7 +333,7 @@ func loadProfilePackage(dir string) (profilePackage, string, error) {
 	path := filepath.Join(dir, "package.json")
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return profilePackage{}, path, fmt.Errorf("找不到 dsh 配置档 %s：先启动一次 dsh（dsh-gate run）让它生成，再回来装插件", path)
+		return profilePackage{}, path, fmt.Errorf("找不到 dsh 配置档 %s：先启动一次 dsh（在管理台启动对应实例）让它生成，再回来装插件", path)
 	}
 	if err != nil {
 		return profilePackage{}, path, fmt.Errorf("读取 %s 失败: %w", path, err)

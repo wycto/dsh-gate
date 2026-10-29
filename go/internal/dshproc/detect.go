@@ -4,11 +4,12 @@
 // 版本、已经装好的 dsh 在哪儿。检测本身是只读的——它不下载、不安装，只报告
 // 事实与建议，装不装由用户在管理台上选。
 //
-// 三种安装方式对工具的要求不同，检测结果直接决定哪几个选项能选：
+// 四种安装方式对工具的要求不同，检测结果直接决定哪几个选项能选：
 //
-//	npx  —— 需要 Node（自带 npm 与 npx）
-//	git  —— 需要 Node + git + pnpm（从源码构建）
-//	pnpm —— 需要 Node + pnpm（装到本地或全局）
+//	npx   —— 需要 Node（自带 npm 与 npx）
+//	git   —— 需要 Node + git + pnpm（从源码构建）
+//	pnpm  —— 需要 Node + pnpm（装到本地或全局）
+//	local —— 需要 Node + pnpm（启动你自己构建好的源码，用 `pnpm dsh web`）
 //
 // 检测失败不返回错误：探测不到就是探测不到，管理台据此把那个选项标成不可用，
 // 比抛错让整个页面挂掉有用得多。
@@ -218,6 +219,7 @@ func probeVersionEnv(ctx context.Context, env []string, path string, args ...str
 	defer cancel()
 
 	cmd := exec.CommandContext(probeCtx, path, args...)
+	applyProbeAttrs(cmd)
 	if env != nil {
 		cmd.Env = env
 	}

@@ -403,20 +403,48 @@ func clampIterations(iterations int) (int, error) {
 	return iterations, nil
 }
 
-// ValidateName 检查用户名字符是否合法。
+// ValidateName 检查登录名（账号）字符是否合法。
 //
-// 允许任意非空白字符即可——刻意不限制字母数字，免得给用户添堵；但拒绝
-// 空白与控制字符，因为用户名会出现在日志、Cookie 与命令行参数里。
+// 账号是机器接口：出现在日志、Cookie、命令行与审计里，因此限定为
+// ASCII 字母、数字与 . _ -，且必须以字母或数字开头——**中文不能当登录名**
+// （中文名放「姓名」字段，那是给人看的）。历史上曾允许任意非空白字符，
+// 已有账号不受影响：校验只拦新建与改名，不追认存量。
 func ValidateName(name string) error {
 	if name == "" {
-		return errors.New("用户名不能为空")
+		return errors.New("账号不能为空")
 	}
-	if utf8.RuneCountInString(name) > maxUserRunes {
-		return fmt.Errorf("用户名过长（最多 %d 个字符）", maxUserRunes)
+	if len(name) > maxUserRunes {
+		return fmt.Errorf("账号过长（最多 %d 个字符）", maxUserRunes)
 	}
-	for _, r := range name {
-		if r <= ' ' || r == 0x7f {
-			return fmt.Errorf("用户名 %q 不能包含空白或控制字符", name)
+	first := name[0]
+	if !(first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' || first >= '0' && first <= '9') {
+		return fmt.Errorf("账号 %q 必须以字母或数字开头", name)
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return fmt.Errorf("账号 %q 只能包含字母、数字与 . _ -（登录名不支持中文，中文名请填「姓名」）", name)
+	}
+	return nil
+}
+
+// ValidateDisplayName 检查「姓名」：给人看的名字，允许中文与空格
+// （与登录名相反——那个是机器接口）。只拒绝控制字符与超长值；留空合法，
+// 由调用方回退到登录名。
+func ValidateDisplayName(display string) error {
+	display = strings.TrimSpace(display)
+	if display == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(display) > maxUserRunes {
+		return fmt.Errorf("姓名过长（最多 %d 个字符）", maxUserRunes)
+	}
+	for _, r := range display {
+		if r == 0x7f || (r < ' ' && r != '\t') {
+			return errors.New("姓名不能包含控制字符")
 		}
 	}
 	return nil
