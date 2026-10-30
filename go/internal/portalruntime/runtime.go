@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/wycto/dsh-gate/internal/config"
 	"github.com/wycto/dsh-gate/internal/dshproc"
 	"github.com/wycto/dsh-gate/internal/portal"
 	"github.com/wycto/dsh-gate/internal/proxy"
@@ -54,6 +55,9 @@ type LaunchOptions struct {
 	PublicURL string
 	// TrustedHosts 是浏览器可见的 authority，必须包含管理端域名，否则每个 API 403。
 	TrustedHosts []string
+	// StartTimeout 是这个实例拉起 dsh 后等它监听端口的最长时间
+	// （`--dsh-start-timeout`，默认 config.DefaultDSHStartTimeout）。
+	StartTimeout time.Duration
 	// Logger 收日志；为 nil 时丢弃。
 	Logger *slog.Logger
 }
@@ -70,6 +74,10 @@ type Options struct {
 	// PublicURL / TrustedHosts 原样传给每个实例的 dsh。
 	PublicURL    string
 	TrustedHosts []string
+	// StartTimeout 是拉起单个实例时等待它的 dsh 端口就绪的最长时间，
+	// 来自 `--dsh-start-timeout`（默认 config.DefaultDSHStartTimeout）。
+	// 传 0 表示用那个默认值。
+	StartTimeout time.Duration
 	// Launch 为 nil 时使用 dshproc 的默认实现。
 	Launch LaunchFunc
 	// Logger 收日志；为 nil 时丢弃。
@@ -126,6 +134,9 @@ func New(opts Options) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	if opts.StartTimeout <= 0 {
+		opts.StartTimeout = config.DefaultDSHStartTimeout
+	}
 	if opts.Launch == nil {
 		opts.Launch = defaultLaunch
 	}
@@ -139,7 +150,16 @@ func New(opts Options) (*Runtime, error) {
 }
 
 // defaultLaunch 用 dshproc 的默认实现拉起一个实例。
+//
+// 超时曾经在这里写死 90 秒，而它恰好卡在「首次启动下载 dsh 与插件」这种正常
+// 耗时上：预算一到，监督者把正在下载的子进程杀掉、下一轮从头再来，于是怎么
+// 重试都起不来（页面上就是永远的「DSH 正在启动」）。现在由 Options.StartTimeout
+// 经 LaunchOptions 传进来（--dsh-start-timeout，默认 5 分钟）。
 func defaultLaunch(inst portal.Instance, opts LaunchOptions) (Supervisor, error) {
+	startTimeout := opts.StartTimeout
+	if startTimeout <= 0 {
+		startTimeout = config.DefaultDSHStartTimeout
+	}
 	return dshproc.New(dshproc.Options{
 		// 留空 = 让 supervisor 自动探测启动命令（PATH 里的 dsh，或 npx）。
 		ResolvedCommand: inst.DshCmd,
@@ -157,7 +177,7 @@ func defaultLaunch(inst portal.Instance, opts LaunchOptions) (Supervisor, error)
 		AutoStart:    true,
 		Adopt:        true,
 		Restart:      true,
-		StartTimeout: 90 * time.Second,
+		StartTimeout: startTimeout,
 		StopTimeout:  10 * time.Second,
 		TokenFile:    tokenFileOf(inst),
 		Logger:       opts.Logger,
@@ -337,6 +357,7 @@ func (rt *Runtime) ensureInstance(inst portal.Instance) (*instance, error) {
 	sup, err := rt.opts.Launch(inst, LaunchOptions{
 		PublicURL:    rt.opts.PublicURL,
 		TrustedHosts: rt.opts.TrustedHosts,
+		StartTimeout: rt.opts.StartTimeout,
 		Logger:       rt.log,
 	})
 	if err != nil {

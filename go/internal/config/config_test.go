@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wycto/dsh-gate/internal/config"
 )
@@ -192,11 +193,12 @@ func TestApplyRejectsGarbage(t *testing.T) {
 func TestApplyEnv(t *testing.T) {
 	cfg := config.Default()
 	env := map[string]string{
-		"DSH_GATE_PORT":          "7777",
-		"DSH_GATE_DSH_HOME":      "/tmp/inst",
-		"DSH_GATE_TRUSTED_HOSTS": "x.test, y.test",
-		"DSH_GATE_RESTART":       "false",
-		"DSH_GATE_SESSION_TTL":   "24h",
+		"DSH_GATE_PORT":              "7777",
+		"DSH_GATE_DSH_HOME":          "/tmp/inst",
+		"DSH_GATE_TRUSTED_HOSTS":     "x.test, y.test",
+		"DSH_GATE_RESTART":           "false",
+		"DSH_GATE_SESSION_TTL":       "24h",
+		"DSH_GATE_DSH_START_TIMEOUT": "7m",
 	}
 	getenv := func(key string) string { return env[key] }
 	if err := config.ApplyEnv(&cfg, getenv); err != nil {
@@ -216,6 +218,26 @@ func TestApplyEnv(t *testing.T) {
 	}
 	if cfg.SessionTTL.Hours() != 24 {
 		t.Errorf("会话有效期 = %s", cfg.SessionTTL)
+	}
+	if cfg.DSHStartTimeout != 7*time.Minute {
+		t.Errorf("dsh 启动等待时间 = %s，期望 7m", cfg.DSHStartTimeout)
+	}
+}
+
+// TestDefaultDSHStartTimeout 钉住启动等待的默认时长。
+//
+// 这个值踩过坑：早先是 90 秒，比「首次启动下载 dsh 与插件」还短，超时就把正在
+// 下载的子进程杀掉、下一轮从头再来，实例永远停在「DSH 正在启动」。别再调回去。
+func TestDefaultDSHStartTimeout(t *testing.T) {
+	if got := config.Default().DSHStartTimeout; got != 5*time.Minute {
+		t.Errorf("默认 dsh 启动等待时间 = %s，期望 5m", got)
+	}
+	cfg := config.Default()
+	if err := config.Apply(&cfg, map[string]string{"dsh-start-timeout": "10m"}); err != nil {
+		t.Fatalf("--dsh-start-timeout 解析失败: %v", err)
+	}
+	if cfg.DSHStartTimeout != 10*time.Minute {
+		t.Errorf("--dsh-start-timeout 未生效 = %s", cfg.DSHStartTimeout)
 	}
 }
 

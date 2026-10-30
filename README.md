@@ -807,6 +807,7 @@ Linux 上 `--service` 需要 root：普通用户请先 `install`，再用
 | `--db` | `<状态目录>/portal.db` | 管理端数据库路径 |
 | `--npm-registry` | 空 | 安装 dsh 用的 npm 源；留空用默认，连不上时自动改用镜像源重试 |
 | `--trusted-host` | 空 | 额外信任的地址（管理端域名），可重复 |
+| `--dsh-start-timeout` | `5m` | 每个实例拉起 dsh 后等它监听端口的最长时间；首次启动要下载 dsh 与插件，给短了会边下边被杀、每轮重来 |
 | `--foreground` | 关 | 前台运行（默认后台） |
 
 ```sh
@@ -929,6 +930,7 @@ sudo dsh-gate service uninstall   # 取消开机自启
 | `--db` | `<状态目录>/portal.db` | 管理端数据库路径 |
 | `--npm-registry` | 空 | 安装 dsh 用的 npm 源 |
 | `--trusted-host` | 空 | 额外信任的地址，可重复 |
+| `--dsh-start-timeout` | `5m` | 每个实例等自己的 dsh 监听端口的最长时间（同 `dsh-gate start`） |
 | `--user` | 当前用户 | 以哪个用户身份运行（Linux） |
 | `--working-dir` | 用户家目录 | 管理端进程的工作目录 |
 | `--binary` | 当前运行的真实路径 | dsh-gate 可执行文件的绝对路径 |
@@ -1521,7 +1523,9 @@ dsh-gate dsh edit app --dsh-version ""
 **dsh 起不来。**
 
 dsh 起不来时实例不会让管理端退出——管理端继续提供页面，日志里留下原因，监督者按指数退避
-持续重试（1 秒起步，最长 30 秒一次），实例页显示最近一次失败的原因。先用「运行环境」页
+持续重试（1 秒起步，最长 30 秒一次），实例页显示最近一次失败的原因。每一轮先等
+`--dsh-start-timeout`（默认 5 分钟）才判失败：这一档是给「首次启动下载 dsh 与插件」留的，
+给短了会把正在下载的子进程杀掉、下一轮从头再来，怎么重试都起不来。先用「运行环境」页
 看 dsh 命令找不找得到；找不到就重新安装一次：
 
 ```sh
@@ -1718,6 +1722,17 @@ dsh-gate dsh restart app
 首次安装要下载 Node 与 dsh 包，可能要几分钟。如果长时间不成功，日志里会回放 dsh 自己的
 报错，常见原因：
 
+- **一次启动没能在预算内跑完**（日志里是「在 5m0s 内没有监听 …」）：每一轮都按
+  `--dsh-start-timeout` 等待，超时会把正在下载的子进程杀掉再重来，所以这个预算必须大于
+  「下载 dsh 与插件」实际要花的时间。慢机器上直接调大：
+
+  ```sh
+  dsh-gate start --dsh-start-timeout 15m                 # 没装系统服务时
+  sudo dsh-gate service install --dsh-start-timeout 15m  # 装了开机自启（重写单元）
+  ```
+
+  改完 `dsh-gate restart`。给过启动参数就按这次给的起（之前存的端口等要一并带上），
+  所以只想调这一项时更省事的是环境变量：`DSH_GATE_DSH_START_TIMEOUT=15m dsh-gate start`。
 - **找不到 dsh**：「运行环境」页会告诉你本机有没有找到；没有就点安装，或
   `dsh-gate dsh install app` 重装。
 - **端口被别的程序占了**：`dsh-gate dsh edit app --dsh-port <其它端口>` 再重启实例。

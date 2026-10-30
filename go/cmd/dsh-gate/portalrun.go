@@ -49,7 +49,10 @@ type portalRunOptions struct {
 	DBPath   string
 	StateDir string
 	// NPMRegistry 是管理台安装 dsh 时用的 npm 源（--npm-registry）。
-	NPMRegistry  string
+	NPMRegistry string
+	// StartTimeout 是每个实例等它自己的 dsh 端口就绪的最长时间
+	// （--dsh-start-timeout）；0 表示用 config 默认值。
+	StartTimeout time.Duration
 	TLS          bool
 	PublicURL    string
 	TrustedHosts []string
@@ -125,6 +128,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		TLS:          opts.TLS,
 		PublicURL:    opts.PublicURL,
 		TrustedHosts: netutil.TrustedHosts(opts.TrustedHosts, opts.PublicURL),
+		StartTimeout: opts.StartTimeout,
 		Launch:       opts.Launch,
 		Logger:       opts.Logger,
 	})
@@ -201,6 +205,8 @@ func portalRunCommand(args []string) int {
 	fs.BoolVar(background, "d", false, "同 --background")
 	npmRegistry := fs.String("npm-registry", "",
 		"管理台安装 dsh 时用的 npm 源；留空用 npm 默认，连不上时自动改用镜像源重试")
+	fs.Duration("dsh-start-timeout", config.DefaultDSHStartTimeout,
+		"每个实例拉起 dsh 后等它监听端口的最长时间（如 10m）；首次启动要下载 dsh 与插件，太短会边下边被杀")
 	var trusted stringList
 	fs.Var(&trusted, "trusted-host", "额外信任的地址（管理端域名），可重复")
 
@@ -220,7 +226,9 @@ func portalRunCommand(args []string) int {
 	}
 	set := map[string]string{}
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "state-dir" {
+		// 只收显式给出的：没写就让环境变量与默认值各就其位。
+		switch f.Name {
+		case "state-dir", "dsh-start-timeout":
 			set[f.Name] = f.Value.String()
 		}
 	})
@@ -270,6 +278,7 @@ func portalRunCommand(args []string) int {
 		DBPath:       resolvedDB,
 		StateDir:     cfg.StateDirPath(),
 		NPMRegistry:  strings.TrimSpace(*npmRegistry),
+		StartTimeout: cfg.DSHStartTimeout,
 		TLS:          tlsEnabled,
 		PublicURL:    strings.TrimSpace(*publicURL),
 		TrustedHosts: trusted,

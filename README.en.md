@@ -865,6 +865,7 @@ values", and they are saved for `restart` / `status`.
 | `--db` | `<state-dir>/portal.db` | Console database path |
 | `--npm-registry` | empty | npm registry for dsh installs; default, with automatic mirror fallback |
 | `--trusted-host` | empty | Extra trusted authority, repeatable |
+| `--dsh-start-timeout` | `5m` | How long each instance may take to bind its port after launch; the first start downloads dsh and its plugins, and a shorter budget kills the download and restarts it every round |
 | `--foreground` | off | Run in the foreground (background by default) |
 
 ```sh
@@ -1000,6 +1001,7 @@ service manager handles restarts and logging, so the console must not background
 | `--db` | `<state-dir>/portal.db` | Console database path |
 | `--npm-registry` | empty | npm registry for dsh installs |
 | `--trusted-host` | empty | Extra trusted authority, repeatable |
+| `--dsh-start-timeout` | `5m` | How long each instance may take to bind its port (same meaning as in `dsh-gate start`) |
 | `--user` | current user | Run as this user (Linux) |
 | `--working-dir` | user home | Working directory of the console process |
 | `--binary` | real path of this executable | Absolute path of the dsh-gate binary |
@@ -1639,7 +1641,10 @@ dsh-gate dsh edit app --dsh-version ""
 
 When dsh fails, the instance does not take the console down — the console keeps serving, the
 log keeps the reason, and the supervisor retries with exponential backoff (1 second up to 30
-seconds); the instance row shows the latest error. Use the "runtime" page to see whether the
+seconds); the instance row shows the latest error. Each round first waits `--dsh-start-timeout`
+(5 minutes by default) before declaring failure: that budget is what "the first start downloads
+dsh and its plugins" needs, and a shorter one kills the download mid-flight so every retry starts
+over. Use the "runtime" page to see whether the
 dsh command is found; if not, reinstall:
 
 ```sh
@@ -1854,6 +1859,19 @@ Look at the console log first (`journalctl -u dsh-gate -f`, or
 `~/.dsh-gate/run/logs/portal.log`). A first install downloads Node and the dsh package and can
 take minutes. If it never succeeds, the log replays dsh's own errors; common causes:
 
+- **One launch outlives its budget** (the log says "did not listen on … within 5m0s"): every
+  round waits `--dsh-start-timeout`, and timing out kills the child mid-download before
+  restarting it — so the budget must exceed the time downloading dsh and its plugins really
+  takes. On a slow box raise it:
+
+  ```sh
+  dsh-gate start --dsh-start-timeout 15m                 # no system service installed
+  sudo dsh-gate service install --dsh-start-timeout 15m  # rewrites the autostart unit
+  ```
+
+  then `dsh-gate restart`. Passing any start option means "start with exactly these", so if
+  the saved config carries other options (port, …) pass them too — or just set
+  `DSH_GATE_DSH_START_TIMEOUT=15m`, which changes only this one value.
 - **dsh not found**: the "runtime" page says whether it was found; otherwise click install, or
   `dsh-gate dsh install app`.
 - **The dsh port is taken by another program**: `dsh-gate dsh edit app --dsh-port <other port>`

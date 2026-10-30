@@ -95,13 +95,23 @@ type Supervisor struct {
 	resolvedRegistry string
 }
 
+// defaultStartTimeout 是没给 StartTimeout 时的兜底等待时长。
+//
+// 管理端那条生产路径（portalruntime）总是显式传
+// config.DefaultDSHStartTimeout，这里只给直接使用本包的调用方兜底；
+// 两个值必须一致，由 TestDefaultStartTimeoutMatchesConfig 钉住。
+//
+// 之所以是 5 分钟而不是更短：首次启动要下载 dsh 包与插件，等不到端口就绪
+// 时监督者会把正在下载的子进程杀掉再从头重试——预算比下载本身还短就永远起不来。
+const defaultStartTimeout = 5 * time.Minute
+
 // New 构造 Supervisor。此时并不启动任何进程。
 func New(opts Options) *Supervisor {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 	if opts.StartTimeout <= 0 {
-		opts.StartTimeout = 90 * time.Second
+		opts.StartTimeout = defaultStartTimeout
 	}
 	if opts.StopTimeout <= 0 {
 		opts.StopTimeout = 10 * time.Second

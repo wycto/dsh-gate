@@ -10,8 +10,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wycto/dsh-gate/internal/config"
 	"github.com/wycto/dsh-gate/internal/dshtest"
 )
+
+// TestDefaultStartTimeoutMatchesConfig 钉住「本包兜底值 == 配置默认值」。
+//
+// 两处各写一份 5 分钟是刻意的（本包不 import config），代价就是可能走散；
+// 走散的表现是「命令行说等 5 分钟，实际 90 秒就把正在下载的 dsh 杀了」，
+// 页面上只看得到一句说不通的超时。
+func TestDefaultStartTimeoutMatchesConfig(t *testing.T) {
+	if defaultStartTimeout != config.DefaultDSHStartTimeout {
+		t.Errorf("dshproc 的兜底启动超时是 %s，config 的默认值是 %s，两者应当一致",
+			defaultStartTimeout, config.DefaultDSHStartTimeout)
+	}
+}
 
 func TestSplitCommand(t *testing.T) {
 	cases := []struct {

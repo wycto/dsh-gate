@@ -3,6 +3,33 @@
 本文件记录 dsh-gate 的变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-10-30
+
+慢机器上「首次启动超过 90 秒就永远起不来」的一批修复：启动等待时间可配置（命令行与
+环境变量），默认值从 90 秒放到 5 分钟。
+
+### 修复
+
+- **dsh 启动超时不再写死 90 秒，「配了不生效」也一并修好**：实例第一次启动要由 npx
+  把 dsh 包与插件全部下载完才会监听端口，慢机器、慢网络常超过 90 秒；而监督者等不到
+  端口就把**正在下载的子进程杀掉**，下一轮从头再来——预算比下载本身还短，于是页面永远
+  停在「DSH 正在启动」，怎么重试都一样（等待页写着「首次启动可能需要几分钟」，却只给
+  1m30s，本身也自相矛盾）。两处都要改：
+  - **默认值 90 秒 → 5 分钟**（`config.DefaultDSHStartTimeout`，`dshproc` 的兜底值跟着
+    一致），与等待页的说法对上。
+  - **把配置接上**：`config` 里早有 `DSHStartTimeout` 与 `--dsh-start-timeout` 的解析
+    分支，可命令行根本没注册这个选项，管理端拉起实例时更是在 `portalruntime` 里写死
+    90 秒——怎么配都改不了。现在 `start`、`service`（含 `service run` / 托盘）、
+    `portal run` 都认 `--dsh-start-timeout`，超时经 `LaunchOptions` 传给监督者；另加
+    环境变量 `DSH_GATE_DSH_START_TIMEOUT`。保存的启动参数里**只在点名时**写这一项
+    （等于默认值就不写，将来调默认值能惠及老实例），restart 不会把点名的时长丢掉。
+  - 重试本来就有（指数退避 1 秒起步、最长 30 秒一次，一直重试到起来），这次改的是
+    「每一轮等多久」。
+  回归测试：`TestStartTimeoutReachesLaunch` 钉住超时一路传到监督者，
+  `TestDefaultStartTimeoutMatchesConfig` 钉住兜底值与配置默认值不走散，
+  `TestBuildStartArgsStartTimeout` 与 `TestRegisterPortalFlagsStartTimeout` 钉住
+  命令行这一侧认得也记得住这个选项。
+
 ## [0.4.0] - 2026-10-29
 
 管理台重做（卡片网格、三种布局、配色可切、状态自动刷新）；新增第四种安装方式「本地源码」与 dsh 版本钉住；Windows 侧的启停、自启与崩溃恢复问题成批修掉；命令行收敛为管理端单形态并补齐整机卸载。

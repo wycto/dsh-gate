@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wycto/dsh-gate/internal/config"
 	"github.com/wycto/dsh-gate/internal/dshtest"
 	"github.com/wycto/dsh-gate/internal/portal"
 )
@@ -539,4 +540,51 @@ func firstLines(body string) string {
 		lines = lines[:6]
 	}
 	return strings.Join(lines, " / ")
+}
+
+// TestStartTimeoutReachesLaunch 钉住「--dsh-start-timeout 一路传到监督者」这条链。
+//
+// 它断过：超时曾经在 defaultLaunch 里写死 90 秒，配置怎么填都不生效；而 90 秒
+// 又短过「首次启动下载 dsh 与插件」，于是超时 → 杀掉正在下载的子进程 → 重试，
+// 实例永远停在「DSH 正在启动」。
+func TestStartTimeoutReachesLaunch(t *testing.T) {
+	store := newStore(t)
+	fake := dshtest.Start("127.0.0.1")
+	t.Cleanup(fake.Close)
+
+	var got time.Duration
+	launched := false
+	rt, err := New(Options{
+		Store:        store,
+		StartTimeout: 10 * time.Minute,
+		Launch: func(inst portal.Instance, opts LaunchOptions) (Supervisor, error) {
+			got = opts.StartTimeout
+			launched = true
+			return newFakeSupervisor(fake), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("构造运行时失败: %v", err)
+	}
+	if _, err := rt.ensureInstance(portal.Instance{ID: "i-timeout", DshPort: 3080}); err != nil {
+		t.Fatalf("构造实例条目失败: %v", err)
+	}
+	if !launched {
+		t.Fatal("Launch 没被调用")
+	}
+	if got != 10*time.Minute {
+		t.Errorf("监督者拿到的启动超时 = %s，期望 10m", got)
+	}
+}
+
+// TestStartTimeoutDefaultsToConfig 钉住「没配就用 config 的默认值」。
+func TestStartTimeoutDefaultsToConfig(t *testing.T) {
+	rt, err := New(Options{Store: newStore(t)})
+	if err != nil {
+		t.Fatalf("构造运行时失败: %v", err)
+	}
+	if rt.opts.StartTimeout != config.DefaultDSHStartTimeout {
+		t.Errorf("启动超时默认 = %s，期望 config.DefaultDSHStartTimeout（%s）",
+			rt.opts.StartTimeout, config.DefaultDSHStartTimeout)
+	}
 }

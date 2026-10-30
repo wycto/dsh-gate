@@ -86,8 +86,10 @@ func resolveStateDir(raw string) (string, error) {
 // buildStartArgs 把 start 的输入整理成 `portal run` 的参数。
 //
 // 全部显式写出（包括默认值），保存下来的配置就能独立复原，不受将来默认值变化
-// 影响；restart 只认这份文件，不会再读一次环境变量。
-func buildStartArgs(host string, port int, tlsCert, tlsKey, publicURL, stateDir, db, npmRegistry string, trusted []string) []string {
+// 影响；restart 只认这份文件，不会再读一次环境变量。唯一的例外是
+// startTimeout：它与默认值相同时不写——这样将来调默认值能惠及老配置，而用户
+// 真给过一个值时又一定被记住。
+func buildStartArgs(host string, port int, tlsCert, tlsKey, publicURL, stateDir, db, npmRegistry string, trusted []string, startTimeout time.Duration) []string {
 	args := []string{
 		"--host", host,
 		"--port", strconv.Itoa(port),
@@ -107,6 +109,9 @@ func buildStartArgs(host string, port int, tlsCert, tlsKey, publicURL, stateDir,
 	}
 	if npmRegistry != "" {
 		args = append(args, "--npm-registry", npmRegistry)
+	}
+	if startTimeout != config.DefaultDSHStartTimeout {
+		args = append(args, "--dsh-start-timeout", startTimeout.String())
 	}
 	for _, host := range trusted {
 		if strings.TrimSpace(host) != "" {
@@ -132,6 +137,10 @@ type portalFlags struct {
 	dbPath      string
 	npmRegistry string
 	trusted     stringList
+	// startTimeout 是每个实例等它自己的 dsh 端口就绪的最长时间。默认取
+	// config.DefaultDSHStartTimeout，与 `portal run` 一致；与默认值相同时
+	// 不写进保存的启动参数（见 buildStartArgs）。
+	startTimeout time.Duration
 }
 
 // registerPortalFlags 把管理端的启动参数注册进 fs。
@@ -145,6 +154,8 @@ func registerPortalFlags(fs *flag.FlagSet) *portalFlags {
 	fs.StringVar(&pf.stateDir, "state-dir", "", "网关状态目录（默认 ~/.dsh-gate）")
 	fs.StringVar(&pf.dbPath, "db", "", "管理端数据库路径（默认 <状态目录>/portal.db）")
 	fs.StringVar(&pf.npmRegistry, "npm-registry", "", "安装 dsh 用的 npm 源；留空用默认")
+	fs.DurationVar(&pf.startTimeout, "dsh-start-timeout", config.DefaultDSHStartTimeout,
+		"每个实例拉起 dsh 后等它监听端口的最长时间（如 10m）")
 	fs.Var(&pf.trusted, "trusted-host", "额外信任的地址（管理端域名），可重复")
 	return pf
 }
@@ -152,7 +163,7 @@ func registerPortalFlags(fs *flag.FlagSet) *portalFlags {
 // startArgs 把这组参数整理成 `portal run` 的参数（stateDir 已经解析成绝对路径）。
 func (pf *portalFlags) startArgs(stateDir string) []string {
 	return buildStartArgs(pf.host, pf.port, pf.tlsCert, pf.tlsKey, pf.publicURL,
-		stateDir, strings.TrimSpace(pf.dbPath), strings.TrimSpace(pf.npmRegistry), pf.trusted)
+		stateDir, strings.TrimSpace(pf.dbPath), strings.TrimSpace(pf.npmRegistry), pf.trusted, pf.startTimeout)
 }
 
 // startCommand 实现 `dsh-gate start`。
@@ -198,7 +209,8 @@ TLS 等参数与 install 时一致；不给就用上次保存的配置。
 			}
 		})
 		if explicit {
-			return usageError("管理端已由系统服务托管：改端口/地址请编辑服务单元（如 systemctl edit dsh-gate），再用 dsh-gate restart")
+			return usageError("管理端已由系统服务托管：改端口/地址/启动等待时间请编辑服务单元" +
+				"（如 systemctl edit dsh-gate，或 sudo dsh-gate service install 再带一次参数），再用 dsh-gate restart")
 		}
 		if err := serviceStart(); err != nil {
 			return fatal("启动系统服务失败：%v", err)

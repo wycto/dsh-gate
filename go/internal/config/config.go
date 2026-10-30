@@ -64,7 +64,12 @@ const (
 	MaxLockout = 15 * time.Minute
 
 	// DefaultDSHStartTimeout 是拉起 dsh 后等待端口就绪的最长时间。
-	DefaultDSHStartTimeout = 90 * time.Second
+	//
+	// 给到 5 分钟而不是更短：首次启动要由 npx 把 dsh 包与插件全部下载完才会
+	// 监听端口，慢网络远超 90 秒；而等待超时那一刻网关会把正在下载的子进程杀掉，
+	// 下一轮从头再来——预算比下载本身还短时，无论重试多少次都起不来。等待页的
+	// 文案写着「首次启动可能需要几分钟」，这里的预算得跟它一致。
+	DefaultDSHStartTimeout = 5 * time.Minute
 
 	// DefaultDSHStopTimeout 是停止 dsh 时等待优雅退出的时间，超时则强杀。
 	DefaultDSHStopTimeout = 10 * time.Second
@@ -644,6 +649,13 @@ func ApplyEnv(dst *Instance, getenv func(string) string) error {
 			return fmt.Errorf("DSH_GATE_LOCKOUT 需要一个时长，收到 %q", v)
 		}
 		dst.LockoutBase = d
+	}
+	if v, ok := lookup(getenv, "DSH_GATE_DSH_START_TIMEOUT"); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("DSH_GATE_DSH_START_TIMEOUT 需要一个时长（如 10m），收到 %q", v)
+		}
+		dst.DSHStartTimeout = d
 	}
 	return nil
 }

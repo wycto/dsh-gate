@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/wycto/dsh-gate/internal/config"
 	"github.com/wycto/dsh-gate/internal/i18n"
 )
 
@@ -120,6 +121,11 @@ func serviceCommand(args []string) int {
 	}
 	if strings.TrimSpace(pf.npmRegistry) != "" {
 		overrides["npm-registry"] = strings.TrimSpace(pf.npmRegistry)
+	}
+	if pf.startTimeout != config.DefaultDSHStartTimeout {
+		// 与默认值相同时不写进单元：将来调默认值能惠及已经装好的自启，
+		// 而用户点名过的时长必须原样带进 ExecStart。
+		overrides["dsh-start-timeout"] = pf.startTimeout.String()
 	}
 	if len(pf.trusted) > 0 {
 		// trusted-host 可重复，用逗号拼成一个值：start 侧会再拆开。
