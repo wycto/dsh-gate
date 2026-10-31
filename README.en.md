@@ -254,8 +254,10 @@ The console has five sections at the bottom, in this order: **instances → user
     current user's home. If the instance is running, it is stopped first.
 - **Users**: list, create, change password, disable / enable, change role (admin / user),
   delete. The first registered account is the **super administrator** (badged under its name):
-  nobody — not even it — can change its role, disable, rename or delete it. Changing its
+  nobody — not even it — can change its role, disable or delete it. Changing its
   password stays allowed, otherwise a forgotten password would lock the console shut.
+  Renaming lives on the command line only (`manage user rename`, no page button) and works
+  for the super administrator too: the role follows registration order, not the login name.
   Among the remaining accounts, the last admin cannot be disabled, demoted or deleted.
 - **Instance grants**: a user × instance checkbox matrix submitted as one diff. Admins can
   enter every instance by default.
@@ -1135,6 +1137,7 @@ equivalent command-line entry point.
 dsh-gate manage user add <account> [--display <full name>] [--role admin|user] [--random|--password-stdin]
 dsh-gate manage user passwd <account> [--random|--password-stdin]
 dsh-gate manage user role <account> <admin|user>
+dsh-gate manage user rename <old name> <new name>
 dsh-gate manage user disable|enable <account>
 dsh-gate manage user list
 dsh-gate manage user rm <account>
@@ -1155,11 +1158,17 @@ password is 8 to 256 characters (counted as characters, so a Chinese password is
 longer because of UTF-8).
 
 `user rm`, `user disable` and `user role` all refuse to touch the super administrator (the
-first registered account), and refuse to leave the console without an admin.
+first registered account), and refuse to leave the console without an admin. `user rename`
+is not on that list: the super administrator is identified by registration order (the lowest
+id), not by its login name, so renaming keeps the role — swapping the default `admin` for
+your own name is safe. A rename only touches the login name; the display name follows when
+it still merely echoes the old login name. Existing sessions carry the old login name and
+are dropped on their next request — sign in again with the new name.
 
 **Where the command line stops**: console sessions live **in process memory**, so after changing
 a password or disabling a user from the CLI the running console does not kick that user out at
-once — restart the console, or do it on the page, to revoke sessions immediately.
+once — restart the console, or do it on the page, to revoke sessions immediately. Renaming is
+the exception: sessions are keyed by the old login name, so they die on the next request.
 
 ### dsh-gate plugin
 

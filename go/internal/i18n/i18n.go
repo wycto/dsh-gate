@@ -414,6 +414,7 @@ const (
 	KeyCLIUsageUserName     = "cli.usage.userName"
 	KeyCLIUsageInstanceName = "cli.usage.instanceName"
 	KeyCLIUsageRole         = "cli.usage.role"
+	KeyCLIUsageUserRename   = "cli.usage.userRename"
 
 	KeyCLIErrOpenStore       = "cli.err.openStore"
 	KeyCLIErrUserNotExist    = "cli.err.userNotExist"
@@ -421,16 +422,18 @@ const (
 	KeyCLIErrLastAdmin       = "cli.err.lastAdmin"
 	KeyCLIErrUserExists      = "cli.err.userExists"
 
-	KeyCLIUserCreated     = "cli.user.created"
-	KeyCLIUserPasswd      = "cli.user.passwd"
-	KeyCLIUserDeleted     = "cli.user.deleted"
-	KeyCLIUserListHeader  = "cli.user.listHeader"
-	KeyCLIUserListEmpty   = "cli.user.listEmpty"
-	KeyCLIUserRow         = "cli.user.row"
-	KeyCLIUserRoleChanged = "cli.user.roleChanged"
-	KeyCLIUserEnabled     = "cli.user.enabled"
-	KeyCLIUserDisabled    = "cli.user.disabled"
-	KeyCLIRandomNotice    = "cli.random.notice"
+	KeyCLIUserCreated      = "cli.user.created"
+	KeyCLIUserPasswd       = "cli.user.passwd"
+	KeyCLIUserDeleted      = "cli.user.deleted"
+	KeyCLIUserRenamed      = "cli.user.renamed"
+	KeyCLIUserRenamedSuper = "cli.user.renamedSuper"
+	KeyCLIUserListHeader   = "cli.user.listHeader"
+	KeyCLIUserListEmpty    = "cli.user.listEmpty"
+	KeyCLIUserRow          = "cli.user.row"
+	KeyCLIUserRoleChanged  = "cli.user.roleChanged"
+	KeyCLIUserEnabled      = "cli.user.enabled"
+	KeyCLIUserDisabled     = "cli.user.disabled"
+	KeyCLIRandomNotice     = "cli.random.notice"
 
 	KeyCLIInstCreated         = "cli.instance.created"
 	KeyCLIInstDeleted         = "cli.instance.deleted"
@@ -707,6 +710,7 @@ var allKeys = []string{
 	KeyCLIUsageUserName,
 	KeyCLIUsageInstanceName,
 	KeyCLIUsageRole,
+	KeyCLIUsageUserRename,
 	KeyCLIErrOpenStore,
 	KeyCLIErrUserNotExist,
 	KeyCLIErrInstanceNotExit,
@@ -715,6 +719,8 @@ var allKeys = []string{
 	KeyCLIUserCreated,
 	KeyCLIUserPasswd,
 	KeyCLIUserDeleted,
+	KeyCLIUserRenamed,
+	KeyCLIUserRenamedSuper,
 	KeyCLIUserListHeader,
 	KeyCLIUserListEmpty,
 	KeyCLIUserRow,

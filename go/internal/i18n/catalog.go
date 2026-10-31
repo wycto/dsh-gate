@@ -241,6 +241,7 @@ var zh = map[string]string{
   dsh-gate manage user add <用户名> [--role admin|user]   新建用户
   dsh-gate manage user passwd <用户名>                    修改口令
   dsh-gate manage user role <用户名> <admin|user>          改角色
+  dsh-gate manage user rename <旧名> <新名>                改登录名（超管也可以改）
   dsh-gate manage user disable|enable <用户名>             停用 / 启用
   dsh-gate manage user list                               列出用户
   dsh-gate manage user rm <用户名>                         删除用户
@@ -258,7 +259,7 @@ var zh = map[string]string{
 
 实例的安装、启动、停止、日志见: dsh-gate dsh --help`,
 
-	KeyCLIPortalUserHelp:    "用法: dsh-gate manage user <add|passwd|role|disable|enable|list|rm> <用户名> [选项]",
+	KeyCLIPortalUserHelp:    "用法: dsh-gate manage user <add|passwd|role|rename|disable|enable|list|rm> <用户名> [选项]",
 	KeyCLIPortalInstHelp:    "用法: dsh-gate dsh <list|add|edit|rename|start|stop|restart|rm|install> [...]（实例命令已移到 dsh 子命令）",
 	KeyCLIPortalGrantHelp:   "用法: dsh-gate manage grant <list|add|rm> [<用户名>] [<实例名或 id>]",
 	KeyCLIUnknownPortalSub:  "未知的 portal 子命令 %q，可用：user / grant",
@@ -266,6 +267,7 @@ var zh = map[string]string{
 	KeyCLIUsageUserName:     "请给出用户名：dsh-gate manage user add <用户名>",
 	KeyCLIUsageInstanceName: "请给出实例名或以 id 指定",
 	KeyCLIUsageRole:         "角色只能是 admin 或 user",
+	KeyCLIUsageUserRename:   "请给出旧名与新名：dsh-gate manage user rename <旧名> <新名>",
 
 	KeyCLIErrOpenStore:       "打开管理端数据库失败：%s",
 	KeyCLIErrUserNotExist:    "用户 %q 不存在",
@@ -273,16 +275,18 @@ var zh = map[string]string{
 	KeyCLIErrLastAdmin:       "拒绝操作最后一个管理员（会导致无人能管理管理端）",
 	KeyCLIErrUserExists:      "用户 %q 已存在",
 
-	KeyCLIUserCreated:     "已创建用户 %q（角色 %s），当前共 %d 个",
-	KeyCLIUserPasswd:      "已更新用户 %q 的口令（其全部会话已失效）",
-	KeyCLIUserDeleted:     "已删除用户 %q，当前共 %d 个",
-	KeyCLIUserListHeader:  "管理端 %s（%d 个用户）:",
-	KeyCLIUserListEmpty:   "还没有用户。创建一个：dsh-gate manage user add admin --role admin",
-	KeyCLIUserRow:         "  %-16s %-10s %-6s %s",
-	KeyCLIUserRoleChanged: "已把 %q 的角色改为 %s",
-	KeyCLIUserEnabled:     "已启用用户 %q",
-	KeyCLIUserDisabled:    "已停用用户 %q（其全部会话已失效）",
-	KeyCLIRandomNotice:    "初始口令（只显示这一次，请立即保存）：",
+	KeyCLIUserCreated:      "已创建用户 %q（角色 %s），当前共 %d 个",
+	KeyCLIUserPasswd:       "已更新用户 %q 的口令（其全部会话已失效）",
+	KeyCLIUserDeleted:      "已删除用户 %q，当前共 %d 个",
+	KeyCLIUserRenamed:      "已把用户 %q 改名为 %q（其全部会话已失效，请用新名字重新登录）",
+	KeyCLIUserRenamedSuper: "该账号是超级管理员：改名不改变身份，它现在以新名字继续承载超管权限",
+	KeyCLIUserListHeader:   "管理端 %s（%d 个用户）:",
+	KeyCLIUserListEmpty:    "还没有用户。创建一个：dsh-gate manage user add admin --role admin",
+	KeyCLIUserRow:          "  %-16s %-10s %-6s %s",
+	KeyCLIUserRoleChanged:  "已把 %q 的角色改为 %s",
+	KeyCLIUserEnabled:      "已启用用户 %q",
+	KeyCLIUserDisabled:     "已停用用户 %q（其全部会话已失效）",
+	KeyCLIRandomNotice:     "初始口令（只显示这一次，请立即保存）：",
 
 	KeyCLIInstCreated:         "已创建实例 %q（id %s，端口 %d，DSH_HOME %s）",
 	KeyCLIInstDeleted:         "已删除实例 %q（dsh 数据目录未改动）",
@@ -612,6 +616,7 @@ this is the command-line equivalent.
   dsh-gate manage user add <name> [--role admin|user]   create a user
   dsh-gate manage user passwd <name>                    change a password
   dsh-gate manage user role <name> <admin|user>          change a role
+  dsh-gate manage user rename <old> <new>                rename an account (works for the super admin too)
   dsh-gate manage user disable|enable <name>             disable / enable
   dsh-gate manage user list                             list users
   dsh-gate manage user rm <name>                        delete a user
@@ -629,7 +634,7 @@ Common options:
 
 Instance install / start / stop / logs: see dsh-gate dsh --help`,
 
-	KeyCLIPortalUserHelp:    "Usage: dsh-gate manage user <add|passwd|role|disable|enable|list|rm> <name> [options]",
+	KeyCLIPortalUserHelp:    "Usage: dsh-gate manage user <add|passwd|role|rename|disable|enable|list|rm> <name> [options]",
 	KeyCLIPortalInstHelp:    "Usage: dsh-gate dsh <list|add|edit|rename|start|stop|restart|rm|install> [...] (instance commands moved under dsh)",
 	KeyCLIPortalGrantHelp:   "Usage: dsh-gate manage grant <list|add|rm> [<user>] [<instance name or id>]",
 	KeyCLIUnknownPortalSub:  "unknown portal subcommand %q; expected user / grant",
@@ -637,6 +642,7 @@ Instance install / start / stop / logs: see dsh-gate dsh --help`,
 	KeyCLIUsageUserName:     "a user name is required: dsh-gate manage user add <name>",
 	KeyCLIUsageInstanceName: "an instance name (or id) is required",
 	KeyCLIUsageRole:         "the role must be admin or user",
+	KeyCLIUsageUserRename:   "two arguments are required: dsh-gate manage user rename <old name> <new name>",
 
 	KeyCLIErrOpenStore:       "cannot open the portal database: %s",
 	KeyCLIErrUserNotExist:    "user %q does not exist",
@@ -644,16 +650,18 @@ Instance install / start / stop / logs: see dsh-gate dsh --help`,
 	KeyCLIErrLastAdmin:       "the last administrator cannot be changed (nobody would be able to administer the portal)",
 	KeyCLIErrUserExists:      "user %q already exists",
 
-	KeyCLIUserCreated:     "created user %q (role %s); %d in total",
-	KeyCLIUserPasswd:      "changed the password of %q (all their sessions were revoked)",
-	KeyCLIUserDeleted:     "deleted user %q; %d remaining",
-	KeyCLIUserListHeader:  "portal %s (%d users):",
-	KeyCLIUserListEmpty:   "no users yet. Create one: dsh-gate manage user add admin --role admin",
-	KeyCLIUserRow:         "  %-16s %-10s %-6s %s",
-	KeyCLIUserRoleChanged: "changed the role of %q to %s",
-	KeyCLIUserEnabled:     "enabled user %q",
-	KeyCLIUserDisabled:    "disabled user %q (all their sessions were revoked)",
-	KeyCLIRandomNotice:    "initial password (shown once — save it now):",
+	KeyCLIUserCreated:      "created user %q (role %s); %d in total",
+	KeyCLIUserPasswd:       "changed the password of %q (all their sessions were revoked)",
+	KeyCLIUserDeleted:      "deleted user %q; %d remaining",
+	KeyCLIUserRenamed:      "renamed user %q to %q (all their sessions were revoked; sign in with the new name)",
+	KeyCLIUserRenamedSuper: "this account is the super administrator: renaming does not change that — it keeps the role under its new name",
+	KeyCLIUserListHeader:   "portal %s (%d users):",
+	KeyCLIUserListEmpty:    "no users yet. Create one: dsh-gate manage user add admin --role admin",
+	KeyCLIUserRow:          "  %-16s %-10s %-6s %s",
+	KeyCLIUserRoleChanged:  "changed the role of %q to %s",
+	KeyCLIUserEnabled:      "enabled user %q",
+	KeyCLIUserDisabled:     "disabled user %q (all their sessions were revoked)",
+	KeyCLIRandomNotice:     "initial password (shown once — save it now):",
 
 	KeyCLIInstCreated:         "created instance %q (id %s, port %d, DSH_HOME %s)",
 	KeyCLIInstDeleted:         "deleted instance %q (the dsh data directory is untouched)",

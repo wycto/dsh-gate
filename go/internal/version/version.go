@@ -10,4 +10,4 @@
 package version
 
 // Version 是 dsh-gate 的版本号，默认值即发版时的版本号。
-var Version = "0.4.1"
+var Version = "0.4.2"

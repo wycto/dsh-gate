@@ -43,8 +43,9 @@ var (
 	// 用哨兵错误而不是裸字符串：管理台要据此给出准确文案。
 	ErrLastAdmin = errors.New("拒绝操作最后一个管理员")
 	// ErrSuperAdmin 该操作指向超级管理员（第一个注册的账号）。它承载管理端
-	// 的初始身份：不能改角色、不能停用、不能改名、不能删除。改口令与展示名
-	// 不在禁止之列——否则忘了口令就把整个管理端锁死了。
+	// 的初始身份：不能改角色、不能停用、不能删除。改口令、展示名与登录名
+	// 不在禁止之列——忘了口令就把整个管理端锁死；默认账号名（admin）不合
+	// 人心意，而超管身份由 id 决定，改名不改变谁是超管。
 	ErrSuperAdmin = errors.New("拒绝操作超级管理员（第一个注册的账号）")
 )
 
@@ -319,8 +320,11 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 }
 
 // RenameUser 改登录名（审计里的人名会跟着变，历史记录不做回填）。
-// 超级管理员不可改名——「第一个注册」是它的身份依据，改名虽不动 id，
-// 但登录名是所有人认知它的入口，跟着变会让人找不到初始账号。
+// 超级管理员**可以**改名：它的身份依据是「id 最小 / 第一个注册」，改名不动 id，
+// 改完之后它照样是超管。默认账号 admin 不合心意时，这是把它换掉的唯一正路。
+//
+// 展示名如果还和旧登录名相同（创建时回退出来的），一并跟着改，免得页面上
+// 显示的还是旧名字。已登录会话的主体是旧登录名，改名后自然失效、需要重新登录。
 func (s *Store) RenameUser(oldName, newName string) error {
 	if err := users.ValidateName(newName); err != nil {
 		return err
@@ -328,13 +332,21 @@ func (s *Store) RenameUser(oldName, newName string) error {
 	if oldName == newName {
 		return nil
 	}
-	if s.IsSuperAdmin(oldName) {
-		return fmt.Errorf("%w（改名）: %s", ErrSuperAdmin, oldName)
-	}
 	if _, err := s.UserByName(newName); err == nil {
 		return fmt.Errorf("账号 %q 已存在", newName)
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
+	}
+	// 先改展示名再改登录名：两条语句都按旧名定位。updateUser 把「没改到行」
+	// 报成 ErrNotFound，而展示名回退时可能为空串，所以这里只在相等时才动它。
+	u, err := s.UserByName(oldName)
+	if err != nil {
+		return err
+	}
+	if u.DisplayName == oldName {
+		if err := s.SetDisplayName(oldName, newName); err != nil {
+			return err
+		}
 	}
 	return s.updateUser(oldName, `UPDATE users SET name = ?, updated_at = ? WHERE name = ?`, newName, nowText(), oldName)
 }

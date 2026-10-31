@@ -131,7 +131,8 @@ dsh 实例（与 /admin 页面能力对等）:
   dsh-gate dsh rm <名字> [--purge] [--purge-install]         删除实例（可连带删数据/安装目录）
 
 用户与授权:
-  dsh-gate manage user add|passwd|role|disable|enable|list|rm <用户名>
+  dsh-gate manage user add|passwd|role|rename|disable|enable|list|rm <用户名>
+  dsh-gate manage user rename <旧名> <新名>                改登录名（超管也可以改）
   dsh-gate manage grant add|rm <用户名> <实例名或 id>
   dsh-gate manage grant list [用户名]
 

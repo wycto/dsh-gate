@@ -119,7 +119,7 @@ func roleLabel(role portal.Role) string {
 //
 // 超级管理员不由角色决定，而是「表里 id 最小的账号」（最早注册的那个，见
 // Store.SuperAdminID），所以这里单独标出来——只显示「管理员」的话，看不出
-// 哪一个账号是改不动、删不掉的那个。页面上的徽标用的是同一句话。
+// 哪一个账号是改不了角色、删不掉的那个。页面上的徽标用的是同一句话。
 func accountTypeLabel(u portal.User, superID int64) string {
 	if superID != 0 && u.ID == superID {
 		return tr(i18n.KeyAdminSuperBadge)
@@ -154,6 +154,8 @@ func portalUser(args []string) int {
 		return portalUserToggle(args[1:], false)
 	case "list":
 		return portalUserList(args[1:])
+	case "rename":
+		return portalUserRename(args[1:])
 	case "rm", "remove":
 		return portalUserRemove(args[1:])
 	case "-h", "--help", "help":
@@ -354,6 +356,45 @@ func portalUserList(args []string) int {
 		}
 		fmt.Printf(tr(i18n.KeyCLIUserRow)+"\n", u.Name, accountTypeLabel(u, superID), status,
 			u.CreatedAt.Local().Format("2006-01-02 15:04"))
+	}
+	return 0
+}
+
+// portalUserRename 实现 `dsh-gate manage user rename <旧名> <新名>`。
+//
+// 存在的意义：默认账号叫 admin，很多人想换成自己的名字。超管身份由 id 决定、
+// 不随登录名改变，所以超管也可以改——这是唯一安全的改法（直接改数据库要停
+// 服务、清引用，容易做错）。
+func portalUserRename(args []string) int {
+	fs := flag.NewFlagSet("portal user rename", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dbPath, err := parsePortalFlags(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return usageKey(i18n.KeyCLIUnknownPortalSub, err.Error())
+	}
+	if fs.NArg() != 2 {
+		return usageKey(i18n.KeyCLIUsageUserRename)
+	}
+	oldName, newName := fs.Arg(0), fs.Arg(1)
+
+	store, code := openPortal(dbPath)
+	if code != 0 {
+		return code
+	}
+	defer store.Close()
+
+	// 先记下它是不是超管：改名后按新名查身份仍然成立，但提示语要说明
+	// 「改完之后它照样是超级管理员」，让人放心。
+	isSuper := store.IsSuperAdmin(oldName)
+	if err := store.RenameUser(oldName, newName); err != nil {
+		return portalStoreError(err)
+	}
+	sayKey(os.Stdout, i18n.KeyCLIUserRenamed, oldName, newName)
+	if isSuper {
+		sayKey(os.Stdout, i18n.KeyCLIUserRenamedSuper)
 	}
 	return 0
 }
