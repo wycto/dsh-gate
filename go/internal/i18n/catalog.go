@@ -333,7 +333,7 @@ var zh = map[string]string{
 交互式终端里逐项询问（回车接受括号里的默认值）；脚本里全部用选项给出。
 
 向导顺序: 监听地址 → 端口 → 安装目录 → 配置与数据库目录 → 管理员账号与姓名 → 口令
-          → 是否后台启动 → 是否开机自启 → 汇总确认
+          → HTTPS 自签证书 → 是否后台启动 → 是否开机自启 → 汇总确认
 
   --host <地址>       管理端监听地址（默认 0.0.0.0）
   --port <端口>       管理端监听端口（默认 12020）
@@ -346,13 +346,29 @@ var zh = map[string]string{
   --service           安装开机（登录）自启并立即启动（蕴含 --start）
   --bin-dir <目录>    把 dsh-gate 拷贝到这个目录（需在 PATH 里）；留空则不拷贝
 
+HTTPS（自签证书）:
+  --tls               生成自签证书并以 HTTPS 对外服务
+  --no-tls            不启用 HTTPS，保持原来的 HTTP（脚本模式默认）
+  --tls-trust         把生成的 CA 装进系统信任库
+  --no-tls-trust      只生成证书，不碰系统信任库（脚本模式默认）
+  --tls-cert <文件>   用你自己的证书（与 --tls-key 成对；给了就不自动生成）
+  --tls-key <文件>    用你自己的私钥
+
+  交互式安装默认启用 HTTPS 并询问是否装信任：浏览器只对 HTTPS 站点开放
+  麦克风、语音输入这类能力，而管理端最常见的用法就是从手机或另一台电脑
+  访问，那些场景下 http:// 会让这些功能直接不可用。脚本模式默认不启用，
+  以免升级一个版本就悄悄改掉对外协议。
+
 示例:
   dsh-gate install
-      全程交互
+      全程交互（默认启用 HTTPS）
 
   dsh-gate install --port 12099 --random --start
-      脚本模式：非默认项用选项给出，装好并后台运行，稍后打开
-      http://127.0.0.1:12099/admin 配置实例`,
+      脚本模式：非默认项用选项给出，装好并后台运行（保持 HTTP），稍后打开
+      http://127.0.0.1:12099/admin 配置实例
+
+  dsh-gate install --random --start --tls --tls-trust
+      脚本模式 + HTTPS + 装信任（一次性把录音可用的环境准备好）`,
 	KeyCLIInstallNeedPassword: `当前不是交互式终端，install 无法询问口令。
 改用以下任一方式:
   echo "$PASSWORD" | dsh-gate install --password-stdin
@@ -361,8 +377,8 @@ var zh = map[string]string{
 	KeyCLIInstallExists:      "管理端已有账号（共 %d 个），未创建新账号",
 	KeyCLIInstallHasAccounts: "管理端已有账号（共 %d 个），本次不建号，账号与口令保持原样：",
 	KeyCLIInstallExistingRow: "  %-16s %-12s %-12s %s",
-	KeyCLIInstallStarted:     "管理端已启动：http://127.0.0.1:%d/（管理台 /admin）",
-	KeyCLIInstallNotStarted:  "管理端尚未启动。启动：dsh-gate start --port %d",
+	KeyCLIInstallStarted:     "管理端已启动：%s://127.0.0.1:%d/（管理台 /admin）",
+	KeyCLIInstallNotStarted:  "管理端尚未启动。启动：dsh-gate start --port %d%s",
 	KeyCLIInstallNextSteps: `接下来:
   dsh-gate start / stop / restart   启动、停止、重启整个管理端
   dsh-gate status                   查看管理端与实例状态
@@ -375,6 +391,26 @@ var zh = map[string]string{
   dsh-gate uninstall
       停止并删除所有实例，最后卸载管理端服务（会先问是否删实例数据）`,
 	KeyCLIInstallBadFlag: "--%s 不属于 install 的范围；实例参数请用 dsh-gate dsh add 或到管理台里配置",
+
+	KeyCLIInstallTLSAsk: "是否启用 HTTPS（自签证书）？[Y/n] ",
+	KeyCLIInstallTLSGenerated: `已生成自签证书：
+  证书目录  %s
+  覆盖地址  %s
+浏览器只对 HTTPS 站点开放麦克风、语音输入这类能力；用 http:// 从别的机器访问时
+它们会不可用，而报错只会说「浏览器不支持」。`,
+	KeyCLIInstallTLSReused:    "沿用已有的自签证书（%s），地址仍被覆盖，未重新签发。",
+	KeyCLIInstallTLSNewCA:     "注意：这次重建了本地 CA，之前装过信任的浏览器需要重新装一次：\n  %s",
+	KeyCLIInstallTLSAddresses: "覆盖地址  %s",
+	KeyCLIInstallTLSAskTrust:  "要把这个 CA 装进系统信任库吗？[Y/n] ",
+	KeyCLIInstallTLSInstalled: "已装进系统信任库。%s",
+	KeyCLIInstallTLSFailed:    "没能自动装进信任库：%s",
+	KeyCLIInstallTLSManual: `你可以自己执行这条命令把它装进信任库：
+  %s
+（不装也能用 HTTPS，但浏览器每次都会警告，且录音这类能力可能仍不可用。）`,
+	KeyCLIInstallTLSSkipped: "跳过自动安装信任。手动安装命令：\n  %s",
+	KeyCLIInstallTLSURL:     "访问地址  %s://%s/",
+	KeyCLIInstallTLSURLs:    "可访问地址（证书覆盖这些主机名与 IP）：",
+	KeyCLIInstallTLSURLRow:  "  %s://%s:%d/",
 
 	KeyDurationSeconds:        "%d 秒",
 	KeyDurationMinutes:        "%d 分钟",
@@ -711,7 +747,8 @@ In an interactive terminal it asks step by step; in scripts everything comes
 from options.
 
 Wizard order: host -> port -> install dir -> config & database dir -> admin account &
-              display name -> password -> run in background -> login service -> confirm
+              display name -> password -> HTTPS self-signed cert -> run in background
+              -> login service -> confirm
 
   --host <addr>       console listen address (default 0.0.0.0)
   --port <port>       console listen port (default 12020)
@@ -724,13 +761,30 @@ Wizard order: host -> port -> install dir -> config & database dir -> admin acco
   --service           install as a login service and start it now (implies --start)
   --bin-dir <dir>     copy dsh-gate here (must be on PATH); empty = skip
 
+HTTPS (self-signed certificate):
+  --tls               generate a self-signed certificate and serve over HTTPS
+  --no-tls            keep the original plain HTTP (the default in script mode)
+  --tls-trust         install the generated CA into the system trust store
+  --no-tls-trust      only generate the certificate, leave trust alone (script default)
+  --tls-cert <file>   use your own certificate (pair with --tls-key; skips generation)
+  --tls-key <file>    use your own private key
+
+  Interactive installs enable HTTPS by default and ask about installing trust:
+  browsers only expose the microphone and voice input on HTTPS sites, and the
+  console is usually reached from a phone or another machine — over plain http://
+  those features simply do not work. Script mode leaves HTTPS off so that an
+  upgrade never silently changes the protocol a deployment already relies on.
+
 Example:
   dsh-gate install
-      fully interactive
+      fully interactive (HTTPS on by default)
 
   dsh-gate install --port 12099 --random --start
-      script mode: installs the console and runs it in the background; then open
-      http://127.0.0.1:12099/admin to configure instances`,
+      script mode: installs the console and runs it in the background over plain
+      HTTP; then open http://127.0.0.1:12099/admin to configure instances
+
+  dsh-gate install --random --start --tls --tls-trust
+      script mode + HTTPS + trusted CA (microphone works right away)`,
 	KeyCLIInstallNeedPassword: `Not an interactive terminal, so install cannot ask for a password.
 Use one of these instead:
   echo "$PASSWORD" | dsh-gate install --password-stdin
@@ -739,8 +793,8 @@ Use one of these instead:
 	KeyCLIInstallExists:      "portal already has accounts (%d total); no new account created",
 	KeyCLIInstallHasAccounts: "portal already has accounts (%d total); nothing is created, names and passwords stay as they are:",
 	KeyCLIInstallExistingRow: "  %-16s %-12s %-12s %s",
-	KeyCLIInstallStarted:     "portal is up: http://127.0.0.1:%d/ (admin console at /admin)",
-	KeyCLIInstallNotStarted:  "portal is not running yet. Start it with: dsh-gate start --port %d",
+	KeyCLIInstallStarted:     "portal is up: %s://127.0.0.1:%d/ (admin console at /admin)",
+	KeyCLIInstallNotStarted:  "portal is not running yet. Start it with: dsh-gate start --port %d%s",
 	KeyCLIInstallNextSteps: `Next steps:
   dsh-gate start / stop / restart   start, stop, restart the whole console
   dsh-gate status                   console and instance status
@@ -753,6 +807,28 @@ Use one of these instead:
   dsh-gate uninstall
       stop and delete all instances, then remove the console service (asks before deleting data)`,
 	KeyCLIInstallBadFlag: "--%s is not part of install; configure instances with dsh-gate dsh add or in the admin console",
+
+	KeyCLIInstallTLSAsk: "Enable HTTPS with a self-signed certificate? [Y/n] ",
+	KeyCLIInstallTLSGenerated: `Generated a self-signed certificate:
+  cert dir  %s
+  covers    %s
+Browsers only expose the microphone and voice input on HTTPS sites. Reaching the
+console over plain http:// from another machine hides those features, and the
+error only says "this browser cannot record".`,
+	KeyCLIInstallTLSReused:    "Reusing the existing self-signed certificate (%s); it still covers every address, so nothing was reissued.",
+	KeyCLIInstallTLSNewCA:     "Note: the local CA was rebuilt, so browsers that trusted the old one need it installed again:\n  %s",
+	KeyCLIInstallTLSAddresses: "covers    %s",
+	KeyCLIInstallTLSAskTrust:  "Install this CA into the system trust store? [Y/n] ",
+	KeyCLIInstallTLSInstalled: "Installed into the system trust store. %s",
+	KeyCLIInstallTLSFailed:    "could not install it into the trust store automatically: %s",
+	KeyCLIInstallTLSManual: `You can install it into the trust store yourself with:
+  %s
+(HTTPS works without this, but the browser warns every time and microphone
+features may still be unavailable.)`,
+	KeyCLIInstallTLSSkipped: "Skipped installing trust. Manual command:\n  %s",
+	KeyCLIInstallTLSURL:     "URL       %s://%s/",
+	KeyCLIInstallTLSURLs:    "Reachable at (the certificate covers these hostnames and IPs):",
+	KeyCLIInstallTLSURLRow:  "  %s://%s:%d/",
 
 	KeyDurationSeconds:        "%ds",
 	KeyDurationMinutes:        "%dm",

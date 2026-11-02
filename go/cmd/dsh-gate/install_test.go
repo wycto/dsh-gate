@@ -228,7 +228,7 @@ func TestCollectInstallSettingsScriptMode(t *testing.T) {
 	_ = fs.Parse([]string{"--port", strconv.Itoa(free), "--start"})
 
 	visited := map[string]bool{"port": true, "start": true}
-	s, err := collectInstallSettings(fs, visited, "0.0.0.0", free, "/tmp/state", "admin", "魏一", false, false, nil, 0, false, false)
+	s, err := collectInstallSettings(fs, visited, "0.0.0.0", free, "/tmp/state", "admin", "魏一", false, false, nil, 0, false, false, tlsInputs{})
 	if err != nil {
 		t.Fatalf("脚本模式不应报错: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestCollectInstallSettingsScriptMode(t *testing.T) {
 	}
 	defer ln2.Close()
 	busy := ln2.Addr().(*net.TCPAddr).Port
-	if _, err := collectInstallSettings(fs, visited, "0.0.0.0", busy, "", "admin", "", false, false, nil, 0, false, false); err == nil {
+	if _, err := collectInstallSettings(fs, visited, "0.0.0.0", busy, "", "admin", "", false, false, nil, 0, false, false, tlsInputs{}); err == nil {
 		t.Fatal("端口被占用时脚本模式应提前报错")
 	}
 }
@@ -561,13 +561,13 @@ func TestCollectInstallSettingsExistingAccountsSkipsAccountQuestions(t *testing.
 	fs.Bool("start", false, "")
 	fs.Bool("service", false, "")
 	// 环境项都算「已给过」，只留下确认页这一问。
-	visited := map[string]bool{"host": true, "port": true, "bin-dir": true, "state-dir": true, "start": true, "service": true}
+	visited := map[string]bool{"host": true, "port": true, "bin-dir": true, "state-dir": true, "start": true, "service": true, "no-tls": true}
 	withStdin(t, "y\n")
 
 	var settings installSettings
 	out, code := captureStdout(t, func() int {
 		var err error
-		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, dir, "admin", "", true, false, users, superID, false, false)
+		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, dir, "admin", "", true, false, users, superID, false, false, tlsInputs{off: true})
 		if err != nil {
 			t.Errorf("已有账号时向导不应报错: %v", err)
 			return 1
@@ -625,13 +625,13 @@ func TestCollectInstallSettingsAsksBinDirWithPlatformDefault(t *testing.T) {
 	fs.String("bin-dir", binDirDefault(), "")
 	// 其余项都算「已给过」，只留下安装目录与确认页这两问：第一行回车取默认，
 	// 第二行 y 确认。
-	visited := map[string]bool{"host": true, "port": true, "state-dir": true, "start": true, "service": true}
+	visited := map[string]bool{"host": true, "port": true, "state-dir": true, "start": true, "service": true, "no-tls": true}
 	withStdin(t, "\ny\n")
 
 	var settings installSettings
 	out, code := captureStdout(t, func() int {
 		var err error
-		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, t.TempDir(), "admin", "", true, false, nil, 0, false, false)
+		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, t.TempDir(), "admin", "", true, false, nil, 0, false, false, tlsInputs{off: true})
 		if err != nil {
 			t.Errorf("向导不应报错: %v", err)
 			return 1

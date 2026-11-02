@@ -54,7 +54,8 @@ English version: [README.en.md](README.en.md)
 - [异地访问（人在家里用公司的 dsh）](#异地访问人在家里用公司的-dsh)
   - [方式一：内网穿透工具（最省事）](#方式一内网穿透工具最省事)
   - [方式二：Tailscale / ZeroTier 这类组网](#方式二tailscale--zerotier-这类组网)
-  - [方式三：网关自己跑 HTTPS](#方式三网关自己跑-https)
+  - [方式三：install 自带的自签证书（推荐，无需域名）](#方式三install-自带的自签证书推荐无需域名)
+  - [方式四：网关自己跑 HTTPS（有自己的域名与证书）](#方式四网关自己跑-https有自己的域名与证书)
 - [安全说明](#安全说明)
 - [环境变量](#环境变量)
 - [常见问题](#常见问题)
@@ -783,6 +784,11 @@ echo "$PASSWORD" | dsh-gate install --password-stdin --service
 | `--start` | 关 | 装完立即把管理端放到后台运行 |
 | `--service` | 关 | 安装开机（登录）自启并立即启动（蕴含 `--start`） |
 | `--bin-dir` | Linux/macOS `/usr/local/bin`，Windows `%LOCALAPPDATA%\dsh-gate\bin` | 把 dsh-gate 拷到这个目录；留空则不拷。服务单元 / 计划任务用拷贝后的路径，原目录被清理也不影响自启 |
+| `--tls` | 未给 = 交互式启用、脚本不启用 | 生成自签证书并以 HTTPS 对外服务，见[方式三](#方式三install-自带的自签证书推荐无需域名) |
+| `--no-tls` | 关 | 不启用 HTTPS，保持原来的 HTTP |
+| `--tls-trust` | 关 | 把生成的 CA 装进系统信任库 |
+| `--no-tls-trust` | 关 | 只生成证书，不碰系统信任库 |
+| `--tls-cert` / `--tls-key` | 空 | 用你自己的证书（成对；给了就不自动生成） |
 
 管理端里已有账号时，`install` 只做启动 / 自启那一步，不会改任何人的口令；重复执行是安全的。
 Linux 上 `--service` 需要 root：普通用户请先 `install`，再用
@@ -1306,7 +1312,77 @@ dsh-gate start --port 12020 --public-url http://100.x.y.z:12020
 > 所以升级 dsh 之后它会自动生效，不需要改配置。它只影响 dsh 打印的地址和
 > agent 看到的 `DSH_WEB_URL`，**不影响管理端转发**。
 
-### 方式三：网关自己跑 HTTPS
+### 方式三：install 自带的自签证书（推荐，无需域名）
+
+**不需要域名、不需要买证书**：`install` 可以直接生成一套自签证书，并可选地把 CA 装进
+系统信任库。这样从手机或另一台电脑访问时，浏览器认可这个 HTTPS，麦克风、语音输入这些
+只在安全上下文里才开放的能力才能用。
+
+```sh
+dsh-gate install          # 交互式：会问「是否启用 HTTPS（自签证书）」，默认是
+```
+
+交互式向导里回车两次就完成了：第一次确认启用 HTTPS，第二次确认把 CA 装进信任库。装完会
+打印证书覆盖的全部地址：
+
+```
+可访问地址（证书覆盖这些主机名与 IP）：
+  https://127.0.0.1:12020/
+  https://192.168.1.20:12020/
+```
+
+脚本 / CI 里用选项给出（脚本模式**默认不启用** HTTPS，以免升级一个版本就改掉对外协议）：
+
+```sh
+# 只生成证书，不碰系统信任库
+dsh-gate install --random --start --tls --no-tls-trust
+
+# 生成证书 + 装信任（一次性把「录音可用」的环境准备好）
+dsh-gate install --random --start --tls --tls-trust
+
+# 用你自己的证书
+dsh-gate install --random --start --tls-cert ./server.crt --tls-key ./server.key
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--tls` | 生成自签证书并以 HTTPS 对外服务（交互式向导里默认开） |
+| `--no-tls` | 不启用 HTTPS，保持原来的 HTTP（脚本模式默认） |
+| `--tls-trust` | 把生成的 CA 装进系统信任库 |
+| `--no-tls-trust` | 只生成证书，不碰系统信任库（脚本模式默认） |
+| `--tls-cert` / `--tls-key` | 用你自己的证书（成对；给了就不自动生成） |
+
+几个要点：
+
+- **证书放在 `<状态目录>/tls/`**（默认 `~/.dsh-gate/tls/`）。其中 `ca.crt` 是要装进信任库
+  的那个，`server.crt` / `server.key` 是服务器证书。
+- **IP 变了不用重跑 install**。管理端每次启动会按当前本机地址重签服务器证书（CA 不变，
+  所以浏览器里装的信任继续有效）。DHCP 换地址、连上 VPN、插拔网卡之后都能自动跟上。
+- **重复 install 不会换证书**：地址没变、证书没过期时原样复用，免得已经装好的信任和
+  浏览器例外全部失效。
+- **没装信任也能用 HTTPS**，但浏览器每次都会警告，且录音这类能力可能仍不可用。装信任的
+  命令会打印出来，也可以自己执行：
+
+```sh
+# macOS（不需要 sudo，写进登录钥匙串并设为始终信任）
+security add-trusted-cert -r trustRoot -k "$HOME/Library/Keychains/login.keychain-db" ~/.dsh-gate/tls/ca.crt
+
+# Windows（当前用户的受信任根证书存储区）
+certutil -addstore -f "ROOT" %USERPROFILE%\.dsh-gate\tls\ca.crt
+
+# Debian / Ubuntu
+sudo cp ~/.dsh-gate/tls/ca.crt /usr/local/share/ca-certificates/dsh-gate-ca.crt
+sudo update-ca-certificates
+```
+
+装完**重启浏览器**才生效；Firefox 有自己的信任库，需要在它的设置里单独导入。
+
+> 为什么这事值得做：浏览器的「安全上下文」只认 HTTPS 与回环地址。在
+> `http://192.168.1.20:12020` 上打开 dsh，语音输入会报「当前浏览器不支持录音」——
+> 这句话指不到真因，用户很容易以为插件坏了或模型没装好。上了 HTTPS 并让浏览器信任
+> 证书之后，这条路才走得通。
+
+### 方式四：网关自己跑 HTTPS（有自己的域名与证书）
 
 有自己的域名和证书时，直接让管理端提供 HTTPS：
 

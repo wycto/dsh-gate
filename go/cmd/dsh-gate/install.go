@@ -36,6 +36,8 @@ import (
 	"github.com/wycto/dsh-gate/internal/i18n"
 	"github.com/wycto/dsh-gate/internal/portal"
 	"github.com/wycto/dsh-gate/internal/term"
+	"github.com/wycto/dsh-gate/internal/tlscert"
+	"github.com/wycto/dsh-gate/internal/trust"
 	"github.com/wycto/dsh-gate/internal/users"
 )
 
@@ -59,6 +61,20 @@ func installCommand(args []string) int {
 	fs.Bool("service", false, "安装开机（登录）自启并立即启动（蕴含 --start）")
 	binDirFlag := fs.String("bin-dir", binDirDefault(),
 		"把 dsh-gate 拷贝到这个目录（需在 PATH 里）；留空则不拷贝（Windows 忽略此项）")
+	// HTTPS 相关：默认值刻意做成「三态」——没给过就是「用户没说」，由交互性
+	// 决定最终取值（见 readTLSInputs 与 wantsTLS）。
+	//
+	// 为什么不用单个 bool 默认 false：脚本模式（CI、批量部署）必须保持原有的
+	// HTTP 行为不变，否则升级一个版本就悄悄改了对外协议；而交互式用户最需要
+	// HTTPS（他们要拿手机/另一台电脑访问，那些场景下 http 直接让录音失效）。
+	// 一个 bool 表达不了「按场景给不同默认值」，所以用 --tls 与 --no-tls 两个
+	// 开关，配合 fs.Visit 判断用户到底说过话没有。
+	fs.Bool("tls", false, "生成自签证书并以 HTTPS 对外服务（交互式向导里默认开）")
+	fs.Bool("no-tls", false, "不启用 HTTPS，保持原有的 HTTP 行为")
+	fs.Bool("tls-trust", false, "尝试把生成的 CA 装进系统信任库（需要时请自行准备权限）")
+	fs.Bool("no-tls-trust", false, "只生成证书，不碰系统信任库")
+	fs.String("tls-cert", "", "使用已有的证书文件（与 --tls-key 成对；给了就不自动生成）")
+	fs.String("tls-key", "", "使用已有的私钥文件（与 --tls-cert 成对）")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -105,11 +121,18 @@ func installCommand(args []string) int {
 		return usageError("端口 %d 超出范围（1–65535）", *port)
 	}
 
+	// HTTPS 选项的自洽性也先挡掉：装到一半才发现参数互相打架，
+	// 用户得自己回滚一次。
+	tlsIn := readTLSInputs(fs)
+	if err := tlsIn.validate(); err != nil {
+		return usageError("%v", err)
+	}
+
 	// 交互式向导：逐项问、端口当场查占用、答完汇总确认。
 	// 选项显式给过的项不再问。
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
-	settings, err := collectInstallSettings(fs, visited, *host, *port, *stateDir, *admin, *display, interactive, needPassword, existing, superID, *randomMode, *fromStdin)
+	settings, err := collectInstallSettings(fs, visited, *host, *port, *stateDir, *admin, *display, interactive, needPassword, existing, superID, *randomMode, *fromStdin, tlsIn)
 	if err != nil {
 		return fatal("%v", err)
 	}
@@ -175,6 +198,9 @@ func installCommand(args []string) int {
 	}
 
 	code := 0
+	// TLS 参数拼一次，两种启动路径共用：漏传一处，用户就会遇到「install 说
+	// 是 https、起来却是 http」这种最难查的不一致。
+	tlsArgs := settings.tls.startArgs()
 	switch {
 	case settings.service:
 		// service install 自己就会立即启动，选了它就不再问「立即启动」。
@@ -182,6 +208,7 @@ func installCommand(args []string) int {
 		args := []string{"service", "install", "--bin-dir", binDir,
 			"--host", settings.host, "--port", strconv.Itoa(settings.port),
 			"--state-dir", settings.stateDir}
+		args = append(args, tlsArgs...)
 		code = runSelf(args)
 	case settings.start:
 		// 转交 start：登记、日志、停机端点都在那边。
@@ -189,13 +216,25 @@ func installCommand(args []string) int {
 		args := []string{"start",
 			"--host", settings.host, "--port", strconv.Itoa(settings.port),
 			"--state-dir", settings.stateDir}
+		args = append(args, tlsArgs...)
 		code = runSelf(args)
 		if code == 0 {
-			sayKey(os.Stdout, i18n.KeyCLIInstallStarted, settings.port)
+			sayKey(os.Stdout, i18n.KeyCLIInstallStarted, settings.scheme(), settings.port)
 		}
 	default:
-		sayKey(os.Stdout, i18n.KeyCLIInstallNotStarted, settings.port)
+		// 未启动时把 TLS 参数一并写进提示：用户照着敲就能起成同样的形态，
+		// 而不是起成 HTTP 之后才发现「怎么没 HTTPS 了」。
+		sayKey(os.Stdout, i18n.KeyCLIInstallNotStarted, settings.port, settings.tls.flagHint())
 	}
+
+	// 信任安装放在启动之后：先让管理端跑起来（那是用户最关心的事），
+	// 再来处理「浏览器信不信」这一步。失败不影响退出码——证书已经生成、
+	// HTTPS 已经可用，只是浏览器会警告；把安装判失败反而是错的。
+	var trustStatus trust.Status
+	if settings.tls.enabled && settings.tls.caCert != "" && settings.tls.trustRequested {
+		trustStatus = trust.Install(trust.Options{CACert: settings.tls.caCert})
+	}
+	printTLSResult(settings.tls, tlscert.ManagedDir(settings.stateDir), trustStatus, settings.port)
 
 	fmt.Println()
 	// 「接下来」里的示例账号：这次建了号就用刚建的，否则用已有的超级管理员。
@@ -230,6 +269,8 @@ type installSettings struct {
 	// 列出「这里有谁、谁是超级管理员」；superID 是超级管理员的账号 id。
 	existing []portal.User
 	superID  int64
+	// tls 是 HTTPS 相关设置：证书路径、是否装信任、覆盖的地址。
+	tls tlsSettings
 }
 
 // collectInstallSettings 逐项收集安装设置。
@@ -240,7 +281,7 @@ type installSettings struct {
 // 交互式终端里一问一答，端口项带占用检测，被占用时让用户选择换端口 / 停掉
 // 占用者；答完汇总确认，不满意可以重答一轮。
 // 脚本（管道 / CI）里一个都不问，全部用选项给出的值，并做一次端口预检。
-func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host string, port int, stateDir, admin, display string, interactive, needPassword bool, existing []portal.User, superID int64, randomGiven, stdinGiven bool) (installSettings, error) {
+func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host string, port int, stateDir, admin, display string, interactive, needPassword bool, existing []portal.User, superID int64, randomGiven, stdinGiven bool, tlsIn tlsInputs) (installSettings, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
@@ -279,6 +320,13 @@ func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host stri
 		if err := checkPortOccupied("管理端端口", s.port, false); err != nil {
 			return s, err
 		}
+		// HTTPS：脚本模式默认关（见 installtls.go 的说明）；用户显式给了
+		// --tls / --tls-cert 才启用。这里把证书准备好，后面的启动参数才带得上。
+		tlsSettings, err := setupTLS(tlsIn, s.stateDir, false)
+		if err != nil {
+			return s, err
+		}
+		s.tls = tlsSettings
 		return s, nil
 	}
 
@@ -424,7 +472,21 @@ func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host stri
 			}
 		}
 
-		// 6. 是否后台启动 / 开机自启
+		// 6. HTTPS（自签证书）
+		//
+		// 放在启动选项之前：它决定的是「用户将从哪个地址访问」，而这件事在
+		// 确认「现在就启动」之前就该定下来。问在最后会让确认页来不及反映。
+		//
+		// 默认开（交互式）：交互式安装的用户几乎都是要拿手机或另一台电脑
+		// 访问的，而 http:// 在内网 IP 上会让录音、语音输入这类能力直接不可用。
+		// 脚本模式默认关，见 installtls.go 的说明。
+		tlsSettings, err := askTLS(tlsIn, s.stateDir)
+		if err != nil {
+			return s, err
+		}
+		s.tls = tlsSettings
+
+		// 7. 是否后台启动 / 开机自启
 		if !visited["start"] && !visited["service"] {
 			answer, err := askYesNo("现在就启动管理端？[y/N] ", false)
 			if err != nil {
@@ -450,6 +512,19 @@ func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host stri
 			fmt.Printf("  安装目录        %s\n", s.binDir)
 		}
 		fmt.Printf("  配置与数据库目录 %s\n", s.stateDir)
+		if s.tls.enabled {
+			// 确认页必须显示真实协议与主机名：用户据此决定要不要装信任、
+			// 以及之后该敲哪个地址。
+			fmt.Printf("  对外协议        https://%s:%d/\n", displayHost(), s.port)
+			if s.tls.caCert != "" {
+				fmt.Printf("  自签证书        %s\n", s.tls.cert)
+				fmt.Printf("  信任安装        %v\n", s.tls.trustRequested)
+			} else {
+				fmt.Printf("  证书            用户指定（%s）\n", s.tls.cert)
+			}
+		} else {
+			fmt.Printf("  对外协议        http://%s:%d/\n", displayHost(), s.port)
+		}
 		if s.needPassword {
 			fmt.Printf("  管理员账号      %s\n", s.admin)
 			name := s.display

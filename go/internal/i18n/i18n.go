@@ -485,6 +485,25 @@ const (
 	KeyCLIInstallNextSteps   = "cli.install.nextSteps"
 	KeyCLIInstallBadFlag     = "cli.install.badFlag"
 
+	// CLI：install 的 HTTPS 自签证书步骤。
+	//
+	// 单独成组：这一步的决定性信息是「浏览器会不会信任」，而它又分成
+	// 「已生成」「已装进信任库」「需要你自己装」三种结果，每种都要给出
+	// 下一步动作，混在一句里说不清。
+	KeyCLIInstallTLSAsk       = "cli.install.tls.ask"
+	KeyCLIInstallTLSGenerated = "cli.install.tls.generated"
+	KeyCLIInstallTLSReused    = "cli.install.tls.reused"
+	KeyCLIInstallTLSNewCA     = "cli.install.tls.newCA"
+	KeyCLIInstallTLSAddresses = "cli.install.tls.addresses"
+	KeyCLIInstallTLSAskTrust  = "cli.install.tls.askTrust"
+	KeyCLIInstallTLSInstalled = "cli.install.tls.installed"
+	KeyCLIInstallTLSFailed    = "cli.install.tls.failed"
+	KeyCLIInstallTLSManual    = "cli.install.tls.manual"
+	KeyCLIInstallTLSSkipped   = "cli.install.tls.skipped"
+	KeyCLIInstallTLSURL       = "cli.install.tls.url"
+	KeyCLIInstallTLSURLs      = "cli.install.tls.urls"
+	KeyCLIInstallTLSURLRow    = "cli.install.tls.urlRow"
+
 	// 时长（错误提示里的「还有多久能再试」）
 	KeyDurationSeconds        = "duration.seconds"
 	KeyDurationMinutes        = "duration.minutes"
@@ -767,6 +786,19 @@ var allKeys = []string{
 	KeyCLIInstallNotStarted,
 	KeyCLIInstallNextSteps,
 	KeyCLIInstallBadFlag,
+	KeyCLIInstallTLSAsk,
+	KeyCLIInstallTLSGenerated,
+	KeyCLIInstallTLSReused,
+	KeyCLIInstallTLSNewCA,
+	KeyCLIInstallTLSAddresses,
+	KeyCLIInstallTLSAskTrust,
+	KeyCLIInstallTLSInstalled,
+	KeyCLIInstallTLSFailed,
+	KeyCLIInstallTLSManual,
+	KeyCLIInstallTLSSkipped,
+	KeyCLIInstallTLSURL,
+	KeyCLIInstallTLSURLs,
+	KeyCLIInstallTLSURLRow,
 	KeyDurationSeconds,
 	KeyDurationMinutes,
 	KeyDurationMinutesSeconds,

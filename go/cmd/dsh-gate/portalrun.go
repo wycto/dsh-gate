@@ -33,6 +33,7 @@ import (
 	"github.com/wycto/dsh-gate/internal/portal"
 	"github.com/wycto/dsh-gate/internal/portalruntime"
 	"github.com/wycto/dsh-gate/internal/registry"
+	"github.com/wycto/dsh-gate/internal/tlscert"
 	"github.com/wycto/dsh-gate/internal/version"
 )
 
@@ -254,6 +255,24 @@ func portalRunCommand(args []string) int {
 		return usageKey(i18n.KeyAdminErrActionFailed, "--tls-cert 与 --tls-key 必须成对提供")
 	}
 
+	// 自动维护的证书：install 生成的那套归我们管，每次启动按**当前**本机地址
+	// 重签一次。DHCP 换了 IP、连上 VPN、插拔网卡之后，旧证书的 SAN 就不覆盖
+	// 新地址了——浏览器会警告，录音随之失效，而症状完全指不到「证书没覆盖」。
+	// 用户自己指定的证书（--tls-cert 指向别处）绝不碰。
+	if tlsEnabled {
+		stateDir := cfg.StateDirPath()
+		if tlscert.IsManaged(*tlsCert, stateDir) {
+			renewed, err := tlscert.Ensure(tlscert.Options{Dir: tlscert.ManagedDir(stateDir)})
+			if err != nil {
+				// 重签失败不该拦住启动：旧证书大概率仍然可用，只是可能没覆盖
+				// 新地址。日志里留一条，用户查得出来。
+				logger.Warn("刷新自签证书失败（继续用现有证书启动）", "err", err)
+			} else if renewed.Reissued {
+				logger.Info("已按当前地址重签自签证书", "dir", tlscert.ManagedDir(stateDir))
+			}
+		}
+	}
+
 	// 后台化：先自检再拉起子进程。
 	//
 	// 自检放在这里而不是丢给子进程，是因为后台化的子进程把输出全写进日志文件：
@@ -263,7 +282,7 @@ func portalRunCommand(args []string) int {
 		if err := checkPortalAccounts(resolvedDB, cfg.StateDirPath()); err != nil {
 			return failKey(i18n.KeyCLIPortalRunFailed, err.Error())
 		}
-		return portalRunInBackground(*port, resolvedDB, args)
+		return portalRunInBackground(*port, resolvedDB, tlsEnabled, args)
 	}
 
 	// 可取消的根上下文：停机端点（`dsh-gate stop portal`）调 Shutdown 回调取消它，
@@ -407,7 +426,7 @@ func checkPortalAccounts(dbPath, stateDir string) error {
 // 与单实例形态的 runInBackground 用同一套机制（spawnDetached 脱离终端、日志写
 // 文件、等端口就绪），差别只在**登记**：管理端是机器级单例，登记名固定为 portal，
 // 且 Argv 就是这条命令本身，restart 能原样把它再拉起来。
-func portalRunInBackground(port int, dbPath string, argv []string) int {
+func portalRunInBackground(port int, dbPath string, tlsEnabled bool, argv []string) int {
 	dir := resolveRunDir("")
 	exe, err := os.Executable()
 	if err != nil {
@@ -435,8 +454,14 @@ func portalRunInBackground(port int, dbPath string, argv []string) int {
 		return 1
 	}
 
-	fmt.Printf("管理端已在后台运行（进程号 %d），访问 http://127.0.0.1:%d/\n", pid, port)
-	fmt.Printf("  管理台    http://127.0.0.1:%d/admin\n", port)
+	// 协议要跟着 TLS 走：这里写死 http:// 的话，启用 HTTPS 之后用户会按提示
+	// 打开一个 http 地址，得到 400（明文打到 TLS 端口），却看不出是提示错了。
+	scheme := "http"
+	if tlsEnabled {
+		scheme = "https"
+	}
+	fmt.Printf("管理端已在后台运行（进程号 %d），访问 %s://127.0.0.1:%d/\n", pid, scheme, port)
+	fmt.Printf("  管理台    %s://127.0.0.1:%d/admin\n", scheme, port)
 	fmt.Printf("  日志      %s\n", filepath.Join(logDirFor(dir), portalRecordName+".log"))
 	// 登记名是 portal：stop/status 认的固定是它，与命令名无关。
 	fmt.Printf("  停止      dsh-gate stop           状态 dsh-gate status\n")

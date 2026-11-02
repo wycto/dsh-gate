@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -51,7 +52,29 @@ func stopRecord(record registry.Record, wait time.Duration) error {
 
 	addr := controlAddr(record)
 	client := newHTTPClient(3 * time.Second)
-	response, err := client.Post("http://"+addr+"/__dsh_gate/shutdown", "text/plain", nil)
+	// 协议必须跟着登记里的 TLS 走：管理端用 HTTPS 时，明文打到 TLS 端口会得到
+	// 400（"client sent an HTTP request to an HTTPS server"），于是 stop 报
+	// 「管理端拒绝了停机请求」——而管理端其实好好的，只是这个请求根本不对。
+	//
+	// 这里刻意不校验证书：连的是自己的回环控制端点，证书是 install 生成的自签
+	// 证书，本机也没有装信任时校验必然失败。停机端点靠 portal.token 鉴权，
+	// 不依赖 TLS 的保密性。
+	scheme := "http"
+	if record.TLS {
+		scheme = "https"
+	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	if tlsTransport, ok := transport.(*http.Transport); ok {
+		if tlsTransport.TLSClientConfig == nil {
+			tlsTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		} else {
+			tlsTransport.TLSClientConfig.InsecureSkipVerify = true
+		}
+	}
+	response, err := client.Post(scheme+"://"+addr+"/__dsh_gate/shutdown", "text/plain", nil)
 	if err != nil {
 		return fmt.Errorf("停机请求失败: %w", err)
 	}
