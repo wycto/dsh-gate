@@ -205,15 +205,49 @@ After logging in at `http://<server>:12020/`, a normal user sees "my instances" 
 
 ![dsh-gate admin console](docs/images/admin.png)
 
-<sub>The console in one page: users and roles, the instance grant matrix, runtime detection,
-instances and installation, audit. Below are the instance block (one card per instance, one
-example per install mode) and an "installing" state — installs and runtime bootstrapping are
-background tasks; the page keeps its progress up to date by itself.</sub>
+<sub>The console in one page: instance cards, install and lifecycle, create instance. The
+other sections are users, instance grants, runtime and audit.</sub>
+
+**Instances**: one card per instance. The header carries four badges (enabled / run state /
+dsh source / install state); the body lists port, instance directory, listen address, start
+mode, PID, install mode, dsh version, launch command and launch arguments; the footer offers
+the actions that are actually possible right now. Below is one screen with three install
+modes (npx / pnpm / local source), one card shape each:
+
+![Instance cards: three install modes and run states](docs/images/admin-instances.png)
+
+<sub>A running card has a green bar on its left edge. Install mode and launch command are
+deliberately separate lines: when an install fails halfway, the launch command still points
+at the previous one, so a mode badge alone would mislead.</sub>
+
+**The five buttons at the card footer** — "enter / start-stop" on the left, "install / edit
+config / remove" on the right. The two collapsible panels look like this when expanded:
 
 <p>
-  <img src="docs/images/admin-instances.png" width="620" alt="Instance cards and create-instance form">
-  <img src="docs/images/admin-installing.png" width="620" alt="Install in progress, card showing the 'installing' badge and the current step 'installing dsh'">
+  <img src="docs/images/admin-edit.png" width="620" alt="Expanded 'edit config': instance directory, config directory, workspace, port, listen address, start mode, install mode, dsh version and install directory">
+  <img src="docs/images/admin-remove.png" width="620" alt="Expanded 'remove': two checkboxes decide whether the data directory and install directory go with it">
 </p>
+
+<sub>"Edit config" only writes to the database; press "restart" to make the change take effect
+— that is the deliberate stop → edit → restart chain. "Remove" only drops the record unless
+you tick the boxes.</sub>
+
+**The other four sections**, each with its own job:
+
+<p>
+  <img src="docs/images/admin-users.png" width="620" alt="Users: account, role, state, number of granted instances; change password, disable, delete">
+  <img src="docs/images/admin-grants.png" width="620" alt="Instance grants: a user × instance checkbox matrix, submitted as one diff">
+</p>
+
+<p>
+  <img src="docs/images/admin-env.png" width="620" alt="Runtime detection: state, version and path for node / npm / npx / pnpm / git / dsh; missing pnpm gets an install button">
+  <img src="docs/images/admin-audit.png" width="620" alt="Audit: logins, instance entry, create/update/delete, start/stop, failed attempts">
+</p>
+
+**Regular users see "my instances"** — only the ones granted to them; "enter" goes straight
+into that dsh, and the browser never needs to know any token:
+
+![My instances](docs/images/portal.png)
 
 <sub>At phone width each instance is still one whole card, and the action buttons reflow into
 two rows ("enter" alone, the rest sharing the second row) with no horizontal scrolling.</sub>
@@ -273,8 +307,6 @@ The console has five sections at the bottom, in this order: **instances → user
   the system or needing root, and `uninstall --purge` removes it. Like dsh installs it is a
   background task; progress updates on its own. (git gets no button: it needs the system package
   manager, which differs too much between distributions — a command is the honest answer.)
-
-  ![Runtime detection](docs/images/admin-env.png)
 
 The **create instance** form is ordered: name → dsh data directory (`DSH_HOME`) → **config
 directory** → workspace → **port** → **listen host** → **start mode** → **install mode** →

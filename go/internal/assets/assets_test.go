@@ -508,6 +508,48 @@ func elementByDivDepth(s string) (string, bool) {
 	return "", false
 }
 
+// TestAdminMobileActionsShareOneRow 保证窄屏下卡底按钮不会掉到第三行。
+//
+// 现场：390px 宽里「进入」独占一行，其余五个按钮本该均分第二行。但「安装 /
+// 编辑配置 / 删除」三个折叠触发器没参与均分，按内容宽度排开只放得下四个，
+// 「删除」被挤到单独一行——README 里写的「两行」与页面不符。
+// 修法是在窄屏媒体查询里让 .pop>summary 也 flex:1 1 auto 且 min-width:max-content
+// （后者防止「删除」这种短文案被压成一个小方块）。纯排版退化渲染测试测不出，
+// 所以钉在模板源码层面。
+func TestAdminMobileActionsShareOneRow(t *testing.T) {
+	source, err := files.ReadFile(AdminFile)
+	if err != nil {
+		t.Fatalf("读取管理台模板失败: %v", err)
+	}
+	body := string(source)
+
+	// 规则必须写在 max-width:900px 的媒体查询里：宽屏本来就是一行，不需要它。
+	// 同名选择器在宽屏那段也有一条（.inst-actions>.pop>summary 的 padding），
+	// 所以要从媒体查询之后再找，否则会认错那一条。
+	mobile := strings.Index(body, "@media (max-width:900px)")
+	if mobile < 0 {
+		t.Fatal("模板里找不到窄屏媒体查询")
+	}
+	rel := strings.Index(body[mobile:], ".inst-actions>.pop>summary{")
+	if rel < 0 {
+		t.Fatal("窄屏媒体查询里缺少 .inst-actions>.pop>summary 的均分规则（折叠触发器会挤掉「删除」）")
+	}
+	idx := mobile + rel
+	rule := body[idx:]
+	if end := strings.Index(rule, "}"); end >= 0 {
+		rule = rule[:end]
+	}
+	for _, want := range []string{"flex:1 1 auto", "min-width:max-content"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("折叠触发器的均分规则缺少 %q，实际：%s", want, rule)
+		}
+	}
+	// 这条规则必须落在窄屏媒体查询块内（在它之后、且没被后面的 } 关掉之前）。
+	if !strings.HasPrefix(rule, ".inst-actions>.pop>summary{") {
+		t.Errorf("没定位到窄屏里的那条均分规则，实际取到：%s", rule)
+	}
+}
+
 // TestAdminInstancesUseCardGrid 保证实例列表是卡片网格，而不是又退回一张多列表格。
 //
 // 实例列表曾经是 8 列固定宽度的表格（名字 / ID / DSH_HOME / 端口 / 状态 / 运行状态 /

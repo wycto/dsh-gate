@@ -654,6 +654,12 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   .inst-actions form{flex:1 1 auto;min-width:0}
   .inst-actions form button,.inst-actions a.open-btn{width:100%;justify-content:center;min-height:34px}
   .inst-actions a.open-btn{flex:1 1 auto}
+  /* 折叠触发器（安装 / 编辑配置 / 删除）与启停按钮同样按份数均分。不设这条时
+     它们按内容宽度排开，「删除」会被挤到第三行去（390px 宽只放得下四个）。
+     .pop 是 display:contents，summary 才是这条 flex 行的直接子项，所以规则
+     要写在 summary 上。flex-basis 用 auto 而不是 0：三颗触发器文案长度差得
+     多（安装 / 编辑配置 / 删除），按 0 均分会把「删除」压成一个小方块。 */
+  .inst-actions>.pop>summary{flex:1 1 auto;min-width:max-content;justify-content:center;min-height:34px;padding:5px 7px}
 
   td.actions{display:block;text-align:left;padding-top:9px}
   td.actions::before{content:none}
