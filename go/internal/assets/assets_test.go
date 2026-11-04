@@ -423,6 +423,91 @@ func sectionOf(body, id string) string {
 	return body[i : i+j]
 }
 
+// TestAdminInstanceActionsAreSiblings 保证卡底三个折叠触发器平级。
+//
+// 现场：模板里安装面板的 <details> 少了闭合标签，浏览器于是把后面的「编辑配置」
+// 与「删除」当成安装面板的子元素——卡面上只剩「进入 / 启停 / 安装」三颗按钮，
+// 编辑与删除要先把「安装」展开才看得见，看着像功能消失了。渲染测试测不出这种
+// 结构错位（字符串都在页面里），所以直接数 <details> 的嵌套深度：卡底那一行里
+// 安装 / 编辑 / 删除三个触发器必须同层，任何一个都不能挂在别的 <details> 里。
+func TestAdminInstanceActionsAreSiblings(t *testing.T) {
+	source, err := files.ReadFile(AdminFile)
+	if err != nil {
+		t.Fatalf("读取管理台模板失败: %v", err)
+	}
+	panel := sectionOf(string(source), "panel-instances")
+	if panel == "" {
+		t.Fatal("管理台模板里找不到 panel-instances 面板")
+	}
+
+	// 从卡底动作行开始，按 div 的层级找到它自己的收尾 </div>：面板内部也有
+	// </div>（.pop-panel 那一层），直接取第一个会提前截断，把结构判据变成误报。
+	attr := strings.Index(panel, `class="inst-actions"`)
+	if attr < 0 {
+		t.Fatal("实例卡片里找不到动作行")
+	}
+	start := strings.LastIndex(panel[:attr], "<div")
+	if start < 0 {
+		t.Fatal("动作行前面没有 <div")
+	}
+	actions, ok := elementByDivDepth(panel[start:])
+	if !ok {
+		t.Fatal("动作行没有闭合")
+	}
+
+	detailsDepth := 0
+	tops := 0
+	for i := 0; i < len(actions); i++ {
+		switch {
+		case strings.HasPrefix(actions[i:], "<details"):
+			if detailsDepth == 0 {
+				tops++
+			}
+			detailsDepth++
+			i += len("<details") - 1
+		case strings.HasPrefix(actions[i:], "</details>"):
+			detailsDepth--
+			if detailsDepth < 0 {
+				t.Fatalf("动作行里多了一个 </details>（模板结构错位）")
+			}
+			i += len("</details>") - 1
+		}
+	}
+	if detailsDepth != 0 {
+		t.Fatalf("动作行里有 %d 个未闭合的 <details>：后面的折叠面板会被嵌进前一个里面", detailsDepth)
+	}
+	// 三个触发器：安装（仅接了安装能力时）/ 编辑配置（仅接了运行时）/ 删除。
+	// 模板里三条都在，条件包在 {{if}} 外面，所以源码层面恒为 3 个。
+	if tops != 3 {
+		t.Fatalf("卡底应有 3 个平级触发器（安装 / 编辑配置 / 删除），实际 %d 个", tops)
+	}
+}
+
+// elementByDivDepth 从一段以某个标签开头的源码里，取出这个标签自己（含）到
+// 与它配对的收尾标签之间的内容。只认 div：这段用到的容器都是 div。
+func elementByDivDepth(s string) (string, bool) {
+	depth := 0
+	started := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case strings.HasPrefix(s[i:], "<div"):
+			depth++
+			started = true
+			i += len("<div") - 1
+		case strings.HasPrefix(s[i:], "</div>"):
+			depth--
+			i += len("</div>") - 1
+			if started && depth == 0 {
+				return s[:i+1], true
+			}
+			if depth < 0 {
+				return "", false
+			}
+		}
+	}
+	return "", false
+}
+
 // TestAdminInstancesUseCardGrid 保证实例列表是卡片网格，而不是又退回一张多列表格。
 //
 // 实例列表曾经是 8 列固定宽度的表格（名字 / ID / DSH_HOME / 端口 / 状态 / 运行状态 /
