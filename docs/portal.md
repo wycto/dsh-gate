@@ -18,6 +18,10 @@ dsh-gate 现在只有一种形态：**一个管理端（门户）+ N 个 dsh 实
 
 非目标（本期不做）：外部 SSO/OIDC 身份源；跨机器实例编排；按用量计费与配额。
 
+> 2026-11-05 起门户另支持**内网服务代理**：把任意已登记的内网 http(s) 上游挂在
+> `/s/<id>/` 下，与 dsh 实例（`/i/<id>/`）共用门禁但页面完全分离。设计与实现说明在
+> [service-proxy.md](service-proxy.md)；本文的实例语义不受影响。
+
 ## 2. 已确认的决策
 
 | 决策点 | 结论 | 备选与代价 |
@@ -453,3 +457,65 @@ dsh 装不起来。安装命令用 `--allow-build=<包名>` **逐个点名**，�
 `internal/dshproc`（软链需特权、进程与端口语义）、`internal/dshsettings` 与
 `internal/users`（POSIX 权限语义）、`cmd/dsh-gate` 的部分用例会失败——已在改动前的
 提交 `228014a` 上逐条比对确认是既有问题，Linux/macOS 上不受影响。
+
+## 16. 类别权限：全局总开关 + 每用户开关（2026-11-05）
+
+用户 2026-11-05 明确要求：某用户只被允许访问服务、不允许访问实例时，**实例的
+任何入口都不出现**（导航链接、页面、挂载）；反之亦然。权限分**两层**，最终可见性
+= **全局总开关 AND（管理员 OR 用户开关）**，grants 再决定具体能进哪几个。
+
+### 16.1 全局总开关（门户级，结构版本 v6）
+
+整个门户两个总开关「实例功能 / 服务功能」，存在 `settings` 键值表（键
+`instances_enabled` / `services_enabled`，值 `1`/`0`，**键缺省视为开**，老库升级
+行为不变）。`Store.PortalFeatures` 读、`Store.SetPortalFeatures` 写（一次事务 UPSERT
+两行）。关掉某类时**所有人（含管理员）**的该类入口都隐藏：
+
+- 用户侧：首页 / 服务页重定向或无权限页、两类挂载 404、`me` API 布尔为 false。
+- 管理台：底部 / 顶栏 / 侧栏导航的「实例」/「服务」分页标签整体不出现
+  （`navItems` 按总开关过滤）；直接访问被关的 `?tab=` 回落到「权限控制」分页
+  （`adminTabFallback`，grants 恒可用）。
+- **管理员总能进「权限控制」分页重新打开**：该分页与用户 / 运行环境 / 审计页不受
+  总开关影响，不会把管理员自己锁死。总开关表单（动作 `features.save`，审计
+  `admin.features.save`）就在该分页顶部，注明「关闭后所有用户的该类入口隐藏」。
+- **本机控制 API（CLI）不受总开关影响**：那是本机管理工具，总开关只约束浏览器
+  入口；总开关也不删任何实例 / 服务登记，只影响可见性。
+
+### 16.2 每用户开关（结构版本 v5）
+
+给 users 表加两个类别开关（加列式迁移，老用户默认双开、行为不变）：
+
+| 列 | 语义 |
+|---|---|
+| `allow_instances` | 实例类入口（首页、页头「我的服务」互达链接、`/i/<id>/` 挂载）是否可见 |
+| `allow_services` | 服务类入口（`/services` 页、页头「我的实例」互达链接、`/s/<id>/` 挂载）是否可见 |
+
+口径（与 grants 的关系）：
+
+- **开关决定「这类入口是否可见」，grants 决定「具体能进哪几个」**。开关开着
+  但没 grant 时列表为空（现有空状态文案）；开关关掉则入口整体消失。
+- **管理员不受每用户开关约束，但受全局总开关约束**：判定集中在 HTTP 层的
+  `Server.canSeeInstances` / `canSeeServices`（唯一定义点，= 全局 AND（admin OR
+  用户开关））。用户页与权限控制矩阵上 admin 行的勾选显示为选中且禁用，附说明。
+- 入口隐藏的执行点：首页 `/` 在实例开关关掉时 303 到 `/services`（服务开关也关
+  则渲染「没有任何访问权限」页）；`/services` 对称处理；两类挂载对开关关掉的
+  普通用户即便有 grant 也与未授权同形 404 并写 `instance.denied` / `service.denied`
+  审计；`/_portal/api/me` 返回 `allowInstances` / `allowServices` 布尔，关掉的
+  那类列表为空。
+
+管理台：
+
+- 用户分页每行加「实例 / 服务」两个勾选 + 「保存权限」按钮（动作 `user.perms`，
+  表单与 JSON API 同一实现，审计 `admin.user.perms`）。
+- 原「实例授权」分页改名「**权限控制**」（tab id 仍为 `grants`，链接不破坏），
+  同页设置：顶部全局总开关、实例授权矩阵、服务授权矩阵；服务授权矩阵从「服务」
+  分页移走。实例授权矩阵每行**同时**带「实例 / 服务」每用户勾选（admin 行禁用），
+  保存（`grants.save` 带 `perms_present` 标记）时一并写授权与每用户开关；JSON
+  `grants.save` 的 `allowInstances` / `allowServices` 为可选字段，缺省不动开关
+  （保持旧脚本兼容）。`adminStateJSON.features` 暴露全局总开关。
+
+回归测试在 `go/internal/portal/permissions_test.go`（迁移 v4→v5、每用户开关往返、
+三类可见性组合、admin 豁免、user.perms 双入口与安全闸、两个矩阵的分页归属）与
+`go/internal/portal/masterswitch_test.go`（迁移 v5→v6、总开关往返、全局关实例/服务/
+双关、全局压过用户开关、管理员经权限控制页恢复、features.save 双入口与安全闸、
+grants.save 同写开关与矩阵的兼容口径）。

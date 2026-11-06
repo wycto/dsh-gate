@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -173,11 +172,14 @@ func serviceUnit(opts serviceOptions) (string, error) {
 			{Key: "ProcessType", Value: text("Interactive")},
 			// launchd 给的 PATH 极简，而网关拉起 dsh 时要找 npx（常在
 			// ~/.npm-global 或 Homebrew 里），所以这里显式补全。
+			// 自备运行时（如 ~/.local/node/bin）不在这些固定目录里，由
+			// --extra-path 交进来；放在最前面，用户指定的优先。
 			{Key: "EnvironmentVariables", Value: dict(
-				plistItem{Key: "PATH", Value: text(strings.Join([]string{
-					"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin",
-					filepath.Dir(opts.Binary),
-				}, ":"))},
+				plistItem{Key: "PATH", Value: text(strings.Join(
+					append(extraPathDirs(opts.ExtraPath), []string{
+						"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin",
+						filepath.Dir(opts.Binary),
+					}...), ":"))},
 			)},
 		},
 	}
@@ -198,6 +200,20 @@ func serviceUnit(opts serviceOptions) (string, error) {
 
 	header := fmt.Sprintf("<!-- 由 dsh-gate %s 的 service unit 生成。改动后 launchctl bootout 再 bootstrap。 -->\n", version.Version)
 	return header + fixed + "\n", nil
+}
+
+// extraPathDirs 把 --extra-path 的冒号分隔值拆成目录列表。
+//
+// 空串返回 nil（append 到 nil 切片不会留下空元素，不会在 PATH 里写出
+// 前导或重复的分隔符——空目录在 PATH 里意味着「当前目录」，那是安全风险）。
+func extraPathDirs(extra string) []string {
+	var dirs []string
+	for _, part := range strings.Split(extra, ":") {
+		if dir := strings.TrimSpace(part); dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // logFilePath 返回服务日志落点。
@@ -399,53 +415,6 @@ func serviceInstalledHint(serviceOptions) string {
   dsh-gate uninstall      停止并删除所有实例，最后卸载管理端服务（会问是否删数据）
 
 `, launchdLabel, serviceName, currentUID(), launchdLabel)
-}
-
-// launchingUser 返回「这次操作真正属于哪个用户」。
-//
-// 为什么不能直接用 os.Getuid()：用户为了把 dsh-gate 装进 /usr/local/bin 很自然地
-// 会用 sudo 跑安装向导（旧版提示里也这么建议），而那时 euid 是 0，于是
-// launchd 的 domain 变成 **gui/0**——这个 domain 根本不存在，bootstrap 必然失败：
-//
-//	Bootstrap failed: 125: Domain does not support specified action
-//
-// 实测就是这样卡住用户的。LaunchAgent 属于**登录用户**，所以 sudo 下要装到
-// 发起 sudo 的那个用户名下：uid 取 SUDO_UID，家目录取 SUDO_USER 的家目录。
-func launchingUser() (uid string, home string, elevated bool) {
-	return resolveLaunchingUser(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_USER"))
-}
-
-// resolveLaunchingUser 是 launchingUser 的纯函数版本：把 euid 与 SUDO_* 摊成参数，
-// 这样 sudo 与 root 两个分支都能在测试里覆盖到——否则它们只有在真机上以 root
-// 跑一次才走得到，而「以 root 跑」恰恰是最容易出问题、又最难复现的场景。
-func resolveLaunchingUser(euid int, sudoUID, sudoUser string) (uid string, home string, elevated bool) {
-	if euid == 0 {
-		if trimmed := strings.TrimSpace(sudoUID); trimmed != "" {
-			return trimmed, homeOfUser(sudoUser), true
-		}
-		// 没有 SUDO_UID：真的以 root 登录（不做图形登录的场景）。这时没有可用的
-		// GUI domain，由调用方给出说明。
-		return "0", homeOfUser(""), true
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	return fmt.Sprintf("%d", euid), home, false
-}
-
-// homeOfUser 查某个用户的家目录；查不到时退回当前进程的家目录。
-func homeOfUser(name string) string {
-	name = strings.TrimSpace(name)
-	if name != "" {
-		if account, err := user.Lookup(name); err == nil && account.HomeDir != "" {
-			return account.HomeDir
-		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return home
-	}
-	return ""
 }
 
 // currentUID 返回 launchd domain 要用的 uid（sudo 下是发起 sudo 的那个用户）。

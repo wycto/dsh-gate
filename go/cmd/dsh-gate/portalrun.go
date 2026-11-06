@@ -55,6 +55,9 @@ type portalRunOptions struct {
 	// （--dsh-start-timeout）；0 表示用 config 默认值。
 	StartTimeout time.Duration
 	TLS          bool
+	// Port 是管理端监听端口：会话/交接/CSRF Cookie 名按端口加后缀，
+	// 同机多网关互不覆盖（浏览器 Cookie 不分端口，见 cookie.ScopeName）。
+	Port         int
 	PublicURL    string
 	TrustedHosts []string
 	Logger       *slog.Logger
@@ -106,6 +109,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		MaxFails:     5,
 		LockoutBase:  time.Minute,
 		CookieSecure: opts.TLS,
+		CookiePort:   opts.Port,
 		Title:        "dsh-gate",
 		Subtitle:     "管理端",
 		Version:      version.Version,
@@ -127,6 +131,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 	runtime, err := portalruntime.New(portalruntime.Options{
 		Store:        store,
 		TLS:          opts.TLS,
+		CookiePort:   opts.Port,
 		PublicURL:    opts.PublicURL,
 		TrustedHosts: netutil.TrustedHosts(opts.TrustedHosts, opts.PublicURL),
 		StartTimeout: opts.StartTimeout,
@@ -167,6 +172,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		Version:    version.Version,
 		Logger:     opts.Logger,
 		LocalToken: localToken,
+		CookiePort: opts.Port,
 	})
 	if err != nil {
 		store.Close()
@@ -299,6 +305,7 @@ func portalRunCommand(args []string) int {
 		NPMRegistry:  strings.TrimSpace(*npmRegistry),
 		StartTimeout: cfg.DSHStartTimeout,
 		TLS:          tlsEnabled,
+		Port:         *port,
 		PublicURL:    strings.TrimSpace(*publicURL),
 		TrustedHosts: trusted,
 		Logger:       logger,

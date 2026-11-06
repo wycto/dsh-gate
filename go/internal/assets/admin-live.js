@@ -126,6 +126,30 @@
     }
   }
 
+  /* 服务卡片：只换探活徽标的文本与颜色（data-svc / data-badge="probe"）。
+   * 文案服务端已翻好；表单控件一律不碰——正在填编辑表单的人不会被打断。 */
+  function applyServices(list) {
+    if (!list) {
+      return;
+    }
+    var byId = {};
+    for (var i = 0; i < list.length; i++) {
+      byId[list[i].id] = list[i];
+    }
+    var cards = document.querySelectorAll("[data-svc]");
+    for (var j = 0; j < cards.length; j++) {
+      var svc = byId[cards[j].getAttribute("data-svc")];
+      if (!svc) {
+        continue;
+      }
+      var node = cards[j].querySelector('[data-badge="probe"]');
+      if (node) {
+        node.className = tagClass(svc.statusClass);
+        setText(node, svc.statusText || "");
+      }
+    }
+  }
+
   function applyEnv(env) {
     if (!env || !env.tools) {
       return;
@@ -255,6 +279,7 @@
         failures = 0;
         applyStats(payload.stats);
         applyInstances(payload.instances);
+        applyServices(payload.services);
         applyEnv(payload.env);
         applyAudit(payload.audit);
         schedule(POLL_MS);

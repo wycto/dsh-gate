@@ -16,7 +16,7 @@ import (
 	"html/template"
 )
 
-//go:embed login.html portal.html admin.html theme.css admin-live.js
+//go:embed login.html portal.html services.html admin.html theme.css admin-live.js
 var files embed.FS
 
 // LoginFile 是登录页模板在 embed 文件系统里的名字。
@@ -24,6 +24,10 @@ const LoginFile = "login.html"
 
 // PortalFile 是管理端首页（「我的实例」）模板在 embed 文件系统里的名字。
 const PortalFile = "portal.html"
+
+// ServicesFile 是用户侧「我的服务」页模板在 embed 文件系统里的名字。
+// 与首页「我的实例」完全分离（docs/service-proxy.md 的页面分离决议）。
+const ServicesFile = "services.html"
 
 // AdminFile 是管理台模板在 embed 文件系统里的名字。
 const AdminFile = "admin.html"
@@ -87,6 +91,11 @@ func LoginTemplate() (*template.Template, error) {
 // PortalTemplate 解析管理端首页模板。
 func PortalTemplate() (*template.Template, error) {
 	return parsePage(PortalFile, "管理端首页")
+}
+
+// ServicesTemplate 解析用户侧「我的服务」页模板。
+func ServicesTemplate() (*template.Template, error) {
+	return parsePage(ServicesFile, "我的服务页")
 }
 
 // AdminTemplate 解析管理台模板。

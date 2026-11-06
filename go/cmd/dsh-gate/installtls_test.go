@@ -256,7 +256,7 @@ func TestInteractiveWizardAsksTLSAndTrust(t *testing.T) {
 	out, code := captureStdout(t, func() int {
 		var err error
 		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, dir, "admin", "",
-			true, false, nil, 0, false, false, tlsInputs{})
+			true, false, nil, 0, false, false, tlsInputs{}, "")
 		if err != nil {
 			t.Errorf("向导不应报错: %v", err)
 			return 1
@@ -307,7 +307,7 @@ func TestInteractiveWizardCanDeclineTLS(t *testing.T) {
 	out, code := captureStdout(t, func() int {
 		var err error
 		settings, err = collectInstallSettings(fs, visited, "0.0.0.0", free, dir, "admin", "",
-			true, false, nil, 0, false, false, tlsInputs{})
+			true, false, nil, 0, false, false, tlsInputs{}, "")
 		if err != nil {
 			t.Errorf("向导不应报错: %v", err)
 			return 1

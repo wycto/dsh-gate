@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os/user"
 	"strings"
 	"testing"
 )
@@ -60,59 +59,82 @@ func firstLine(text string) string {
 	return strings.Join(lines, " | ")
 }
 
-// TestLaunchingUserUnderSudo 用 sudo 跑时，自启要装给**发起 sudo 的用户**。
+// TestServiceUnitIncludesExtraPath 断言 --extra-path 的目录进了 plist 的 PATH。
 //
-// 这是用户实际踩到的坑：他按我们自己的提示 `sudo dsh-gate setup`（为了把命令装进
-// /usr/local/bin），结果 euid 变成 0，launchd domain 成了不存在的 gui/0，bootstrap
-// 报 `125: Domain does not support specified action`；就算侥幸装上，plist 也会写进
-// root 的家目录，登录用户的自启里根本看不到。
-func TestLaunchingUserUnderSudo(t *testing.T) {
-	current, err := user.Current()
+// 回归的是「服务起来了、实例起不来」：服务管理器的 PATH 只有系统目录，而实例的
+// 启动命令（例如 pnpm）常装在 ~/.local/node/bin 这类用户目录里。自备运行时不在
+// 那几条固定目录中，没有这条就找不到命令——现象是管理端正常、每个实例都启动失败，
+// 而且报错只说「找不到 pnpm」，与「服务配错了」看不出关系。
+func TestServiceUnitIncludesExtraPath(t *testing.T) {
+	const extra = "/Users/demo/.local/node/bin"
+	text, err := serviceUnit(serviceOptions{
+		Binary:    "/Users/demo/.local/bin/dsh-gate",
+		ExtraPath: extra,
+		Overrides: map[string]string{"workspace": "/srv"},
+	})
 	if err != nil {
-		t.Skip("拿不到当前用户")
+		t.Fatalf("生成 plist 失败: %v", err)
 	}
 
-	// 核心场景：sudo 跑（euid=0）但 SUDO_UID 指向登录用户 → domain 必须是 gui/501
-	// 这种真实存在的 domain，而不是 gui/0。
-	uid, home, elevated := resolveLaunchingUser(0, current.Uid, current.Username)
-	if uid != current.Uid {
-		t.Errorf("sudo 下 uid = %q，期望发起 sudo 的用户 %q（否则 domain 会是不存在的 gui/0）", uid, current.Uid)
+	idx := strings.Index(text, "<key>PATH</key>")
+	if idx < 0 {
+		t.Fatalf("plist 里没有 PATH:\n%s", text)
 	}
-	if home != current.HomeDir {
-		t.Errorf("sudo 下家目录 = %q，期望 %q（plist 要写进登录用户的家目录）", home, current.HomeDir)
+	rest := text[idx:]
+	end := strings.Index(rest, "</string>")
+	if end < 0 {
+		t.Fatalf("PATH 没有闭合:\n%s", text)
 	}
-	if !elevated {
-		t.Error("sudo 下应当报告为 elevated，好给出提示")
+	value := rest[strings.Index(rest, "<string>")+len("<string>") : end]
+
+	// 必须在最前面：用户明确给的目录优先于系统目录（例如要让自己的 node 压过
+	// /usr/local/bin 里的旧版本）。
+	if !strings.HasPrefix(value, extra+":") {
+		t.Errorf("--extra-path 应当排在 PATH 最前面，实际 %q", value)
+	}
+	// 空段会让 PATH 里出现「当前目录」，那是安全风险，不能因为拼装留下空元素。
+	for _, dir := range strings.Split(value, ":") {
+		if strings.TrimSpace(dir) == "" {
+			t.Errorf("PATH 里有空段（等价于当前目录）: %q", value)
+		}
 	}
 
-	// root 且没有 SUDO_UID：只能给 uid 0，由调用方拦住并说明。
-	uid, _, elevated = resolveLaunchingUser(0, "", "")
-	if uid != "0" || !elevated {
-		t.Errorf("root 无 SUDO_UID 时 = %q/%v，期望 0/true", uid, elevated)
+	// 没有 --extra-path 时不能凭空多出空段。
+	plain, err := serviceUnit(serviceOptions{Binary: "/usr/local/bin/dsh-gate"})
+	if err != nil {
+		t.Fatalf("生成 plist 失败: %v", err)
 	}
-
-	// 普通用户：用自己的 uid 与家目录，且不报 elevated。
-	uid, home, elevated = resolveLaunchingUser(501, current.Uid, current.Username)
-	if uid != "501" || elevated {
-		t.Errorf("普通用户 = %q/%v，期望 501/false", uid, elevated)
-	}
-	if home == "" {
-		t.Error("普通用户的家目录不该为空")
-	}
-
-	// SUDO_UID 带空格也要能用（有些环境的 sudo 配置会带进来）。
-	if uid, _, _ := resolveLaunchingUser(0, " "+current.Uid+" ", current.Username); uid != current.Uid {
-		t.Errorf("SUDO_UID 带空格时应被清理，实际 %q", uid)
+	if strings.Contains(plain, "::") || strings.Contains(plain, ":<") {
+		t.Errorf("没有 --extra-path 时 PATH 不该有多余分隔符:\n%s", plain)
 	}
 }
 
-// TestHomeOfUserFallsBack 查不到用户时退回当前进程的家目录，而不是空字符串
-// （空会被拼成相对路径，plist 就写到奇怪的地方去了）。
-func TestHomeOfUserFallsBack(t *testing.T) {
-	if got := homeOfUser("这个用户肯定不存在-zzz"); got == "" {
-		t.Error("查不到用户时应当退回当前家目录，而不是空")
+// TestExtraPathDirs 查拆分的边角：空串、空段、首尾分隔符都要被丢掉。
+func TestExtraPathDirs(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"   ", nil},
+		{":", nil},
+		{"/a", []string{"/a"}},
+		{"/a:/b", []string{"/a", "/b"}},
+		{" /a : /b ", []string{"/a", "/b"}},
+		{"/a::/b", []string{"/a", "/b"}},
+		{" /a :", []string{"/a"}},
 	}
-	if got := homeOfUser(""); got == "" {
-		t.Error("空用户名时应当退回当前家目录")
+	for _, c := range cases {
+		got := extraPathDirs(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("extraPathDirs(%q) = %v，期望 %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("extraPathDirs(%q) = %v，期望 %v", c.in, got, c.want)
+				break
+			}
+		}
 	}
 }

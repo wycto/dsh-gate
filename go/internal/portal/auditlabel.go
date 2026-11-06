@@ -18,6 +18,8 @@ var auditActionKeys = map[string]string{
 	"admin.user.role":        i18n.KeyAuditUserRole,
 	"admin.user.toggle":      i18n.KeyAuditUserToggle,
 	"admin.user.delete":      i18n.KeyAuditUserDelete,
+	"admin.user.perms":       i18n.KeyAuditUserPerms,
+	"admin.features.save":    i18n.KeyAuditFeaturesSave,
 	"admin.grants.save":      i18n.KeyAuditGrantsSave,
 	"admin.instance.create":  i18n.KeyAuditInstanceCreate,
 	"admin.instance.install": i18n.KeyAuditInstanceInstall,
@@ -28,6 +30,15 @@ var auditActionKeys = map[string]string{
 	"admin.instance.update":  i18n.KeyAuditInstanceUpdate,
 	"admin.env.install":      i18n.KeyAuditEnvInstall,
 	"admin.csrf-rejected":    i18n.KeyAuditCSRFRejected,
+	// 内网服务代理（docs/service-proxy.md）：与实例同一口径。
+	"service.enter":            i18n.KeyAuditServiceEnter,
+	"service.denied":           i18n.KeyAuditServiceDenied,
+	"admin.service.create":     i18n.KeyAuditServiceCreate,
+	"admin.service.update":     i18n.KeyAuditServiceUpdate,
+	"admin.service.remove":     i18n.KeyAuditServiceRemove,
+	"admin.service.toggle":     i18n.KeyAuditServiceToggle,
+	"admin.service.probe":      i18n.KeyAuditServiceProbe,
+	"admin.serviceGrants.save": i18n.KeyAuditServiceGrantsSave,
 }
 
 // auditActionLabel 翻译动作标识；未登记的返回原标识。
@@ -48,6 +59,8 @@ func auditDetailLabel(lang i18n.Lang, action, detail string, ok bool) string {
 		return i18n.T(lang, i18n.KeyAuditDetailFailed, detail)
 	case action == "instance.enter" && detail != "":
 		return i18n.T(lang, i18n.KeyAuditDetailInstanceID, detail)
+	case action == "service.enter" && detail != "":
+		return i18n.T(lang, i18n.KeyAuditDetailServiceID, detail)
 	}
 	return detail
 }

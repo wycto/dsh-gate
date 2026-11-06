@@ -92,6 +92,9 @@ type Options struct {
 	Status func() string
 	// CookieSecure 表示网关启用 HTTPS，种 Cookie 时要带 Secure。
 	CookieSecure bool
+	// CookiePort 是网关监听端口：交接标记 Cookie 名带 _p<端口> 后缀，
+	// 与 auth 侧的会话 Cookie 同一口径（同机多网关隔离，见 cookie.ScopeName）。
+	CookiePort int
 	// Logger 收日志；为 nil 时丢弃全部记录。
 	Logger *slog.Logger
 }
@@ -102,6 +105,8 @@ type Handler struct {
 	proxy  *httputil.ReverseProxy
 	log    *slog.Logger
 	tokens TokenSource
+	// handoffCookie 是带端口后缀的交接标记名（与 auth 登出时清的是同一个）。
+	handoffCookie string
 }
 
 // exchangeKey 在请求上下文里标记「本次请求让 dsh 做了一次令牌交接」。
@@ -140,7 +145,8 @@ func New(opts Options) (*Handler, error) {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	h := &Handler{opts: opts, log: opts.Logger, tokens: opts.Tokens}
+	h := &Handler{opts: opts, log: opts.Logger, tokens: opts.Tokens,
+		handoffCookie: cookie.ScopeName(cookie.Handoff, opts.CookiePort)}
 	h.proxy = &httputil.ReverseProxy{
 		Rewrite:        h.rewrite,
 		Transport:      transport(),
@@ -201,7 +207,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := h.tokens.Token()
 	incoming := r.URL.Query().Get("token")
 	exchange := incoming != ""
-	if !exchange && needsExchange(r, token) {
+	if !exchange && needsExchange(r, token, h.handoffCookie) {
 		if token == "" {
 			// 手上没有令牌：补不了，只能让 dsh 自己说 401，由 401 那条路径
 			// 给出可执行的说明。
@@ -223,7 +229,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // needsExchange 判断这次请求是否需要网关补上启动令牌。
-func needsExchange(r *http.Request, token string) bool {
+func needsExchange(r *http.Request, token, handoffCookie string) bool {
 	if token == "" {
 		return false
 	}
@@ -237,7 +243,7 @@ func needsExchange(r *http.Request, token string) bool {
 	//   - 指纹对不上 → 这台浏览器的会话是在**另一个令牌**下建立的，说明 dsh
 	//     重启过（每次启动都换令牌），必须重新交接，否则它会一直 401；
 	//   - 指纹一致 → 不重复注入，否则 dsh 的 302 会把浏览器来回弹。
-	return cookie.Get(r, cookie.Handoff) != handoffValue(token)
+	return cookie.Get(r, handoffCookie) != handoffValue(token)
 }
 
 // modifyResponse 在响应写给浏览器之前介入，做两件事：
@@ -254,7 +260,7 @@ func (h *Handler) modifyResponse(res *http.Response) error {
 	// 而它其实没拿到会话——下一次访问 / 网关就不补令牌了，于是永远卡在 401。
 	if exchanged && res.StatusCode >= 200 && res.StatusCode < 400 {
 		token, _ := res.Request.Context().Value(exchangeTokenKey{}).(string)
-		res.Header.Add("Set-Cookie", cookie.Value(cookie.Handoff, handoffValue(token), cookie.Options{
+		res.Header.Add("Set-Cookie", cookie.Value(h.handoffCookie, handoffValue(token), cookie.Options{
 			Secure: h.opts.CookieSecure,
 			MaxAge: handoffMaxAge,
 		}).String())
@@ -278,7 +284,7 @@ func (h *Handler) modifyResponse(res *http.Response) error {
 	// 交换入口」），可那恰恰是最常见的入口——用户在网关登录后被送回 `/`，
 	// 看到的是 dsh 那句 `dsh web authentication required; reopen the URL printed
 	// by dsh web.`，而标记还在，刷新多少次都一样，重新登录也没用。
-	if cookie.Get(res.Request, cookie.Handoff) != "" {
+	if cookie.Get(res.Request, h.handoffCookie) != "" {
 		body := peekBody(&res.Body)
 		h.log.Info("dsh 会话失效，清掉交接标记并重新交接",
 			"path", res.Request.URL.Path, "body", body)
@@ -286,7 +292,7 @@ func (h *Handler) modifyResponse(res *http.Response) error {
 
 		res.Header.Del("Content-Encoding")
 		res.Header.Del("Content-Length")
-		res.Header.Add("Set-Cookie", cookie.ClearValue(cookie.Handoff, cookie.Options{
+		res.Header.Add("Set-Cookie", cookie.ClearValue(h.handoffCookie, cookie.Options{
 			Secure: h.opts.CookieSecure,
 		}).String())
 		res.Header.Set("Location", "/")

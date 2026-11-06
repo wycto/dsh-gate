@@ -33,6 +33,7 @@ A single-binary Go program that uses only the Go standard library (the SQLite dr
   - [Step 7 — Removing it](#step-7--removing-it)
   - [Three places to look when something is wrong](#three-places-to-look-when-something-is-wrong)
 - [Installation](#installation)
+  - [Installing as a normal user, no root anywhere](#installing-as-a-normal-user-no-root-anywhere)
   - [Download a prebuilt binary](#download-a-prebuilt-binary)
   - [Build from source](#build-from-source)
   - [Cross-compiling and packaging](#cross-compiling-and-packaging)
@@ -452,6 +453,11 @@ copy): `/usr/local/bin` on Linux / macOS, `%LOCALAPPDATA%\dsh-gate\bin` on Windo
 type `dsh-gate` directly (that Windows directory is not on `PATH` by default — add it yourself if
 you want that); it also asks whether to enable autostart (the `--service` flag).
 
+**All of the above runs as your own account — do not `sudo` it.** Only autostart on Linux needs
+root; macOS and Windows do not, and if `/usr/local/bin` is not writable use
+`--bin-dir "$HOME/.local/bin"`. See
+[Installing as a normal user, no root anywhere](#installing-as-a-normal-user-no-root-anywhere).
+
 Day-to-day:
 
 ```sh
@@ -496,18 +502,27 @@ Very little:
 | One binary | Take the package for your platform from [dist](dist/), or build it with `sh go/build.sh` |
 | **No** Node.js | The console downloads the official runtime if Node is missing (see step 2) |
 | **No** public IP | It is for the LAN; for remote access see [Remote access](#remote-access-using-your-office-dsh-from-home) |
+| **No** root account | Installing the console, creating instances and installing dsh all stay inside your home directory — see [Installing as a normal user](#installing-as-a-normal-user-no-root-anywhere) |
 
-Put the binary somewhere stable. On Linux/macOS, install it into `PATH`:
+Put the binary somewhere stable. **Your own account is enough**; install it into a `PATH`
+directory inside your home:
 
 ```sh
 # Unpack (on Windows it is a .zip containing dsh-gate.exe)
 tar -xzf dsh-gate_<version>_linux_amd64.tar.gz
 cd dsh-gate_<version>_linux_amd64
 
-# Put it in PATH; you can also run ./dsh-gate for now — step 1 installs it again for you
-sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
+mkdir -p "$HOME/.local/bin"
+install -m755 dsh-gate "$HOME/.local/bin/dsh-gate"     # on Windows, use copy instead
+export PATH="$HOME/.local/bin:$PATH"
 dsh-gate version        # make sure it runs
 ```
+
+> `/usr/local/bin` works too (`sudo install -m755 dsh-gate /usr/local/bin/dsh-gate`), but
+> that is the **only** step that should use sudo; step 1's `install` still has to run as you,
+> otherwise the state directory ends up owned by root. Both options are covered in
+> [Installing as a normal user, no root anywhere](#installing-as-a-normal-user-no-root-anywhere).
+> You can also skip copying entirely and use `./dsh-gate` — step 1 asks whether to copy it.
 
 > Not sure which package? `uname -m` shows the architecture (`x86_64` → amd64,
 > `aarch64`/`arm64` → arm64) and `uname -s` the system. On Windows take
@@ -519,10 +534,12 @@ dsh-gate version        # make sure it runs
 dsh-gate install             # run as yourself; macOS autostart needs no root
 ```
 
-> **Do not run `sudo dsh-gate install`.** sudo keeps `$HOME` (on macOS at least), so
-> `~/.dsh-gate` still points at your own state directory, while the database and token written
-> as root are root-owned (0600) — afterwards your own `dsh-gate status` / console cannot read
-> them. If all you want is the command in `PATH`, first
+> **Generally do not run `sudo dsh-gate install`** (installing without root is simpler; since
+> 2026-11-06 a sudo install can also detect the invoking user, see
+> [Server deployment](#server-deployment-linux--systemd)). sudo keeps `$HOME` (on macOS at
+> least), so `~/.dsh-gate` still points at your own state directory, while the database and
+> token written as root are root-owned (0600) — afterwards your own `dsh-gate status` /
+> console cannot read them. If all you want is the command in `PATH`, first
 > `sudo install -m755 dsh-gate /usr/local/bin/`, then run `dsh-gate install` as yourself.
 
 In an interactive terminal it asks the following; press Enter to accept the value in brackets
@@ -722,6 +739,141 @@ setting that did not take effect — each has a procedure.
 
 ## Installation
 
+### Installing as a normal user, no root anywhere
+
+Install it **as your own account** by default — do not use `sudo`. Everything `dsh-gate`
+writes lives in your home directory: the account database and settings in `~/.dsh-gate`,
+each instance's data under the `--dsh-home` directory you choose, and the Node.js runtime
+it downloads into `~/.dsh-gate/node`. Running `install` as root makes those files owned by
+root (the database is `0600`), so later `status` / `stop` calls under your own account can
+no longer read them.
+
+Among the three platforms, **only autostart on Linux needs root**; every other step does not:
+
+| Platform | Autostart mechanism | Root for autostart |
+|---|---|---|
+| macOS | launchd LaunchAgent (starts at login) | **No** — just run `install --service` |
+| Windows | Scheduled Task (at logon, current user, lowest privileges) | **No** — just run `install --service` |
+| Linux | systemd system service (`/etc/systemd/system/`) | Yes, and only in that one step |
+
+#### macOS / Windows: one command and you are done
+
+```sh
+# Enter the unpacked directory. macOS: dsh-gate, Windows: dsh-gate.exe
+./dsh-gate install --service --random
+```
+
+`--service` already starts the console (it implies `--start`). `--random` generates a strong
+password and prints it once; change it later with `manage user passwd`. The wizard asks for an
+install directory — `/usr/local/bin` on macOS, `%LOCALAPPDATA%\dsh-gate\bin` on Windows:
+
+- **Windows**: the default is already inside your account, so just press Enter.
+- **macOS**: `/usr/local/bin` usually belongs to the admin group and your account may not
+  write there. If it cannot, the installer **prints a note and continues** — it does not
+  abort, and `./dsh-gate` in the current directory still works. To be able to type
+  `dsh-gate` later, point it at your own directory:
+
+  ```sh
+  ./dsh-gate install --service --random --bin-dir "$HOME/.local/bin"
+  # then add ~/.local/bin to PATH (zsh: put it in ~/.zshrc, reopen the terminal)
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+  ```
+
+  You can still use `/usr/local/bin` — just in **two steps**, without letting `install`
+  itself run as root:
+
+  ```sh
+  sudo install -m755 dsh-gate /usr/local/bin/dsh-gate   # only this puts the command in PATH
+  dsh-gate install --service                            # everything else stays your user
+  ```
+
+#### Linux: sudo only for the autostart step
+
+The complete unprivileged flow on a headless server (verified in practice):
+
+```sh
+# 1. Put the command in your own directory (or --bin-dir "" and keep using ./dsh-gate)
+dsh-gate install --bin-dir "$HOME/.local/bin" --random
+export PATH="$HOME/.local/bin:$PATH"
+
+# 2. Start it in the background and confirm it works
+dsh-gate start
+dsh-gate status
+
+# 3. Only autostart needs root: --state-dir and --user are expanded by YOUR shell
+#    first, so they point at your own directory and account, not /root
+sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
+```
+
+Step 3 assumes root's `PATH` can find `dsh-gate`. If you installed the command into a
+directory in your home, root cannot see it — use the full path instead (`--binary` records
+whatever path you ran, and that becomes `ExecStart` in the unit, so it has to point at
+your copy):
+
+```sh
+sudo "$HOME/.local/bin/dsh-gate" service install \
+     --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
+```
+
+Running `sudo dsh-gate install --service` as an ordinary user **with an explicit**
+`--state-dir ~/...` can send `~` to `/root` (the shell expands it), putting the account
+database and token in root's home. (Since 2026-11-06, omitting `--state-dir` makes the install
+detect the sudo-invoking user and chown the files to them; an explicit `~` path is still
+expanded to `/root`.) The two-step flow above is the safer route: the `sudo` in step 3 only
+writes one unit file, `User=` in that unit is still you, and nothing at runtime needs root.
+
+It also runs fine without systemd (or without sudo) — it just will not start on boot:
+
+```sh
+dsh-gate install --bin-dir "$HOME/.local/bin" --random --start
+```
+
+To get autostart without root, hand the **startup** to your own login session. Use `status` as
+the guard — it is now a usable health probe (it returns 1 when the console is not running):
+
+```sh
+# put it in ~/.profile (runs once at login; interactive non-login shells read ~/.bashrc)
+dsh-gate status >/dev/null 2>&1 || dsh-gate start
+```
+
+- When the console is already running nothing happens and nothing is printed; when it is not,
+  it starts and prints the access URL once.
+- A genuine startup failure (port in use, and so on) still reaches your terminal — it is not
+  swallowed.
+- If you prefer not to rely on the exit code, plain `dsh-gate start` works too: it is safe to
+  repeat, it just prints one "the console is already running" line (on stderr) at every login.
+
+Or use cron's `@reboot`, which runs once per boot regardless of how many terminals you log
+into (a normal user's crontab needs no root, but the cron daemon has to be running). cron does
+not read your `PATH`, so give the full path:
+
+```sh
+crontab -e
+# then add one line (use the absolute path of ./dsh-gate if you never copied it)
+@reboot $HOME/.local/bin/dsh-gate start
+```
+
+Logs are at `~/.dsh-gate/run/logs/portal.log`.
+
+#### Ports: below 1024 needs root
+
+An unprivileged account cannot bind ports under 1024. The console defaults to `12020` and
+instance ports are allocated from `32100–32299`, both safe — no change needed. If you
+really want 80 / 443, put a privileged deployment in front.
+
+#### Everything else was already unprivileged
+
+- **Creating instances, installing dsh, granting access** (`dsh add` / `dsh install` /
+  `manage grant add`) only write your own directories — no root at any point.
+- **A missing Node.js is downloaded by itself** into `~/.dsh-gate/node`, verified against
+  the official `SHASUMS256.txt`, never installed system-wide and never needing root.
+- **`--tls-trust` is the one exception**: installing the CA into the system trust store
+  needs keychain access on macOS, the user certificate store on Windows (neither requires
+  admin) and root on Linux. If it fails, HTTPS still works; the command prints what you
+  should run yourself.
+- **`uninstall` / `stop` / `restart` also run as your own account** — with `sudo` they read
+  the state under `/root` and cannot see your instances.
+
 ### Download a prebuilt binary
 
 If you do not want to touch Go, download the archive for your platform (Linux / macOS /
@@ -828,7 +980,9 @@ dsh-gate plugin / model           Plugin and model helpers
 dsh-gate version                  Print the version
 ```
 
-Exit codes: `0` success, `1` runtime failure, `2` usage error.
+Exit codes: `0` success, `1` runtime failure, `2` usage error. `dsh-gate status` falls under
+this rule — **it returns 1 when the console is not running**, so it works as a health probe
+(see [dsh-gate status](#dsh-gate-status)).
 
 Common options: `--lang zh-CN|en` works before any subcommand (also via `DSH_GATE_LANG` /
 `LC_ALL` / `LANG`); the `dsh` and `manage` subcommands accept `--db` and `--state-dir`.
@@ -973,6 +1127,17 @@ Next: dsh-gate dsh list / dsh-gate dsh restart <name>; page: /admin
 
 When the console is down it shows the "last configuration" and suggests `dsh-gate start`;
 instance run state is marked as "as shown in the console".
+
+**The exit code doubles as a health probe**: `0` when the console is running, `1` when it is
+not. So
+
+```sh
+dsh-gate status >/dev/null 2>&1 || dsh-gate start     # start only if it is down
+```
+
+is reliable, with no need to match on the output text. This does not limit what it reports:
+even when it exits 1 the instance list is still printed (the database does not need a running
+console).
 
 Options: `--state-dir DIR`, `--db PATH`, `-v` (also show the console's start command),
 `--run-dir DIR`.
@@ -1327,27 +1492,24 @@ creation; the page is better for watching state and clicking install.
 A headless Linux server is the most typical setup. The whole flow:
 
 ```sh
-# 1. Put the binary in PATH (the one from the release archive)
-sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
+# 1. Put the command in your own directory (or --bin-dir "" and keep using ./dsh-gate)
+dsh-gate install --bin-dir "$HOME/.local/bin"      # run as yourself; includes the HTTPS self-signed wizard
 
-# 2. Install as yourself: create the admin, write the state directory and start config
-dsh-gate install                    # interactive; use --password-stdin / --random in scripts
-#    Or have it start in the background when done
-dsh-gate install --start
+# 2. Only "autostart" needs root: write one system unit whose User= is you
+sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020 \
+  --tls-cert "$HOME/.dsh-gate/tls/server.crt" --tls-key "$HOME/.dsh-gate/tls/server.key"
 
-# 3. Hand the console to systemd (writing the unit needs root; --state-dir and --user are
-#    expanded by your shell before sudo, so they point at your directory and user, not root's)
-sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
-
-# 4. Confirm it is up
+# 3. Confirm it is up
 dsh-gate status
-systemctl status dsh-gate
+ps -o user= -p "$(systemctl show -p MainPID --value dsh-gate)"   # your user, not root
 ```
 
-> Do not use `sudo dsh-gate install --service`: under sudo `~` may resolve to root's home, so
-> the account database and token land in `/root` and your own `dsh-gate status` can no longer
-> read them. On Linux keep "create the account" and "write the system unit" as two steps, each
-> with the right user (as above).
+> **One-command `sudo` install works too, and still runs as you**: since 2026-11-06,
+> `sudo dsh-gate install` detects the user who invoked sudo from `SUDO_UID`/`SUDO_USER` — the
+> state directory and TLS certificates default to **your home** and are chowned to you, and the
+> unit gets `User=<you>` / `WorkingDirectory=<your home>`, so dsh never runs as root. But
+> **never pass `--state-dir ~/...` explicitly**: under sudo the shell expands `~` to `/root`
+> first; omit it and let the default apply. Installing as a real root login prints a warning.
 
 `service install` writes the unit to `/etc/systemd/system/dsh-gate.service`, then runs
 `daemon-reload`, `enable` and `start`.

@@ -20,6 +20,7 @@ English version: [README.en.md](README.en.md)
 - [它到底做了什么](#它到底做了什么)
 - [管理端：一个入口，多个 dsh 实例](#管理端一个入口多个-dsh-实例)
   - [管理台里装 dsh：先建记录，再装](#管理台里装-dsh先建记录再装)
+- [内网服务代理：一个入口访问内网服务](#内网服务代理一个入口访问内网服务)
 - [30 秒上手](#30-秒上手)
   - [登录页在手机与浅色模式下的样子](#登录页在手机与浅色模式下的样子)
 - [使用教程](#使用教程)
@@ -33,6 +34,7 @@ English version: [README.en.md](README.en.md)
   - [第 7 步：不用了怎么卸](#第-7-步不用了怎么卸)
   - [出问题了先看这三处](#出问题了先看这三处)
 - [安装](#安装)
+  - [用普通账号安装，全程不需要 root](#用普通账号安装全程不需要-root)
   - [下载预编译包](#下载预编译包)
   - [从源码构建](#从源码构建)
   - [交叉编译打包](#交叉编译打包)
@@ -45,6 +47,7 @@ English version: [README.en.md](README.en.md)
   - [dsh-gate uninstall](#dsh-gate-uninstall)
   - [dsh-gate service](#dsh-gate-service)
   - [dsh-gate dsh](#dsh-gate-dsh)
+  - [dsh-gate svc](#dsh-gate-svc)
   - [dsh-gate manage](#dsh-gate-manage)
   - [dsh-gate plugin](#dsh-gate-plugin)
   - [dsh-gate model](#dsh-gate-model)
@@ -393,6 +396,36 @@ dsh-gate dsh edit ui-app --dsh-version ""
 - PWA / 移动端「添加到主屏幕」在子路径下不承诺表现正常；上游插件若硬编码绝对路径资源，
   子路径下可能 404。
 
+## 内网服务代理：一个入口访问内网服务
+
+除了 dsh 实例，管理端还能把**任意内网服务**（IP:端口 或内网域名）登记进来、代理出去：
+人在别的机器上，只访问管理端这一个地址，就能打开被授权的内网 wiki、Git 服务、管理台……
+设计与实现说明见 [docs/service-proxy.md](docs/service-proxy.md)。
+
+- **与实例完全分开**：管理台有独立的「服务」分页；用户侧「我的服务」是独立页面
+  `/services`，与「我的实例」互不混排。
+- **同一套门禁**：服务同样要登录 + 逐用户授权；未授权与不存在同形回答（404）并写审计。
+- **子路径挂载**：服务挂在 `/s/<不透明 id>/` 下，Cookie 路径与根相对重定向自动改写，
+  WebSocket / SSE 穿透；上游是自签 HTTPS 时可按服务豁免证书校验。
+- **只代理已登记目标**：管理端不是开放代理，登记与探活仅管理员可操作。
+
+```sh
+# 登记一个内网服务（也可以管理台「服务」分页里填表）
+dsh-gate svc add --name wiki --upstream http://192.168.1.20:8080
+dsh-gate svc add --name 内网文档 --upstream https://docs.corp.example --insecure-tls
+
+# 日常运维
+dsh-gate svc list            # 列出服务与挂载地址
+dsh-gate svc probe wiki      # 探活
+dsh-gate svc disable wiki    # 停用（保留登记）
+dsh-gate svc enable wiki
+dsh-gate svc rm wiki         # 删除登记（不动服务本体）
+```
+
+已知限制（与实例的子路径挂载同源）：硬编码绝对路径 `/xxx` 的 Web 应用在子路径下会 404，
+这类服务请等 P1 的独立端口映射模式；`localStorage` 按域名共享、不按路径隔离。
+自动发现（本机扫描 / 端口段探测 / 服务台导入）在 P1，本期先手动登记。
+
 ## 30 秒上手
 
 一条命令装好管理端（会逐项询问、汇总确认，建好管理员并按你的选择启动）：
@@ -420,6 +453,10 @@ dsh-gate install --random --start
 macOS 是 `/usr/local/bin`，Windows 是 `%LOCALAPPDATA%\dsh-gate\bin`。之后敲 `dsh-gate`
 即可（Windows 那个目录默认不在 `PATH` 里，想直接敲就自己加一下）；它会问你要不要装
 开机自启（对应 `--service`）。
+
+**以上全部以自己的账号执行，不要 `sudo`。** 只有 Linux 的开机自启需要 root，macOS 与
+Windows 都不需要；macOS 上 `/usr/local/bin` 写不进去时用 `--bin-dir "$HOME/.local/bin"`。详见
+[用普通账号安装，全程不需要 root](#用普通账号安装全程不需要-root)。
 
 管理它：
 
@@ -464,18 +501,25 @@ dsh-gate service install   # Linux 用 systemd、macOS 用 launchd、Windows 用
 | 一个二进制 | 从 [dist](dist/) 取对应平台的包，或自己 `sh go/build.sh` 编译 |
 | **不需要** Node.js | 本机没有 Node 时，管理端会自己下载官方运行时（见第 2 步） |
 | **不需要** 公网 IP | 局域网内用；要从外面用请见[异地访问](#异地访问人在家里用公司的-dsh) |
+| **不需要** root 账号 | 装管理端、建实例、装 dsh 全在你的家目录里，见[用普通账号安装](#用普通账号安装全程不需要-root) |
 
-把二进制放到一个稳定位置。Linux/macOS 上直接装进 `PATH`：
+把二进制放到一个稳定位置。**用你自己的账号就够**，装进家目录下的 `PATH`：
 
 ```sh
 # 解压（Windows 用 .zip，解开就是 dsh-gate.exe）
 tar -xzf dsh-gate_<版本>_linux_amd64.tar.gz
 cd dsh-gate_<版本>_linux_amd64
 
-# 装进 PATH；也可以先 ./dsh-gate 用起来，第 1 步的 install 会再帮你拷一份
-sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
+mkdir -p "$HOME/.local/bin"
+install -m755 dsh-gate "$HOME/.local/bin/dsh-gate"     # Windows 上把 install 换成 copy
+export PATH="$HOME/.local/bin:$PATH"
 dsh-gate version        # 确认能跑
 ```
+
+> 想装进 `/usr/local/bin` 也可以（`sudo install -m755 dsh-gate /usr/local/bin/dsh-gate`），
+> 但**只有这一步**用 sudo；第 1 步的 `install` 仍要以自己的身份跑，否则状态目录会被写成
+> root 属主。两种做法都见[用普通账号安装，全程不需要 root](#用普通账号安装全程不需要-root)。
+> 也可以什么都不拷，先在当前目录用 `./dsh-gate` 跑起来，第 1 步的 `install` 会问你要不要拷。
 
 > 不确定该下哪个包？`uname -m` 看架构（`x86_64` → amd64，`aarch64`/`arm64` → arm64），
 > `uname -s` 看系统。Windows 上取 `windows_amd64`（或 `arm64`）。
@@ -486,7 +530,7 @@ dsh-gate version        # 确认能跑
 dsh-gate install             # 以你自己的身份跑；macOS 装开机自启并不需要 root
 ```
 
-> **别用 `sudo dsh-gate install`。** sudo 会保留 `$HOME`（macOS 就是如此），
+> **一般不要用 `sudo dsh-gate install`**（无 root 安装更简单；2026-11-06 起 sudo 安装也能识别发起用户、见[服务器部署](#服务器部署linux--systemd)）。sudo 会保留 `$HOME`（macOS 就是如此），
 > `~/.dsh-gate` 仍然指向你自己的状态目录，而以 root 写出来的数据库、令牌文件是 root
 > 属主（0600）—— 之后你用普通用户跑 `dsh-gate status` / 管理端都会读不了。只是想把命令
 > 装进 `PATH` 的话，先 `sudo install -m755 dsh-gate /usr/local/bin/`，再以自己身份运行
@@ -674,6 +718,129 @@ dsh-gate uninstall --yes --remove-data --purge  # 再删管理端状态目录（
 
 ## 安装
 
+### 用普通账号安装，全程不需要 root
+
+默认就该**用你自己的账号**装，不要 `sudo`。`dsh-gate` 要写的东西全都在你的家目录里：
+账号库与配置在 `~/.dsh-gate`，dsh 实例的数据在你指定的 `--dsh-home` 目录，自备的
+Node.js 运行时在 `~/.dsh-gate/node`。以 root 跑 `install` 反而会把它们写成 root 属主
+（数据库是 `0600`），之后你用普通账号执行 `status` / `stop` 时读不了自己的东西。
+
+三个平台里**只有 Linux 的开机自启需要 root**，其余步骤都不需要：
+
+| 平台 | 自启机制 | 装自启要 root |
+|---|---|---|
+| macOS | launchd 的 LaunchAgent（登录时启动） | **不要**，`install --service` 直接跑 |
+| Windows | 计划任务（登录时启动，当前用户、最低权限） | **不要**，`install --service` 直接跑 |
+| Linux | systemd 系统服务（`/etc/systemd/system/`） | 要，且只能单独一步用 `sudo` |
+
+#### macOS / Windows：一条命令到底
+
+```sh
+# 解压后进入目录。macOS 是 dsh-gate，Windows 是 dsh-gate.exe
+./dsh-gate install --service --random
+```
+
+`--service` 已经把管理端启动了（它蕴含 `--start`）。`--random` 让它生成一个强口令并只打印
+一次，之后用 `manage user passwd` 改。向导会问「安装目录」，默认值 macOS 是
+`/usr/local/bin`、Windows 是 `%LOCALAPPDATA%\dsh-gate\bin`：
+
+- **Windows** 的默认目录本来就在你的账号下，直接回车即可。
+- **macOS** 的 `/usr/local/bin` 通常属于管理员组，你的账号不一定能写。写不进去时它
+  只会**提示一句就继续**（不当中断安装），当前目录里的 `./dsh-gate` 照样能用。想以后
+  直接敲 `dsh-gate`，换成自己目录下的位置：
+
+  ```sh
+  ./dsh-gate install --service --random --bin-dir "$HOME/.local/bin"
+  # 然后把 ~/.local/bin 加进 PATH（zsh：写进 ~/.zshrc 后重开终端）
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+  ```
+
+  想装进 `/usr/local/bin` 也不是不行，但**分两步**，别让 `install` 本身以 root 跑：
+
+  ```sh
+  sudo install -m755 dsh-gate /usr/local/bin/dsh-gate   # 只把命令装进 PATH
+  dsh-gate install --service                            # 其余仍用自己身份
+  ```
+
+#### Linux：自启那一步单独 sudo
+
+无界面服务器上的完整非 root 流程（实测可用）：
+
+```sh
+# 1. 命令装进自己的目录（不想拷就 --bin-dir ""，之后用 ./dsh-gate）
+dsh-gate install --bin-dir "$HOME/.local/bin" --random
+export PATH="$HOME/.local/bin:$PATH"
+
+# 2. 后台跑起来，先确认能用
+dsh-gate start
+dsh-gate status
+
+# 3. 只有开机自启需要 root：--state-dir 与 --user 由你的 shell 先展开，
+#    所以指的是你自己的目录与账号，不会写进 /root
+sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
+```
+
+第 3 步的 `sudo dsh-gate` 依赖 root 的 `PATH` 里能找到 `dsh-gate`。命令装在家目录下时
+root 找不到它，写全路径即可（`--binary` 会记成单元里的 `ExecStart`，所以必须指到你的那份）：
+
+```sh
+sudo "$HOME/.local/bin/dsh-gate" service install \
+     --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
+```
+
+普通用户直接 `sudo dsh-gate install --service` 且**显式传** `--state-dir ~/...` 时，`~` 可能被
+shell 解析成 `/root`，账号库与令牌全进 root 家目录。（2026-11-06 起不传 `--state-dir` 时会自动
+识别发起 sudo 的用户并把文件 chown 给他；但显式传 `~` 路径仍会被展开成 `/root`。）更稳妥的是
+如上分成两步：第 3 步的 `sudo` 只负责写一个单元文件，服务里的 `User=` 仍然是你，运行期不碰 root。
+
+没有 systemd（或拿不到 sudo）也完全能跑，只是**开机不会自动起**：
+
+```sh
+dsh-gate install --bin-dir "$HOME/.local/bin" --random --start
+```
+
+想让它在没有 root 的情况下随登录自启，就把**启动**交给自己的会话。用 `status` 当守卫，
+它现在就是个能用的健康探针（管理端没在跑时返回 1）：
+
+```sh
+# 加进 ~/.profile（登录时执行一次；交互式非登录 shell 读 ~/.bashrc）
+dsh-gate status >/dev/null 2>&1 || dsh-gate start
+```
+
+- 管理端已经在跑时什么都不会发生、也不打印任何东西；没跑才启动，并且只在这一次
+  打印访问地址。
+- 真正的启动失败（端口被占等）会照原样打到终端上，不会被吞掉。
+- 不想依赖退出码，也可以直接写 `dsh-gate start`：重复执行是安全的，只是每次登录会多
+  一行「管理端已经在运行」（那行走 stderr）。
+
+或者用 cron 的 `@reboot`，每次开机只跑一次、与登录多少个终端无关（普通用户的 crontab
+不需要 root，但要机器上开着 cron 服务）。cron 不读你的 `PATH`，所以写全路径：
+
+```sh
+crontab -e
+# 然后加一行（自己用 ./dsh-gate 的话把它换成那个绝对路径）
+@reboot $HOME/.local/bin/dsh-gate start
+```
+
+日志在 `~/.dsh-gate/run/logs/portal.log`。
+
+#### 端口：1024 以下要 root
+
+非 root 账号绑不了 1024 以下的端口。管理端默认 `12020`、dsh 实例端口自动分配在
+`32100–32299`，都在安全区，不用改。确实要用 80 / 443 的话，把它们让给能提权的部署方式。
+
+#### 其余一切本来就是普通权限
+
+- **建实例、装 dsh、授权**（`dsh add` / `dsh install` / `manage grant add`）都写你自己的
+  目录，全程非 root。
+- **没有 Node.js 时它自己下载**到 `~/.dsh-gate/node`，校验官方 `SHASUMS256.txt` 后用，
+  不装进系统、不要 root。
+- **`--tls-trust` 是唯一的例外**：往系统信任库装 CA，macOS 要登录钥匙串权限、
+  Windows 要用户级存储区（都不需要管理员）、Linux 要 root。装不上不影响 HTTPS 本身能用，
+  命令会把该自己执行的打印出来。
+- **`uninstall` / `stop` / `restart` 也都用你自己的账号**，别 `sudo`——否则它们去读
+  `/root` 那份状态，看不到你的实例。
+
 ### 下载预编译包
 
 不想碰 Go 的话，直接下发行版里对应平台的压缩包（Linux / macOS / Windows ×
@@ -775,7 +942,9 @@ dsh-gate plugin / model        插件与模型的辅助命令
 dsh-gate version               打印版本号
 ```
 
-退出码：`0` 成功，`1` 运行失败，`2` 参数用法错误。
+退出码：`0` 成功，`1` 运行失败，`2` 参数用法错误。`dsh-gate status` 属于这一类——
+**管理端没在运行时它返回 1**，所以可以直接当健康探针用（见
+[dsh-gate status](#dsh-gate-status)）。
 
 公共选项：`--lang zh-CN|en` 可写在任意子命令前（也可用 `DSH_GATE_LANG` / `LC_ALL` /
 `LANG`）；`dsh` 与 `manage` 的子命令认 `--db` 与 `--state-dir`。
@@ -912,6 +1081,15 @@ $ dsh-gate status
 
 管理端没在跑时，它会显示「上次配置」并提示 `dsh-gate start`；实例的运行状态标注为
 「运行状态以管理台为准」。
+
+**退出码同时是健康探针**：管理端在运行返回 `0`，没在运行返回 `1`。所以
+
+```sh
+dsh-gate status >/dev/null 2>&1 || dsh-gate start     # 没跑才启动
+```
+
+是可靠写法，不需要去匹配输出文本。注意这不影响它「能读」：即使返回 1，实例清单照旧会
+打印出来（数据库不依赖运行中的管理端）。
 
 选项：`--state-dir DIR`、`--db PATH`、`-v`（附带显示管理端启动命令）、`--run-dir DIR`。
 
@@ -1079,6 +1257,34 @@ dsh-gate dsh rm 我的助手 --purge --purge-install
 
 `--purge` 的删除有安全检查：只删绝对路径，并拒绝删根目录、当前用户家目录这类目标。
 
+### dsh-gate svc
+
+内网服务的登记与运维（见[内网服务代理](#内网服务代理一个入口访问内网服务)与
+[docs/service-proxy.md](docs/service-proxy.md)）。与 `dsh` 子命令一样走管理端本机控制
+API：管理端没在跑会提示先 `dsh-gate start`。服务的**用户授权**在管理台「服务」分页的
+授权矩阵里做（与实例授权同一口径）。
+
+```
+dsh-gate svc list
+dsh-gate svc add --name <名字> --upstream <http(s)://主机[:端口][/base]> [--host-header upstream|gateway] [--insecure-tls] [--note <备注>]
+dsh-gate svc probe <名字或 id>
+dsh-gate svc enable|disable <名字或 id>
+dsh-gate svc rm <名字或 id>
+```
+
+```sh
+# 登记内网 wiki 并探活
+dsh-gate svc add --name wiki --upstream http://192.168.1.20:8080 --note 团队知识库
+dsh-gate svc probe wiki
+
+# 自签证书的内网域名服务
+dsh-gate svc add --name docs --upstream https://docs.corp.example --insecure-tls
+
+# 停用 / 删除登记（都不动服务本体）
+dsh-gate svc disable wiki
+dsh-gate svc rm wiki
+```
+
 ### dsh-gate manage
 
 管理端一级的用户与授权。管理页面在浏览器里（`/admin`），这里是等价能力的命令行入口。
@@ -1236,26 +1442,23 @@ dsh-gate 0.3.20
 无界面 Linux 服务器是最典型的场景。完整流程：
 
 ```sh
-# 1. 把二进制放到 PATH（发行包解压出来的那一个）
-sudo install -m755 dsh-gate /usr/local/bin/dsh-gate
+# 1. 命令装进自己的目录（不想拷就 --bin-dir ""，之后用 ./dsh-gate）
+dsh-gate install --bin-dir "$HOME/.local/bin"      # 以你自己的身份装；含 HTTPS 自签证书向导
 
-# 2. 以你自己的身份安装：建管理员、写状态目录与服务配置
-dsh-gate install                    # 交互式；脚本里用 --password-stdin / --random
-#    也可以让它在装完后立即后台启动
-dsh-gate install --start
+# 2. 只有「开机自启」这一步需要 root：写一个 User=<你> 的系统单元
+sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020 \
+  --tls-cert "$HOME/.dsh-gate/tls/server.crt" --tls-key "$HOME/.dsh-gate/tls/server.key"
 
-# 3. 把管理端交给 systemd（写单元需要 root；--state-dir 与 --user 在 sudo 之前
-#    由你的 shell 展开，所以指向你自己的目录与用户，而不是 root）
-sudo dsh-gate service install --state-dir "$HOME/.dsh-gate" --user "$USER" --port 12020
-
-# 4. 确认起来了
+# 3. 确认起来了
 dsh-gate status
-systemctl status dsh-gate
+ps -o user= -p "$(systemctl show -p MainPID --value dsh-gate)"   # 应是你的用户名，而不是 root
 ```
 
-> 不要用 `sudo dsh-gate install --service`：sudo 下 `~` 可能变成 root 的家目录，账号库与
-> 令牌会被写进 `/root`，之后以普通用户跑 `dsh-gate status` 就读不到。Linux 上把「建账号」
-> 与「写系统单元」分成两步（如上），各自用对的用户执行。
+> **也可以「sudo 一条安装」，运行期仍以你本人身份**：从 2026-11-06 起，`sudo dsh-gate install`
+> 会自动从 `SUDO_UID`/`SUDO_USER` 识别发起 sudo 的用户——状态目录与 TLS 证书默认落在**你家目录**
+> 并 chown 给你、单元写 `User=<你>`/`WorkingDirectory=<你家目录>`，所以 dsh 不会以 root 跑。
+> 但**别显式传 `--state-dir ~/...`**：sudo 下 `~` 会被 shell 先展开成 `/root`；不传让它用默认即可。
+> 真以 root 直接登录安装时会告警。
 
 `service install` 会把单元写到 `/etc/systemd/system/dsh-gate.service`，然后依次执行
 `daemon-reload`、`enable`、`start`。

@@ -13,6 +13,7 @@
 //	dsh-gate uninstall [选项]    卸载管理端（--service 取消自启，--purge 删状态目录）
 //	dsh-gate dsh <list|add|edit|rename|start|stop|restart|rm|install>  管理 dsh 实例
 //	dsh-gate manage <user|grant>  用户与授权
+//	dsh-gate svc <list|add|rm|enable|disable|probe>  内网服务登记与探活
 //	dsh-gate service <unit|install|uninstall|status>  开机自启（只托管管理端）
 //	dsh-gate plugin / model       dsh 配置档与模型的辅助命令（--instance 指定实例）
 //
@@ -82,6 +83,8 @@ func run(argv []string) int {
 		return dshCommand(rest)
 	case "manage":
 		return manageCommand(rest)
+	case "svc":
+		return svcCommand(rest)
 	case "service":
 		return serviceCommand(rest)
 	case "plugin":
@@ -99,7 +102,7 @@ func run(argv []string) int {
 func isCommand(name string) bool {
 	switch name {
 	case "install", "start", "stop", "restart", "status", "uninstall",
-		"dsh", "manage", "service", "plugin", "model", "version":
+		"dsh", "manage", "svc", "service", "plugin", "model", "version":
 		return true
 	}
 	return false
@@ -129,6 +132,11 @@ dsh 实例（与 /admin 页面能力对等）:
   dsh-gate dsh start|stop|restart <名字>                     启停单个实例
   dsh-gate dsh install <名字> [--install-mode npx|git|local|pnpm]   安装/重装 dsh
   dsh-gate dsh rm <名字> [--purge] [--purge-install]         删除实例（可连带删数据/安装目录）
+
+内网服务（登记进管理端，经 /s/<id>/ 子路径代理，要求管理端在运行）:
+  dsh-gate svc list                          列出登记的服务
+  dsh-gate svc add --name <名字> --upstream <地址> [--host-header ...] [--insecure-tls] [--note ...]
+  dsh-gate svc rm|enable|disable|probe <名字或 id>
 
 用户与授权:
   dsh-gate manage user add|passwd|role|rename|disable|enable|list|rm <用户名>

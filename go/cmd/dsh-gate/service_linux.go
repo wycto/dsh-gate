@@ -26,6 +26,8 @@ func platformServiceHelp() string {
 	return `
 Linux 说明:
   install 需要 root：sudo dsh-gate service install [选项]
+  用 sudo 安装时，服务默认以「发起 sudo 的用户」身份运行（单元里写 User=<该用户>，
+  工作目录也是该用户家目录），dsh 不会以 root 运行；要换人可用 --user 覆盖。
   装好之后：
     dsh-gate start / stop / restart   启动、停止、重启整个管理端
     dsh-gate status                   查看状态
@@ -70,6 +72,12 @@ func serviceUnit(opts serviceOptions) (string, error) {
 func serviceInstall(opts serviceOptions) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("安装 systemd 服务需要 root：sudo dsh-gate service install [选项]")
+	}
+	if strings.TrimSpace(os.Getenv("SUDO_USER")) == "" {
+		// 以 root 直接登录时 SUDO_USER 为空：没有「真实用户」可切，服务会以 root
+		// 运行。这多半不是用户想要的（dsh 以 root 跑常有权限问题），大声提醒。
+		fmt.Fprintln(os.Stderr, "警告：未经 sudo 切换（SUDO_USER 为空），服务单元将以 root 运行；"+
+			"dsh 以 root 运行常有权限问题，建议用普通用户执行：sudo dsh-gate service install")
 	}
 	text, err := serviceUnit(opts)
 	if err != nil {

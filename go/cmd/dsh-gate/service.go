@@ -51,17 +51,21 @@ func serviceCommand(args []string) int {
 	}
 
 	var (
-		user     string
-		workDir  string
-		selfPath string
-		binDir   string
-		tray     bool
+		user      string
+		workDir   string
+		selfPath  string
+		binDir    string
+		extraPath string
+		tray      bool
 	)
 	fs.StringVar(&user, "user", currentUser(), "以哪个用户身份运行（Linux 用）")
 	fs.StringVar(&workDir, "working-dir", "", "管理端进程的工作目录（默认用户家目录）")
 	fs.StringVar(&selfPath, "binary", "", "dsh-gate 可执行文件的绝对路径（默认用当前运行的真实路径）")
 	fs.StringVar(&binDir, "bin-dir", binDirDefault(),
 		"把 dsh-gate 拷贝到这个目录（需在 PATH 里），命令就能直接敲；留空则不拷贝")
+	fs.StringVar(&extraPath, "extra-path", "",
+		"额外加进服务 PATH 的目录，可重复用冒号分隔；管理端拉起 dsh 时要找 node / npx / pnpm，\n"+
+			"而服务管理器的 PATH 很干净（例如自备运行时在 ~/.local/node/bin，就得在这里补上）")
 	fs.BoolVar(&tray, "tray", false,
 		"Windows 专用：开机自启改成系统托盘程序，登录时起托盘、由它保证管理端在跑（不再有终端窗口）")
 	pf := registerPortalFlags(fs)
@@ -83,6 +87,7 @@ func serviceCommand(args []string) int {
 		Binary:     selfPath,
 		User:       user,
 		WorkingDir: workDir,
+		ExtraPath:  extraPath,
 		Tray:       tray,
 	}
 	if opts.Binary == "" {
@@ -216,6 +221,12 @@ type serviceOptions struct {
 	WorkingDir string
 	// Overrides 是传给 `start` 的选项，键是选项名（不含前导 --）。
 	Overrides map[string]string
+	// ExtraPath 是额外加进服务 PATH 的目录（冒号分隔，可空）。
+	//
+	// 服务管理器的 PATH 只有几条系统目录，而网关拉起 dsh 时要按用户配的
+	// 命令行找 node / npx / pnpm。用户把 Node 装在 ~/.local/node/bin 或
+	// ~/.npm-global 这类地方时，不加这条就会「服务起来了、实例起不来」。
+	ExtraPath string
 	// Tray 表示 Windows 上把计划任务的动作换成托盘程序（GUI 子系统，没有终端窗口）。
 	Tray bool
 	// TrayBinary 是托盘可执行文件的绝对路径，只有 Tray 为真时有值。
@@ -303,6 +314,7 @@ func serviceUsageHeader() string {
 示例:
   sudo dsh-gate service install --host 0.0.0.0 --port 12020
   dsh-gate service install --port 8080 --tls-cert cert.pem --tls-key key.pem
+  # 用 sudo 安装时默认以发起 sudo 的用户身份运行；可用 --user 覆盖。
   dsh-gate service install --tray        Windows：登录时起托盘，没有终端窗口
   dsh-gate service status
 
@@ -317,7 +329,16 @@ func printServiceHelp(w *os.File) {
 }
 
 // currentUser 返回当前用户名。
+//
+// sudo 下（euid=0 且有 SUDO_USER）返回发起 sudo 的用户：服务单元要写
+// User=<真实用户>，否则 dsh 以 root 运行会撞权限问题。这与 macOS 的 launchd
+// 口径一致（见 launching_user.go）。
 func currentUser() string {
+	if os.Geteuid() == 0 {
+		if user := strings.TrimSpace(os.Getenv("SUDO_USER")); user != "" {
+			return user
+		}
+	}
 	if user := os.Getenv("USER"); user != "" {
 		return user
 	}
@@ -331,7 +352,13 @@ func currentUser() string {
 }
 
 // defaultWorkingDir 返回默认工作目录：当前用户的家目录。
+//
+// sudo 下取发起 sudo 的用户家目录（os.UserHomeDir() 那时是 /root，写进单元会让
+// 服务以 root 的工作目录运行）。普通用户行为不变。
 func defaultWorkingDir() string {
+	if _, home, elevated := launchingUser(); elevated && home != "" {
+		return home
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return home
 	}

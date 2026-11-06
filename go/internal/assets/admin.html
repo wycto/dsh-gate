@@ -131,6 +131,7 @@ main>.notice{margin:0 0 var(--gap)}
 body:has(#tab-users:checked) #panel-users,
 body:has(#tab-grants:checked) #panel-grants,
 body:has(#tab-instances:checked) #panel-instances,
+body:has(#tab-services:checked) #panel-services,
 body:has(#tab-env:checked) #panel-env,
 body:has(#tab-audit:checked) #panel-audit{display:block}
 
@@ -176,18 +177,21 @@ body:has(#tab-audit:checked) #panel-audit{display:block}
    选中态一律走 body:has(#tab-x:checked) [for="tab-x"]，一条规则同时
    点亮 Dock / 顶栏 / 侧栏里指向同一个钮的所有 label。 */
 body:has(#tab-instances:checked) .dock [for="tab-instances"],
+body:has(#tab-services:checked) .dock [for="tab-services"],
 body:has(#tab-users:checked) .dock [for="tab-users"],
 body:has(#tab-grants:checked) .dock [for="tab-grants"],
 body:has(#tab-env:checked) .dock [for="tab-env"],
 body:has(#tab-audit:checked) .dock [for="tab-audit"]{color:var(--text);background:var(--card-2);
   border-color:var(--line-strong)}
 body:has(#tab-instances:checked) .dock [for="tab-instances"]::after,
+body:has(#tab-services:checked) .dock [for="tab-services"]::after,
 body:has(#tab-users:checked) .dock [for="tab-users"]::after,
 body:has(#tab-grants:checked) .dock [for="tab-grants"]::after,
 body:has(#tab-env:checked) .dock [for="tab-env"]::after,
 body:has(#tab-audit:checked) .dock [for="tab-audit"]::after{content:"";position:absolute;bottom:1px;left:50%;
   transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--accent)}
 body:has(#tab-instances:focus-visible) .dock [for="tab-instances"],
+body:has(#tab-services:focus-visible) .dock [for="tab-services"],
 body:has(#tab-users:focus-visible) .dock [for="tab-users"],
 body:has(#tab-grants:focus-visible) .dock [for="tab-grants"],
 body:has(#tab-env:focus-visible) .dock [for="tab-env"],
@@ -202,6 +206,7 @@ body:has(#tab-audit:focus-visible) .dock [for="tab-audit"]{outline:2px solid var
 .ico{display:inline-block;width:19px;height:19px;flex:none;background:currentColor;
   -webkit-mask:var(--i) center / contain no-repeat;mask:var(--i) center / contain no-repeat}
 .ico-instances{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4.2 7.6 7.8 4.4 7.8-4.4"/><path d="M12 12v8.8"/></svg>')}
+.ico-services{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="6" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.8"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>')}
 .ico-users{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9.5" r="2.4"/><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"/></svg>')}
 .ico-grants{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2.5"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/><circle cx="12" cy="15" r="1.4" fill="black" stroke="none"/></svg>')}
 .ico-env{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5"/><path d="M12.5 15H17"/></svg>')}
@@ -222,12 +227,14 @@ body:has(#tab-audit:focus-visible) .dock [for="tab-audit"]{outline:2px solid var
 .tn .ico{width:15px;height:15px}
 @media (hover:hover){.tn:hover{color:var(--text);background:var(--card-2)}}
 body:has(#tab-instances:checked) .tn[for="tab-instances"],
+body:has(#tab-services:checked) .tn[for="tab-services"],
 body:has(#tab-users:checked) .tn[for="tab-users"],
 body:has(#tab-grants:checked) .tn[for="tab-grants"],
 body:has(#tab-env:checked) .tn[for="tab-env"],
 body:has(#tab-audit:checked) .tn[for="tab-audit"]{color:var(--text);background:var(--card);
   border-color:var(--line);box-shadow:inset 0 2px 0 var(--accent)}
 body:has(#tab-instances:focus-visible) .tn[for="tab-instances"],
+body:has(#tab-services:focus-visible) .tn[for="tab-services"],
 body:has(#tab-users:focus-visible) .tn[for="tab-users"],
 body:has(#tab-grants:focus-visible) .tn[for="tab-grants"],
 body:has(#tab-env:focus-visible) .tn[for="tab-env"],
@@ -257,12 +264,14 @@ body:has(#tab-audit:focus-visible) .tn[for="tab-audit"]{outline:2px solid var(--
 .sn .ico{width:16px;height:16px}
 @media (hover:hover){.sn:hover{color:var(--text);background:var(--card-2)}}
 body:has(#tab-instances:checked) .sn[for="tab-instances"],
+body:has(#tab-services:checked) .sn[for="tab-services"],
 body:has(#tab-users:checked) .sn[for="tab-users"],
 body:has(#tab-grants:checked) .sn[for="tab-grants"],
 body:has(#tab-env:checked) .sn[for="tab-env"],
 body:has(#tab-audit:checked) .sn[for="tab-audit"]{color:var(--text);background:var(--card-2);
   border-color:var(--line-strong);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
 body:has(#tab-instances:focus-visible) .sn[for="tab-instances"],
+body:has(#tab-services:focus-visible) .sn[for="tab-services"],
 body:has(#tab-users:focus-visible) .sn[for="tab-users"],
 body:has(#tab-grants:focus-visible) .sn[for="tab-grants"],
 body:has(#tab-env:focus-visible) .sn[for="tab-env"],
@@ -450,17 +459,17 @@ td.actions form{display:inline-flex;gap:8px;align-items:center;margin:2px 0;flex
    横向 flex——三组 .row 于是各按 min-content 排开、铺不满面板。所以这里
    显式还原成块级；通用 .row 的 minmax(190px,1fr) 在 366px 下也只放得下
    一列，最小列宽降到 140px 才能两列铺满，更窄（手机）时自然回落成一列。 */
-#panel-instances .pop-panel form.edit-form{display:block;border:0;background:none;padding:0;margin:0}
-#panel-instances .pop-panel form.edit-form .row{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+#panel-instances .pop-panel form.edit-form,#panel-services .pop-panel form.edit-form{display:block;border:0;background:none;padding:0;margin:0}
+#panel-instances .pop-panel form.edit-form .row,#panel-services .pop-panel form.edit-form .row{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
 /* 删除：不可逆动作，面板顶部分隔线；勾选框与提醒左对齐（先看后果、
    再按按钮），按钮单独一行贴右，与勾选框拉开距离。 */
-#panel-instances .pop-panel form.remove-form{display:flex;flex-direction:column;
+#panel-instances .pop-panel form.remove-form,#panel-services .pop-panel form.remove-form{display:flex;flex-direction:column;
   align-items:stretch;gap:6px;border-top:1px solid color-mix(in srgb,var(--danger) 30%,transparent);
   padding-top:9px}
-#panel-instances .pop-panel form.remove-form label.check{white-space:normal;line-height:1.45;
+#panel-instances .pop-panel form.remove-form label.check,#panel-services .pop-panel form.remove-form label.check{white-space:normal;line-height:1.45;
   justify-content:flex-start;text-align:left}
-#panel-instances .pop-panel form.remove-form .check-hint{text-align:left;max-width:none}
-#panel-instances .pop-panel form.remove-form button{align-self:flex-end;margin-top:2px}
+#panel-instances .pop-panel form.remove-form .check-hint,#panel-services .pop-panel form.remove-form .check-hint{text-align:left;max-width:none}
+#panel-instances .pop-panel form.remove-form button,#panel-services .pop-panel form.remove-form button{align-self:flex-end;margin-top:2px}
 label.check{display:inline-flex;align-items:center;gap:6px;font-size:.84em;color:var(--muted);
             cursor:pointer;white-space:nowrap}
 label.check input[type=checkbox]{width:14px;height:14px;margin:0;accent-color:var(--danger);cursor:pointer}
@@ -762,7 +771,7 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"></path><circle cx="17" cy="9.5" r="2.4"></circle><path d="M14.5 18.5c.5-2.3 2-3.6 4-3.6 1.1 0 2 .4 2.7 1.2"></path></svg></span><h2>{{.UsersTitle}}</h2></div>
     {{if .Users}}
     <table>
-      <thead><tr><th>{{.ColAccount}}</th><th>{{.ColRole}}</th><th>{{.ColStatus}}</th><th>{{.ColInstances}}</th><th></th></tr></thead>
+      <thead><tr><th>{{.ColAccount}}</th><th>{{.ColRole}}</th><th>{{.ColStatus}}</th><th>{{.ColPerms}}</th><th>{{.ColInstances}}</th><th></th></tr></thead>
       <tbody>
       {{range .Users}}
         <tr>
@@ -784,6 +793,23 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
             {{end}}
           </td>
           <td data-label="{{$.ColStatus}}"><span class="tag {{if .Disabled}}off{{else}}on{{end}}">{{.StatusLabel}}</span></td>
+          <td data-label="{{$.ColPerms}}">
+            {{/* 类别开关只约束普通用户：admin 行勾选显示为选中且禁用，附说明。 */}}
+            {{if .IsAdminUser}}
+            <label class="check"><input type="checkbox" checked disabled> {{$.PermInstancesLabel}}</label>
+            <label class="check"><input type="checkbox" checked disabled> {{$.PermServicesLabel}}</label>
+            <span class="check-hint">{{$.PermsAdminNote}}</span>
+            {{else}}
+            <form method="post" action="/admin">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="user.perms">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <label class="check"><input type="checkbox" name="allow_instances" value="1"{{if .AllowInstances}} checked{{end}}> {{$.PermInstancesLabel}}</label>
+              <label class="check"><input type="checkbox" name="allow_services" value="1"{{if .AllowServices}} checked{{end}}> {{$.PermServicesLabel}}</label>
+              <button type="submit">{{$.BtnSavePerms}}</button>
+            </form>
+            {{end}}
+          </td>
           <td data-label="{{$.ColInstances}}">{{.GrantCount}}</td>
           <td class="actions">
             <form method="post" action="/admin">
@@ -834,6 +860,16 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   <section class="panel" id="panel-grants">
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg></span><h2>{{.GrantsTitle}}</h2></div>
     <p class="empty">{{.GrantsHint}}</p>
+    {{/* 全局总开关：关掉某类则所有人（含管理员）该类入口隐藏；管理员可随时在此重新打开。 */}}
+    <form method="post" action="{{.AdminPath}}" class="matrix" style="margin:6px 0 10px">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="features.save">
+      <strong>{{.FeaturesTitle}}</strong>
+      <label class="check"><input type="checkbox" name="features_instances" value="1"{{if .FeaturesInstances}} checked{{end}}> {{.PermInstancesLabel}}</label>
+      <label class="check"><input type="checkbox" name="features_services" value="1"{{if .FeaturesServices}} checked{{end}}> {{.PermServicesLabel}}</label>
+      <button type="submit">{{.BtnSaveFeatures}}</button>
+    </form>
+    <p class="empty">{{.FeaturesHint}}</p>
     {{if .Users}}
       {{range .Users}}
       <form method="post" action="/admin" class="matrix" style="margin:6px 0 12px">
@@ -846,6 +882,35 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
           <label><input type="checkbox" name="instance" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>
           {{end}}
         {{else}}<span class="empty">{{$.NoInstances}}</span>{{end}}
+        {{/* 每用户类别开关与授权矩阵同表单保存。admin 行勾选选中且禁用、不带
+             perms_present（不写其开关，开关对 admin 本就不生效）。 */}}
+        {{if .IsAdminUser}}
+        <label class="check"><input type="checkbox" checked disabled> {{$.PermInstancesLabel}}</label>
+        <label class="check"><input type="checkbox" checked disabled> {{$.PermServicesLabel}}</label>
+        {{else}}
+        <input type="hidden" name="perms_present" value="1">
+        <label class="check"><input type="checkbox" name="allow_instances" value="1"{{if .AllowInstances}} checked{{end}}> {{$.PermInstancesLabel}}</label>
+        <label class="check"><input type="checkbox" name="allow_services" value="1"{{if .AllowServices}} checked{{end}}> {{$.PermServicesLabel}}</label>
+        {{end}}
+        <button type="submit">{{$.BtnSaveGrants}}</button>
+      </form>
+      {{end}}
+    {{end}}
+
+    <div class="sec-head" style="margin-top:clamp(16px,1.4vw,22px)"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2.5"></rect><path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path><circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none"></circle></svg></span><h2>{{.SvcGrantsTitle}}</h2></div>
+    <p class="empty">{{.SvcGrantsTip}}</p>
+    {{if .ServiceGrants}}
+      {{range .ServiceGrants}}
+      <form method="post" action="{{$.AdminPath}}" class="matrix" style="margin:6px 0 12px">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="action" value="serviceGrants.save">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <strong>{{.Name}}</strong>
+        {{if .Options}}
+          {{range .Options}}
+          <label><input type="checkbox" name="service" value="{{.ID}}"{{if .Granted}} checked{{end}}> {{.Name}}</label>
+          {{end}}
+        {{else}}<span class="empty">{{$.NoServices}}</span>{{end}}
         <button type="submit">{{$.BtnSaveGrants}}</button>
       </form>
       {{end}}
@@ -1093,6 +1158,121 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     {{end}}
 
     <p class="empty">{{.InstancesHint}}</p>
+  </section>
+
+  {{/* 服务分页（内网服务代理，docs/service-proxy.md）：与实例页完全分离——
+       独立面板、独立卡片与授权矩阵，只复用同一套卡片 / 表单样式。
+       data-svc 与 data-badge="probe" 是自动刷新的落点：探活徽标只读缓存，
+       渲染与轮询都不真探活。 */}}
+  <section class="panel" id="panel-services">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="6" rx="1.8"></rect><rect x="3.5" y="13.5" width="17" height="6" rx="1.8"></rect><path d="M7 7.5h.01M7 16.5h.01"></path></svg></span><h2>{{.ServicesTitle}}</h2></div>
+    {{if .Services}}
+    <div class="inst-grid">
+      {{range .Services}}
+      <article class="inst-card" data-svc="{{.ID}}">
+        <header class="inst-head">
+          <a class="inst-name" href="{{.Href}}" target="_blank" rel="noopener">{{.Name}}</a>
+          <span class="inst-badges">
+            <span class="tag {{if .Enabled}}on{{else}}off{{end}}">{{.StatusLabel}}</span>
+            <span class="tag {{.ProbeClass}}" data-badge="probe">{{.ProbeLabel}}</span>
+            {{if .InsecureTLS}}<span class="tag warn">{{$.SvcInsecureBadge}}</span>{{end}}
+          </span>
+        </header>
+        <dl class="inst-meta">
+          <div class="im wide"><dt>{{$.SvcUpstreamLabel}}</dt><dd class="mono path">{{.Upstream}}</dd></div>
+          <div class="im wide"><dt>{{$.SvcMountLabel}}</dt><dd class="mono path">{{.Href}}</dd></div>
+          <div class="im"><dt>{{$.SvcHostLabel}}</dt><dd>{{.HostHeaderLabel}}</dd></div>
+          <div class="im"><dt>ID</dt><dd class="mono">{{.ID}}</dd></div>
+          {{if .Note}}<div class="im wide"><dt>{{$.SvcNoteLabel}}</dt><dd>{{.Note}}</dd></div>{{end}}
+        </dl>
+        <div class="inst-actions">
+          <a class="open-btn" href="{{.Href}}" target="_blank" rel="noopener">{{$.BtnInstOpen}}</a>
+          <form method="post" action="{{$.AdminPath}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.probe">
+            <input type="hidden" name="service_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.SvcBtnProbe}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.toggle">
+            <input type="hidden" name="service_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{if .Enabled}}{{$.BtnDisable}}{{else}}{{$.BtnEnable}}{{end}}</button>
+          </form>
+          <span class="inst-spacer" aria-hidden="true"></span>
+          {{/* 编辑：名称 / 上游 / Host 策略 / 自签豁免 / 备注。保存即生效——
+               动作实现里会让挂载缓存失效，不需要重启什么。 */}}
+          <details class="pop">
+            <summary>{{$.EditTitle}}</summary>
+            <div class="pop-panel">
+              <form method="post" action="{{$.AdminPath}}" class="edit-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="action" value="service.update">
+                <input type="hidden" name="service_id" value="{{.ID}}">
+                <div class="row">
+                  <label class="field">{{$.SvcNameLabel}}<input type="text" name="name" value="{{.Name}}" required></label>
+                  <span class="field-wrap"><label class="field"><span class="lb">{{$.SvcUpstreamLabel}}</span><input type="text" name="upstream" value="{{.Upstream}}" required placeholder="{{$.SvcUpstreamPh}}"></label><span class="tip" tabindex="0" aria-label="{{$.SvcUpstreamHelp}}"><i>?</i><span class="tip-body">{{$.SvcUpstreamHelp}}</span></span></span>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="field">{{$.SvcHostLabel}}
+                    <select name="host_header">
+                      {{range .HostOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+                    </select>
+                  </label>
+                  <label class="field">{{$.SvcNoteLabel}}<input type="text" name="note" value="{{.Note}}"></label>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="check"><input type="checkbox" name="insecure_tls" value="1"{{if .InsecureTLS}} checked{{end}}>{{$.SvcInsecureLabel}}</label>
+                  <button type="submit">{{$.SvcBtnSave}}</button>
+                </div>
+              </form>
+            </div>
+          </details>
+          {{/* 删除只解除登记与授权，不影响服务本身——提醒写在面板里。 */}}
+          <details class="pop danger">
+            <summary>{{$.SvcCardRemove}}</summary>
+            <div class="pop-panel">
+              <form method="post" action="{{$.AdminPath}}" class="remove-form">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="action" value="service.remove">
+                <input type="hidden" name="service_id" value="{{.ID}}">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <span class="check-hint">{{$.SvcRemoveHint}}</span>
+                <button type="submit" class="danger">{{$.BtnDelete}}</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      </article>
+      {{end}}
+    </div>
+    {{else}}<p class="empty">{{.NoServices}}</p>{{end}}
+
+    <div class="sec-head" style="margin-top:clamp(16px,1.4vw,22px)"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span><h2>{{.SvcCreateTitle}}</h2></div>
+    <form method="post" action="{{.AdminPath}}" class="create-form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="service.create">
+      <div class="row">
+        <label class="field">{{.SvcNameLabel}}<input type="text" name="name" required></label>
+        <span class="field-wrap"><label class="field"><span class="lb">{{.SvcUpstreamLabel}}</span><input type="text" name="upstream" required placeholder="{{.SvcUpstreamPh}}"></label><span class="tip" tabindex="0" aria-label="{{.SvcUpstreamHelp}}"><i>?</i><span class="tip-body">{{.SvcUpstreamHelp}}</span></span></span>
+        <label class="field">{{.SvcHostLabel}}
+          <select name="host_header">
+            <option value="upstream">{{.SvcHostUpstream}}</option>
+            <option value="gateway">{{.SvcHostGateway}}</option>
+          </select>
+        </label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">{{.SvcNoteLabel}}<input type="text" name="note"></label>
+        <label class="check"><input type="checkbox" name="insecure_tls" value="1">{{.SvcInsecureLabel}}</label>
+        <button type="submit" class="primary">{{.SvcBtnCreate}}</button>
+      </div>
+      <p class="empty">{{.SvcCreateHint}}</p>
+    </form>
+
+    <p class="empty">{{.ServicesHint}}</p>
   </section>
 
   <section class="panel" id="panel-audit">

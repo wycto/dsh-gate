@@ -58,18 +58,25 @@ const auditLimit = 50
 //
 // ID 同时是 URL 里的 ?tab= 值与模板里面板 id 的一段，两处必须一致：
 // panel-<ID>（模板）与 adminTabs（这里）由测试锁死。
-var adminTabs = []string{"instances", "users", "grants", "env", "audit"}
+var adminTabs = []string{"instances", "services", "users", "grants", "env", "audit"}
 
 // adminTabDefault 是默认分页：管理台最常用的操作是管实例，打开就该停在实例列表。
 const adminTabDefault = "instances"
 
 // validAdminTab 判断 tab 值是否可用。haveInstaller 决定 env 一栏是否存在；
-// 请求了一个不存在的分页时回落默认，而不是渲染一张空面板。
-func validAdminTab(tab string, hasInstaller bool) bool {
+// showInstances / showServices 是门户全局总开关：关掉的那类分页整体不出现
+// （直接访问其 ?tab= 也回落，见 adminTabFallback）。请求了一个不存在的分页时
+// 回落默认，而不是渲染一张空面板。
+func validAdminTab(tab string, hasInstaller, showInstances, showServices bool) bool {
 	for _, id := range adminTabs {
 		if id == tab {
-			if id == "env" && !hasInstaller {
-				return false
+			switch id {
+			case "env":
+				return hasInstaller
+			case "instances":
+				return showInstances
+			case "services":
+				return showServices
 			}
 			return true
 		}
@@ -77,13 +84,23 @@ func validAdminTab(tab string, hasInstaller bool) bool {
 	return false
 }
 
+// adminTabFallback 给请求/动作回落一个恒可用的分页：默认分页可用就用它，
+// 否则用「权限控制」（grants 恒可用）——全局总开关正是在那里重新打开的，
+// 管理员任何时候都进得去，不会把自己锁死。
+func adminTabFallback(hasInstaller, showInstances, showServices bool) string {
+	if validAdminTab(adminTabDefault, hasInstaller, showInstances, showServices) {
+		return adminTabDefault
+	}
+	return "grants"
+}
+
 // adminTabFromRequest 取当前应显示的分页：优先 URL 的 ?tab=，无效值回落默认。
-func adminTabFromRequest(r *http.Request, hasInstaller bool) string {
+func adminTabFromRequest(r *http.Request, hasInstaller, showInstances, showServices bool) string {
 	tab := strings.TrimSpace(r.URL.Query().Get("tab"))
-	if validAdminTab(tab, hasInstaller) {
+	if validAdminTab(tab, hasInstaller, showInstances, showServices) {
 		return tab
 	}
-	return adminTabDefault
+	return adminTabFallback(hasInstaller, showInstances, showServices)
 }
 
 // adminTabForAction 把一个管理动作映射回它所在的分页。PRG 回跳带上它，操作完
@@ -92,22 +109,30 @@ func adminTabFromRequest(r *http.Request, hasInstaller bool) string {
 // 动作与分页是一一对应的（表单渲染在哪个面板里，动作就属于哪一页），
 // 所以从动作推导比让每个表单捎一个隐藏字段更可靠：模板少改十处，也不会有
 // 漏填的字段。
-func adminTabForAction(action string, hasInstaller bool) string {
+func adminTabForAction(action string, hasInstaller, showInstances, showServices bool) string {
 	tab := adminTabDefault
 	switch {
 	case strings.HasPrefix(action, "user."):
 		tab = "users"
 	case action == "grants.save":
 		tab = "grants"
+	case action == "features.save":
+		// 全局总开关表单就在「权限控制」分页顶部。
+		tab = "grants"
 	case strings.HasPrefix(action, "instance."):
 		tab = "instances"
+	case action == "serviceGrants.save":
+		// 服务授权矩阵已并入「权限控制」分页（与实例授权矩阵同页设置）。
+		tab = "grants"
+	case strings.HasPrefix(action, "service."):
+		tab = "services"
 	case action == "env.install":
 		tab = "env"
 	}
-	if validAdminTab(tab, hasInstaller) {
+	if validAdminTab(tab, hasInstaller, showInstances, showServices) {
 		return tab
 	}
-	return adminTabDefault
+	return adminTabFallback(hasInstaller, showInstances, showServices)
 }
 
 type adminRoleOption struct {
@@ -180,6 +205,12 @@ type adminUserRow struct {
 	SuperAdmin bool
 	// RoleLabel 是实际角色的中文名（超管行不给下拉，用纯文本显示角色）。
 	RoleLabel string
+	// AllowInstances / AllowServices 是类别开关的当前值（用户行勾选用）。
+	AllowInstances bool
+	AllowServices  bool
+	// IsAdminUser 标记管理员行：开关对 admin 不生效，模板把勾选显示为
+	// 选中且禁用，附说明文案。
+	IsAdminUser bool
 }
 
 type adminInstanceRow struct {
@@ -476,15 +507,16 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	featI, featS := s.globalFeatures()
 	if !user.IsAdmin() {
 		s.log.Warn("非管理员访问管理台", "user", user.Name, "ip", cookie.ClientIP(r))
-		s.renderAdmin(w, r, lang, user, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrForbidden), "", adminTabFromRequest(r, s.opts.Installer != nil))
+		s.renderAdmin(w, r, lang, user, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrForbidden), "", adminTabFromRequest(r, s.opts.Installer != nil, featI, featS))
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		s.renderAdmin(w, r, lang, user, http.StatusOK, "", s.flashMessage(lang, r), adminTabFromRequest(r, s.opts.Installer != nil))
+		s.renderAdmin(w, r, lang, user, http.StatusOK, "", s.flashMessage(lang, r), adminTabFromRequest(r, s.opts.Installer != nil, featI, featS))
 	case http.MethodPost:
 		s.handleAdminPost(w, r, lang, user)
 	default:
@@ -504,6 +536,18 @@ type adminAction struct {
 	Instances []string
 	// Display 是「姓名」（给人看的中文名），仅 user.create 用；留空回退登录名。
 	Display string
+	// AllowInstances / AllowServices 是每用户类别开关。用指针区分「未提供」
+	// 与「提供了 false」：user.perms 是全量保存（未提供按 false）；grants.save
+	// 顺带写开关时，JSON 缺省字段（nil）不动开关，保持旧脚本兼容。表单入口
+	// 对 user.perms 与带 perms_present 标记的 grants.save 矩阵表单总是提供两者
+	// （复选框出现且非空口径）。只约束普通用户，管理员恒见全部。
+	AllowInstances *bool `json:"allowInstances,omitempty"`
+	AllowServices  *bool `json:"allowServices,omitempty"`
+	// FeaturesInstances / FeaturesServices 是门户全局总开关（features.save）：
+	// 与 DeleteHome 同一口径（表单里出现且非空就是勾上了）。关掉某类时所有人
+	// （含管理员）的该类入口隐藏。
+	FeaturesInstances bool `json:"featuresInstances,omitempty"`
+	FeaturesServices  bool `json:"featuresServices,omitempty"`
 
 	// ---- 实例相关（instance.create / instance.install / instance.remove）----
 	// InstanceID 是目标实例 id（已有实例的操作用它）。
@@ -537,6 +581,24 @@ type adminAction struct {
 	// ---- 运行环境补齐（env.install）----
 	// Tool 是目标工具名（目前只有 pnpm）。
 	Tool string
+
+	// ---- 内网服务（service.* / serviceGrants.save，见 serviceadmin.go）----
+	// ServiceID 是目标服务 id（已有服务的操作用它）。
+	ServiceID string
+	// Upstream 是上游地址（http(s)://host[:port][/base]）。
+	Upstream string
+	// HostHeader 是转发时的 Host 策略（upstream / gateway），空视为 upstream。
+	HostHeader string
+	// Note 是备注。
+	Note string
+	// InsecureTLS 是「跳过上游证书校验」勾选框：与 DeleteHome 同一口径，
+	// 表单里出现且非空就是勾上了。
+	InsecureTLS bool `json:"insecureTLS,omitempty"`
+	// Services 是 serviceGrants.save 勾选的服务 id 集合（表单键 service）。
+	Services []string
+	// AuditDetail 是动作成功后要写进审计的补充说明（目前只有 service.probe
+	// 的探活结果用）。它是**输出**字段：不接受请求方伪造。
+	AuditDetail string `json:"-"`
 }
 
 // adminActionFromForm 从表单里取出动作参数。
@@ -573,6 +635,25 @@ func adminActionFromForm(r *http.Request) adminAction {
 	if port, err := strconv.Atoi(strings.TrimSpace(r.FormValue("dsh_port"))); err == nil {
 		act.DshPort = port
 	}
+	// 内网服务：复选框与 DeleteHome 同一口径（出现且非空就是勾上了）。
+	act.ServiceID = strings.TrimSpace(r.FormValue("service_id"))
+	act.Upstream = strings.TrimSpace(r.FormValue("upstream"))
+	act.HostHeader = strings.TrimSpace(r.FormValue("host_header"))
+	act.Note = strings.TrimSpace(r.FormValue("note"))
+	act.InsecureTLS = strings.TrimSpace(r.FormValue("insecure_tls")) != ""
+	act.Services = r.Form["service"]
+	// 用户级类别权限：仅 user.perms 表单与带 perms_present 标记的 grants.save
+	// 矩阵表单才解析勾选（出现且非空就是勾上了）。旧的 grants.save 表单不带
+	// 标记 → 指针保持 nil → 不动开关，保持兼容。
+	if act.Action == "user.perms" || strings.TrimSpace(r.FormValue("perms_present")) != "" {
+		ai := strings.TrimSpace(r.FormValue("allow_instances")) != ""
+		as := strings.TrimSpace(r.FormValue("allow_services")) != ""
+		act.AllowInstances = &ai
+		act.AllowServices = &as
+	}
+	// 门户全局总开关：复选框与 DeleteHome 同一口径（出现且非空就是勾上了）。
+	act.FeaturesInstances = strings.TrimSpace(r.FormValue("features_instances")) != ""
+	act.FeaturesServices = strings.TrimSpace(r.FormValue("features_services")) != ""
 	return act
 }
 
@@ -593,15 +674,16 @@ func (s *Server) handleAdminPost(w http.ResponseWriter, r *http.Request, lang i1
 	}
 
 	act := adminActionFromForm(r)
+	featI, featS := s.globalFeatures()
 	if err := s.runAdminAction(actor, &act, cookie.ClientIP(r)); err != nil {
 		s.renderAdmin(w, r, lang, actor, http.StatusBadRequest,
-			s.adminErrorText(lang, act.Action, act.Name, err), "", adminTabForAction(act.Action, s.opts.Installer != nil))
+			s.adminErrorText(lang, act.Action, act.Name, err), "", adminTabForAction(act.Action, s.opts.Installer != nil, featI, featS))
 		return
 	}
 
 	// PRG：回跳时带上动作码与所在分页，由 GET 侧翻成人类可读的一句话
 	// （避免刷新重复提交），并把用户送回提交前那一页。
-	tab := adminTabForAction(act.Action, s.opts.Installer != nil)
+	tab := adminTabForAction(act.Action, s.opts.Installer != nil, featI, featS)
 	target := AdminPath + "?tab=" + url.QueryEscape(tab) +
 		"&ok=" + url.QueryEscape(act.Action) + "&arg=" + url.QueryEscape(act.Name)
 	// 删了哪些目录是这次操作最要紧的信息（不可逆），带回去让提示语说清楚；
@@ -628,6 +710,9 @@ func (s *Server) runAdminAction(actor *User, act *adminAction, ip string) error 
 		// 删目录不可逆：以后回查「这台实例的数据去哪了」只能靠审计里这一行，
 		// 所以成功时也写 detail，把实际删掉的路径逐条列出来。
 		entry.Detail = "已删除目录：" + strings.Join(act.RemovedDirs, "；")
+	} else if act.AuditDetail != "" {
+		// 动作自述的结果（如探活）：由动作实现写入，请求方伪造不了。
+		entry.Detail = act.AuditDetail
 	}
 	_ = s.opts.Store.Audit(entry)
 	return err
@@ -685,11 +770,44 @@ func (s *Server) applyAdminAction(actor *User, act *adminAction) error {
 		s.opts.Gate.Sessions().DestroySubject(name)
 		return nil
 
+	case "user.perms":
+		if name == "" {
+			return errors.New("missing name")
+		}
+		// 全量保存：未提供（nil）按 false，与表单「未勾即关」口径一致。
+		ai := act.AllowInstances != nil && *act.AllowInstances
+		as := act.AllowServices != nil && *act.AllowServices
+		return s.opts.Store.SetUserPerms(name, ai, as)
+
+	case "features.save":
+		return s.opts.Store.SetPortalFeatures(act.FeaturesInstances, act.FeaturesServices)
+
 	case "grants.save":
 		if name == "" {
 			return errors.New("missing name")
 		}
-		return s.opts.Store.SetUserGrants(name, act.Instances, actor.Name)
+		if err := s.opts.Store.SetUserGrants(name, act.Instances, actor.Name); err != nil {
+			return err
+		}
+		// 权限控制页的矩阵表单顺带写每用户类别开关；JSON 缺省字段（nil）不动
+		// 开关，保持旧脚本兼容。提供了哪个就覆盖哪个，另一个沿用库里现值。
+		if act.AllowInstances != nil || act.AllowServices != nil {
+			u, err := s.opts.Store.UserByName(name)
+			if err != nil {
+				return err
+			}
+			ai, as := u.AllowInstances, u.AllowServices
+			if act.AllowInstances != nil {
+				ai = *act.AllowInstances
+			}
+			if act.AllowServices != nil {
+				as = *act.AllowServices
+			}
+			if err := s.opts.Store.SetUserPerms(name, ai, as); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case "instance.create":
 		return s.applyInstanceCreate(actor, act)
@@ -714,6 +832,24 @@ func (s *Server) applyAdminAction(actor *User, act *adminAction) error {
 
 	case "instance.update":
 		return s.applyInstanceUpdate(actor, act)
+
+	case "service.create":
+		return s.applyServiceCreate(actor, act)
+
+	case "service.update":
+		return s.applyServiceUpdate(actor, act)
+
+	case "service.remove":
+		return s.applyServiceRemove(act)
+
+	case "service.toggle":
+		return s.applyServiceToggle(act)
+
+	case "service.probe":
+		return s.applyServiceProbe(act)
+
+	case "serviceGrants.save":
+		return s.applyServiceGrantsSave(actor, act)
 
 	default:
 		return fmt.Errorf("未知动作 %q", act.Action)
@@ -1167,6 +1303,10 @@ func (s *Server) flashMessage(lang i18n.Lang, r *http.Request) string {
 		return i18n.T(lang, i18n.KeyAdminMsgEnabled, arg)
 	case "user.delete":
 		return i18n.T(lang, i18n.KeyAdminMsgUserDeleted, arg)
+	case "user.perms":
+		return i18n.T(lang, i18n.KeyAdminMsgUserPerms, arg)
+	case "features.save":
+		return i18n.T(lang, i18n.KeyAdminMsgFeaturesSaved)
 	case "grants.save":
 		return i18n.T(lang, i18n.KeyAdminMsgGrantsSaved, arg)
 	case "instance.remove":
@@ -1175,6 +1315,26 @@ func (s *Server) flashMessage(lang i18n.Lang, r *http.Request) string {
 			return i18n.T(lang, i18n.KeyAdminMsgInstRemovedDirs, arg, dirs)
 		}
 		return i18n.T(lang, i18n.KeyAdminMsgInstRemoved, arg)
+	case "service.create":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcCreated, arg)
+	case "service.update":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcUpdated, arg)
+	case "service.remove":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcRemoved, arg)
+	case "service.toggle":
+		// 启停后的状态以库为准（与 user.toggle 同一做法）。
+		svc, err := s.opts.Store.ServiceByName(arg)
+		if err != nil {
+			return ""
+		}
+		if svc.Enabled {
+			return i18n.T(lang, i18n.KeyAdminMsgSvcEnabled, arg)
+		}
+		return i18n.T(lang, i18n.KeyAdminMsgSvcDisabled, arg)
+	case "service.probe":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcProbed, arg)
+	case "serviceGrants.save":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcGrantsSaved, arg)
 	}
 	return ""
 }
@@ -1198,12 +1358,21 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
 		return
 	}
+	services, err := s.opts.Store.ListServices()
+	if err != nil {
+		s.log.Error("管理台读取服务失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
 	audit, err := s.opts.Store.RecentAudit(auditLimit)
 	if err != nil {
 		s.log.Error("管理台读取审计失败", "err", err)
 		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
 		return
 	}
+	// 门户全局总开关：决定实例/服务两类分页标签是否出现，以及权限控制页顶部
+	// 总开关表单的勾选态。读失败按开启处理（globalFeatures 已记日志）。
+	featInstances, featServices := s.globalFeatures()
 
 	instanceOptions := make([]adminInstanceOption, 0, len(instances))
 	for _, inst := range instances {
@@ -1252,6 +1421,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 			RoleOptions:     s.roleOptions(lang, u.Role),
 			SuperAdmin:      superErr == nil && u.ID == superID,
 			RoleLabel:       s.roleLabel(lang, u.Role),
+			AllowInstances:  u.AllowInstances,
+			AllowServices:   u.AllowServices,
+			IsAdminUser:     u.IsAdmin(),
 		})
 	}
 
@@ -1328,6 +1500,15 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		instanceRows = append(instanceRows, row)
 	}
 
+	// 服务分页：卡片行的探活徽标只读缓存，渲染时绝不真探活。
+	serviceRows := s.buildServiceRows(lang, services)
+	serviceGrantRows, err := s.buildServiceGrantRows(users, services)
+	if err != nil {
+		s.log.Error("管理台读取服务授权失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
+
 	auditRows := make([]adminAuditRow, 0, len(audit))
 	var auditRev int64
 	for _, e := range audit {
@@ -1381,6 +1562,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		NameHint      string
 		ColRole       string
 		ColStatus     string
+		ColPerms      string
 		ColInstances  string
 		ColPort       string
 		ColRun        string
@@ -1396,18 +1578,54 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		BtnDelete     string
 		BtnCreateUser string
 		BtnSaveGrants string
-		PhPassword    string
-		PhNewPassword string
-		NoUsers       string
-		NoInstances   string
-		NoAudit       string
+		// 用户级类别权限（用户页每行的「实例 / 服务」勾选）。
+		PermInstancesLabel string
+		PermServicesLabel  string
+		BtnSavePerms       string
+		PermsAdminNote     string
+		PhPassword         string
+		PhNewPassword      string
+		NoUsers            string
+		NoInstances        string
+		NoAudit            string
 		// SuperBadge 是超管行名字下面的徽标文案（页面级，供模板 $. 取用）。
-		SuperBadge     string
-		GrantsTitle    string
-		GrantsHint     string
-		InstancesTitle string
-		InstancesHint  string
-		AuditTitle     string
+		SuperBadge  string
+		GrantsTitle string
+		GrantsHint  string
+		// ---- 全局总开关（权限控制页顶部，关掉某类则所有人该类入口隐藏）----
+		FeaturesInstances bool
+		FeaturesServices  bool
+		FeaturesTitle     string
+		FeaturesHint      string
+		BtnSaveFeatures   string
+		InstancesTitle    string
+		InstancesHint     string
+		AuditTitle        string
+
+		// ---- 服务分页（内网服务代理，与实例页完全分离）----
+		ServicesTitle    string
+		ServicesHint     string
+		NoServices       string
+		SvcCreateTitle   string
+		SvcCreateHint    string
+		SvcNameLabel     string
+		SvcUpstreamLabel string
+		SvcUpstreamPh    string
+		SvcUpstreamHelp  string
+		SvcHostLabel     string
+		SvcHostUpstream  string
+		SvcHostGateway   string
+		SvcInsecureLabel string
+		SvcInsecureBadge string
+		SvcNoteLabel     string
+		SvcMountLabel    string
+		SvcBtnCreate     string
+		SvcBtnProbe      string
+		SvcBtnSave       string
+		SvcCardRemove    string
+		SvcRemoveHint    string
+		SvcGrantsTitle   string
+		SvcGrantsTip     string
 
 		// ---- 分页导航 ----
 		ActiveTab string
@@ -1516,6 +1734,8 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		Users              []adminUserRow
 		Instances          []adminInstanceRow
 		Audit              []adminAuditRow
+		Services           []adminServiceRow
+		ServiceGrants      []adminServiceGrantRow
 	}{
 		Lang:         string(lang),
 		Title:        i18n.T(lang, i18n.KeyAdminTitle),
@@ -1523,45 +1743,79 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		BackToPortal: i18n.T(lang, i18n.KeyAdminBack),
 		OtherLang:    otherLangLabel(lang),
 		// 切语言是一次整页跳转，带上当前分页，免得切完语言被弹回第一页。
-		OtherLangHref:  AdminPath + "?lang=" + string(otherLang(lang)) + "&tab=" + url.QueryEscape(tab),
-		SignOut:        i18n.T(lang, i18n.KeyPortalSignOut),
-		SignOutHref:    auth.PathLogout,
-		Error:          problem,
-		Message:        message,
-		CSRF:           s.csrfToken(w, r),
-		UsersTitle:     i18n.T(lang, i18n.KeyAdminUsers),
-		ColName:        i18n.T(lang, i18n.KeyAdminColName),
-		ColAccount:     i18n.T(lang, i18n.KeyAdminColAccount),
-		ColDisplay:     i18n.T(lang, i18n.KeyAdminColDisplay),
-		NameHint:       i18n.T(lang, i18n.KeyAdminNameHint),
-		ColRole:        i18n.T(lang, i18n.KeyAdminColRole),
-		ColStatus:      i18n.T(lang, i18n.KeyAdminColStatus),
-		ColInstances:   i18n.T(lang, i18n.KeyAdminColInstances),
-		ColPort:        i18n.T(lang, i18n.KeyAdminColPort),
-		ColRun:         i18n.T(lang, i18n.KeyAdminColRun),
-		ColTime:        i18n.T(lang, i18n.KeyAdminColTime),
-		ColActor:       i18n.T(lang, i18n.KeyAdminColActor),
-		ColAction:      i18n.T(lang, i18n.KeyAdminColAction),
-		ColTarget:      i18n.T(lang, i18n.KeyAdminColTarget),
-		ColDetail:      i18n.T(lang, i18n.KeyAdminColDetail),
-		BtnApply:       i18n.T(lang, i18n.KeyAdminBtnApply),
-		BtnPassword:    i18n.T(lang, i18n.KeyAdminBtnPassword),
-		BtnEnable:      i18n.T(lang, i18n.KeyAdminBtnEnable),
-		BtnDisable:     i18n.T(lang, i18n.KeyAdminBtnDisable),
-		BtnDelete:      i18n.T(lang, i18n.KeyAdminBtnDelete),
-		BtnCreateUser:  i18n.T(lang, i18n.KeyAdminBtnCreateUser),
-		BtnSaveGrants:  i18n.T(lang, i18n.KeyAdminBtnSaveGrants),
-		PhPassword:     i18n.T(lang, i18n.KeyAdminPhPassword),
-		PhNewPassword:  i18n.T(lang, i18n.KeyAdminPhNewPassword),
-		NoUsers:        i18n.T(lang, i18n.KeyAdminNoUsers),
-		NoInstances:    i18n.T(lang, i18n.KeyAdminNoInstances),
-		NoAudit:        i18n.T(lang, i18n.KeyAdminNoAudit),
-		SuperBadge:     i18n.T(lang, i18n.KeyAdminSuperBadge),
-		GrantsTitle:    i18n.T(lang, i18n.KeyAdminGrants),
-		GrantsHint:     i18n.T(lang, i18n.KeyAdminGrantsTip),
-		InstancesTitle: i18n.T(lang, i18n.KeyAdminInstances),
-		InstancesHint:  i18n.T(lang, i18n.KeyAdminInstTip),
-		AuditTitle:     i18n.T(lang, i18n.KeyAdminAudit),
+		OtherLangHref:      AdminPath + "?lang=" + string(otherLang(lang)) + "&tab=" + url.QueryEscape(tab),
+		SignOut:            i18n.T(lang, i18n.KeyPortalSignOut),
+		SignOutHref:        auth.PathLogout,
+		Error:              problem,
+		Message:            message,
+		CSRF:               s.csrfToken(w, r),
+		UsersTitle:         i18n.T(lang, i18n.KeyAdminUsers),
+		ColName:            i18n.T(lang, i18n.KeyAdminColName),
+		ColAccount:         i18n.T(lang, i18n.KeyAdminColAccount),
+		ColDisplay:         i18n.T(lang, i18n.KeyAdminColDisplay),
+		NameHint:           i18n.T(lang, i18n.KeyAdminNameHint),
+		ColRole:            i18n.T(lang, i18n.KeyAdminColRole),
+		ColStatus:          i18n.T(lang, i18n.KeyAdminColStatus),
+		ColPerms:           i18n.T(lang, i18n.KeyAdminUserPerms),
+		ColInstances:       i18n.T(lang, i18n.KeyAdminColInstances),
+		ColPort:            i18n.T(lang, i18n.KeyAdminColPort),
+		ColRun:             i18n.T(lang, i18n.KeyAdminColRun),
+		ColTime:            i18n.T(lang, i18n.KeyAdminColTime),
+		ColActor:           i18n.T(lang, i18n.KeyAdminColActor),
+		ColAction:          i18n.T(lang, i18n.KeyAdminColAction),
+		ColTarget:          i18n.T(lang, i18n.KeyAdminColTarget),
+		ColDetail:          i18n.T(lang, i18n.KeyAdminColDetail),
+		BtnApply:           i18n.T(lang, i18n.KeyAdminBtnApply),
+		BtnPassword:        i18n.T(lang, i18n.KeyAdminBtnPassword),
+		BtnEnable:          i18n.T(lang, i18n.KeyAdminBtnEnable),
+		BtnDisable:         i18n.T(lang, i18n.KeyAdminBtnDisable),
+		BtnDelete:          i18n.T(lang, i18n.KeyAdminBtnDelete),
+		BtnCreateUser:      i18n.T(lang, i18n.KeyAdminBtnCreateUser),
+		BtnSaveGrants:      i18n.T(lang, i18n.KeyAdminBtnSaveGrants),
+		PermInstancesLabel: i18n.T(lang, i18n.KeyAdminUserPermInstances),
+		PermServicesLabel:  i18n.T(lang, i18n.KeyAdminUserPermServices),
+		BtnSavePerms:       i18n.T(lang, i18n.KeyAdminBtnSavePerms),
+		PermsAdminNote:     i18n.T(lang, i18n.KeyAdminUserPermsAdminNote),
+		PhPassword:         i18n.T(lang, i18n.KeyAdminPhPassword),
+		PhNewPassword:      i18n.T(lang, i18n.KeyAdminPhNewPassword),
+		NoUsers:            i18n.T(lang, i18n.KeyAdminNoUsers),
+		NoInstances:        i18n.T(lang, i18n.KeyAdminNoInstances),
+		NoAudit:            i18n.T(lang, i18n.KeyAdminNoAudit),
+		SuperBadge:         i18n.T(lang, i18n.KeyAdminSuperBadge),
+		GrantsTitle:        i18n.T(lang, i18n.KeyAdminGrants),
+		GrantsHint:         i18n.T(lang, i18n.KeyAdminGrantsTip),
+		FeaturesInstances:  featInstances,
+		FeaturesServices:   featServices,
+		FeaturesTitle:      i18n.T(lang, i18n.KeyAdminFeaturesTitle),
+		FeaturesHint:       i18n.T(lang, i18n.KeyAdminFeaturesHint),
+		BtnSaveFeatures:    i18n.T(lang, i18n.KeyAdminBtnSaveFeatures),
+		InstancesTitle:     i18n.T(lang, i18n.KeyAdminInstances),
+		InstancesHint:      i18n.T(lang, i18n.KeyAdminInstTip),
+		AuditTitle:         i18n.T(lang, i18n.KeyAdminAudit),
+
+		ServicesTitle:    i18n.T(lang, i18n.KeyAdminServices),
+		ServicesHint:     i18n.T(lang, i18n.KeyAdminSvcTip),
+		NoServices:       i18n.T(lang, i18n.KeyAdminNoServices),
+		SvcCreateTitle:   i18n.T(lang, i18n.KeyAdminSvcCreate),
+		SvcCreateHint:    i18n.T(lang, i18n.KeyAdminSvcCreateHint),
+		SvcNameLabel:     i18n.T(lang, i18n.KeyAdminSvcName),
+		SvcUpstreamLabel: i18n.T(lang, i18n.KeyAdminSvcUpstream),
+		SvcUpstreamPh:    i18n.T(lang, i18n.KeyAdminSvcUpstreamPh),
+		SvcUpstreamHelp:  i18n.T(lang, i18n.KeyAdminSvcUpstreamHelp),
+		SvcHostLabel:     i18n.T(lang, i18n.KeyAdminSvcHostHeader),
+		SvcHostUpstream:  i18n.T(lang, i18n.KeyAdminSvcHostUpstream),
+		SvcHostGateway:   i18n.T(lang, i18n.KeyAdminSvcHostGateway),
+		SvcInsecureLabel: i18n.T(lang, i18n.KeyAdminSvcInsecureTLS),
+		SvcInsecureBadge: i18n.T(lang, i18n.KeyAdminSvcInsecureBadge),
+		SvcNoteLabel:     i18n.T(lang, i18n.KeyAdminSvcNote),
+		SvcMountLabel:    i18n.T(lang, i18n.KeyAdminSvcMount),
+		SvcBtnCreate:     i18n.T(lang, i18n.KeyAdminSvcCreate),
+		SvcBtnProbe:      i18n.T(lang, i18n.KeyAdminSvcBtnProbe),
+		SvcBtnSave:       i18n.T(lang, i18n.KeyAdminSvcBtnSave),
+		SvcCardRemove:    i18n.T(lang, i18n.KeyAdminSvcCardRemove),
+		SvcRemoveHint:    i18n.T(lang, i18n.KeyAdminSvcRemoveHint),
+		SvcGrantsTitle:   i18n.T(lang, i18n.KeyAdminSvcGrants),
+		SvcGrantsTip:     i18n.T(lang, i18n.KeyAdminSvcGrantsTip),
 
 		// ---- 分页导航 ----
 		ActiveTab: tab,
@@ -1649,7 +1903,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		Style:              string(style),
 		StyleLabel:         i18n.T(lang, i18n.KeyStyleLabel),
 		Styles:             auth.StyleOptions(r, style, lang),
-		NavItems:           navItems(lang, tab, hasInstaller),
+		NavItems:           navItems(lang, tab, hasInstaller, featInstances, featServices),
 		CountInstances:     len(instanceRows),
 		CountRunning:       running,
 		CountEnabled:       enabled,
@@ -1664,6 +1918,8 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		Users:              userRows,
 		Instances:          instanceRows,
 		Audit:              auditRows,
+		Services:           serviceRows,
+		ServiceGrants:      serviceGrantRows,
 	}
 
 	body := &strings.Builder{}
@@ -1754,12 +2010,12 @@ func (s *Server) roleLabel(lang i18n.Lang, role Role) string {
 
 // csrfToken 返回本次表单该带的 CSRF 令牌：优先读 Cookie，没有就新发一个。
 func (s *Server) csrfToken(w http.ResponseWriter, r *http.Request) string {
-	if c, err := r.Cookie(CSRFCookie); err == nil && len(c.Value) >= 16 {
+	if c, err := r.Cookie(s.csrfCookie); err == nil && len(c.Value) >= 16 {
 		return c.Value
 	}
 	token := newCSRFToken()
 	http.SetCookie(w, &http.Cookie{
-		Name:     CSRFCookie,
+		Name:     s.csrfCookie,
 		Value:    token,
 		Path:     "/",
 		SameSite: http.SameSiteLaxMode,
@@ -1770,7 +2026,7 @@ func (s *Server) csrfToken(w http.ResponseWriter, r *http.Request) string {
 
 // csrfOK 校验双提交令牌 + 同源。
 func (s *Server) csrfOK(r *http.Request) bool {
-	c, err := r.Cookie(CSRFCookie)
+	c, err := r.Cookie(s.csrfCookie)
 	if err != nil || c.Value == "" {
 		return false
 	}
@@ -1834,12 +2090,20 @@ type adminNavItem struct {
 // navItems 按展示顺序给出当前能力下可见的导航项。
 //
 // 运行环境页只在接了安装能力时出现——没有安装就没有环境可看，摆个空页等于骗人。
-func navItems(lang i18n.Lang, tab string, hasInstaller bool) []adminNavItem {
-	items := []adminNavItem{
-		{"instances", i18n.T(lang, i18n.KeyAdminInstances), tab == "instances"},
-		{"users", i18n.T(lang, i18n.KeyAdminUsers), tab == "users"},
-		{"grants", i18n.T(lang, i18n.KeyAdminGrants), tab == "grants"},
+func navItems(lang i18n.Lang, tab string, hasInstaller, showInstances, showServices bool) []adminNavItem {
+	// 全局总开关关掉的那类：导航标签整体不出现（顶部/侧边/底部三处导航都
+	// range .NavItems，一处隐藏处处隐藏）。用户/权限控制/运行环境/审计不受影响。
+	items := []adminNavItem{}
+	if showInstances {
+		items = append(items, adminNavItem{"instances", i18n.T(lang, i18n.KeyAdminInstances), tab == "instances"})
 	}
+	if showServices {
+		items = append(items, adminNavItem{"services", i18n.T(lang, i18n.KeyAdminServices), tab == "services"})
+	}
+	items = append(items,
+		adminNavItem{"users", i18n.T(lang, i18n.KeyAdminUsers), tab == "users"},
+		adminNavItem{"grants", i18n.T(lang, i18n.KeyAdminGrants), tab == "grants"},
+	)
 	if hasInstaller {
 		items = append(items, adminNavItem{"env", i18n.T(lang, i18n.KeyAdminNavEnv), tab == "env"})
 	}

@@ -7,6 +7,7 @@ package cookie
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,22 @@ const (
 	// 启动令牌交换。详见 proxy 包的说明。
 	Handoff = "dsh_gate_ds"
 )
+
+// ScopeName 给 Cookie 名加上监听端口后缀（port > 0 时），让同一台机器上
+// 不同端口的多个网关互不覆盖。
+//
+// 为什么必须这么做：浏览器的 Cookie 按主机名隔离、**不按端口隔离**。同机跑
+// 两个网关（如正式 12020 + 测试 12021）时，两者种的 dsh_gate_sid 是同一个
+// Cookie；更糟的是 HTTPS 网关种的带 Secure 标记，HTTP 网关随后种的同名不带
+// Secure 的 Cookie 会被浏览器**静默拒绝覆盖**（保护 Secure Cookie 的安全规则），
+// 表现成「登录成功却立刻被弹回登录页」。把端口编进名字（dsh_gate_sid_p12021）
+// 后两者各用各的，永不互踩。port <= 0 保持原名（测试与嵌入式用法）。
+func ScopeName(name string, port int) string {
+	if port <= 0 {
+		return name
+	}
+	return name + "_p" + strconv.Itoa(port)
+}
 
 // Options 是写 Cookie 时的公共属性。
 type Options struct {

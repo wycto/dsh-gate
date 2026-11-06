@@ -41,6 +41,23 @@ func TestSetAndGet(t *testing.T) {
 	}
 }
 
+// TestScopeName 验证端口后缀：同机多网关的 Cookie 名必须互不相同，
+// 且 port<=0 时保持原名（测试与嵌入式用法不受影响）。
+func TestScopeName(t *testing.T) {
+	if got := cookie.ScopeName(cookie.Session, 0); got != cookie.Session {
+		t.Errorf("port=0 应保持原名，实际 %q", got)
+	}
+	if got := cookie.ScopeName(cookie.Session, -1); got != cookie.Session {
+		t.Errorf("port<0 应保持原名，实际 %q", got)
+	}
+	if got := cookie.ScopeName(cookie.Session, 12021); got != "dsh_gate_sid_p12021" {
+		t.Errorf("port=12021 应加后缀，实际 %q", got)
+	}
+	if cookie.ScopeName(cookie.Session, 12020) == cookie.ScopeName(cookie.Session, 12021) {
+		t.Error("不同端口的 Cookie 名必须不同")
+	}
+}
+
 func TestSecureFlag(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	cookie.Set(recorder, cookie.Session, "x", cookie.Options{Secure: true, MaxAge: time.Hour})

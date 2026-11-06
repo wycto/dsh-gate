@@ -19,6 +19,12 @@ import (
 // 与页面的分工：页面回答「每个实例的实时状态」（它就在运行时里），status 回答
 // 「这台机器上的管理端与实例定义是什么样」——管理端没在跑时也能看，正是排查
 // 「为什么打不开」的第一步。
+//
+// 退出码同时充当健康探针：管理端没在运行返回 1，运行中返回 0。
+//
+// 为什么不是「报告成功就返回 0」：那样 `dsh-gate status || dsh-gate start` 这类
+// 守卫永远不会触发，脚本只能去 grep 输出文本——文案一改脚本就坏。这里与
+// systemctl status 取同一个口径：「问到了答案，但对象没在运行」不算成功。
 func statusCommand(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -50,6 +56,11 @@ func statusCommand(args []string) int {
 	}
 
 	record, running := portalRecord(runDir())
+	// 健康探针的落点：后面所有「报告完了」的分支都返回它，而不是一律 0。
+	exitCode := 0
+	if !running {
+		exitCode = 1
+	}
 	if running {
 		fmt.Println("管理端：运行中")
 		fmt.Printf("  监听地址  %s\n", record.Listen)
@@ -83,11 +94,11 @@ func statusCommand(args []string) int {
 	instances, listErr := listInstancesFromDB(dbPath)
 	if listErr != nil {
 		fmt.Printf("\n实例：读不到管理端数据库（%s）\n", dbPath)
-		return 0
+		return exitCode
 	}
 	if len(instances) == 0 {
 		fmt.Println("\n实例：还没有创建（在管理页 /admin 或用 dsh-gate dsh add 创建）")
-		return 0
+		return exitCode
 	}
 
 	states := map[string]localInstanceInfo{}
@@ -114,7 +125,7 @@ func statusCommand(args []string) int {
 		fmt.Printf("  %-20s %-10s :%d  %s\n", inst.Name, inst.ID, inst.DshPort, stateLabel)
 	}
 	fmt.Println("\n操作：dsh-gate dsh list / dsh-gate dsh restart <名字>；页面：/admin")
-	return 0
+	return exitCode
 }
 
 // listInstancesFromDB 直接读管理端数据库里的实例定义（不启动运行时）。

@@ -2,6 +2,7 @@ package dshproc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,6 +52,15 @@ type Options struct {
 	// 重装服务）后 dsh 往往还活着，此时没有令牌就只能「接管」成未授权状态：
 	// 首页打得开、一对话就要求重新登录。记一份到实例目录（0600）就能续上。
 	TokenFile string
+	// OutputFile 是 dsh 标准输出/错误输出的落盘位置（0600、追加写）。非空时子进程
+	// 的输出直接写进这个文件，网关再从文件末尾追读新增内容来提取启动令牌。
+	//
+	// 为什么不用管道：管道的读端活在网关进程里，网关被杀（升级、崩溃、launchd
+	// 重启）后读端随之关闭，dsh（Node）下一次写日志就收到 EPIPE 当场退出——真机
+	// 现象正是「网关重启接管成功，几分钟后实例不可用」。落盘后子进程的写端不再
+	// 依赖网关的生死，网关死了它也能继续跑，等下一个网关来接管。留空时保持旧的
+	// 管道行为（兼容直接调用方与现有测试）。
+	OutputFile string
 	// Adopt 表示端口已被占用时接管那个 dsh，而不是报错。
 	Adopt bool
 	// AutoStart 表示端口空闲时由本进程把 dsh 拉起来。
@@ -87,6 +97,10 @@ type Supervisor struct {
 	supported  map[string]bool // dsh 支持的选项，探测一次后缓存
 	readyCh    chan struct{}
 	recent     []string // dsh 最近若干行输出，失败时原样回放
+	// watchStop 是接管态存活监视 goroutine 的停止信号（见 watchAdopted）。
+	// adopt 时创建；forgetAdopted、Shutdown、监视者自己转为自管时关闭并置 nil，
+	// 保证恰好关一次、不泄漏 goroutine。
+	watchStop chan struct{}
 
 	// commandMu 保护 opts.ResolvedCommand 与 resolvedRegistry：它们可能在启动
 	// 之后才由后台的「准备 dsh」写进来（见 SetResolvedCommand），而每次拉起
@@ -314,10 +328,23 @@ func (s *Supervisor) Ready() bool {
 }
 
 // Running 表示子进程正在运行（接管模式下恒为 false）。
+//
+// 用 exited 通道而不是 cmd.ProcessState 判存活：ProcessState 由 cmd.Wait 在另一个
+// goroutine 里写，这里读它会构成数据竞争（-race 会报）。exited 由那个 goroutine 在
+// Wait 返回后才关闭，「收到关闭」与「ProcessState 已写」之间有 happens-before，既
+// 无竞争又能准确反映「进程确实没了」。
 func (s *Supervisor) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cmd != nil && s.cmd.ProcessState == nil
+	if s.cmd == nil {
+		return false
+	}
+	select {
+	case <-s.exited:
+		return false
+	default:
+		return true
+	}
 }
 
 // Adopted 表示这个 dsh 是接管来的（不是网关启动的）。
@@ -473,7 +500,13 @@ func (s *Supervisor) adopt(state State) {
 	// 恒为 0），管理台上点停止只把网关自己的转发标记清掉，端口照旧有人听。
 	s.adoptedPID = state.PID
 	s.setReadyLocked(true)
+	// 接管来的进程没有 Wait 句柄，它死了这里无从得知——起一个监视 goroutine
+	// 定期探活，死了就自动重拉（见 watchAdopted）。重复 adopt 时先收掉旧的。
+	s.stopWatchLocked()
+	s.watchStop = make(chan struct{})
+	watchStop := s.watchStop
 	s.mu.Unlock()
+	go s.watchAdopted(watchStop)
 	s.log.Info("接管已在运行的 dsh 实例", "addr", s.Addr(), "pid", state.PID, "detail", state.Detail)
 	// 这里要看「解析后的令牌」而不是 opts.Token：令牌优先来自落盘的那份
 	// （Options.TokenFile），只在两者都没有时才真的无从得知。早先只看
@@ -577,16 +610,43 @@ func (s *Supervisor) spawn(args []string) (*exec.Cmd, <-chan error, chan struct{
 	cmd.Env = s.childEnv()
 	applyProcessAttrs(cmd)
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("创建 dsh 输出管道失败: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("创建 dsh 错误管道失败: %w", err)
+	// 输出有两种接法：落盘（OutputFile 非空）或管道（留空，旧行为）。
+	//
+	// 落盘是根治 EPIPE 的那一手：管道读端在网关手里，网关被杀（升级/崩溃/launchd
+	// 重启）读端就关，dsh（Node）下一次写日志收到 EPIPE 即死——真机上「接管成功
+	// 几分钟后实例不可用」正是这么来的。改成子进程直接写文件后，它的生死不再系于
+	// 网关是否活着；网关从文件末尾追读新增内容，令牌提取与回放一切照旧。
+	var outFile *os.File
+	var tailOffset int64
+	var stdout, stderr io.Reader
+	if path := strings.TrimSpace(s.opts.OutputFile); path != "" {
+		f, offset, err := openOutputFile(path)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("打开 dsh 输出文件失败: %w", err)
+		}
+		outFile, tailOffset = f, offset
+		cmd.Stdout, cmd.Stderr = f, f
+	} else {
+		var err error
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("创建 dsh 输出管道失败: %w", err)
+		}
+		stderr, err = cmd.StderrPipe()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("创建 dsh 错误管道失败: %w", err)
+		}
 	}
 	if err := cmd.Start(); err != nil {
+		if outFile != nil {
+			_ = outFile.Close()
+		}
 		return nil, nil, nil, fmt.Errorf("启动 dsh 失败（%s）: %w", args[0], err)
+	}
+	if outFile != nil {
+		// 子进程已持有自己的 fd 副本，父进程这份立刻关掉：留着只会让「网关死了
+		// 写端还在」的假象多撑一会儿，对 EPIPE 没有任何帮助。
+		_ = outFile.Close()
 	}
 
 	waitCh := make(chan error, 1)
@@ -617,8 +677,12 @@ func (s *Supervisor) spawn(args []string) (*exec.Cmd, <-chan error, chan struct{
 	s.exited = exited
 	s.mu.Unlock()
 
-	go s.consume(stdout)
-	go s.consume(stderr)
+	if outFile != nil {
+		go s.tailOutput(strings.TrimSpace(s.opts.OutputFile), tailOffset, exited)
+	} else {
+		go s.consume(stdout)
+		go s.consume(stderr)
+	}
 	return cmd, waitCh, exited, nil
 }
 
@@ -631,14 +695,100 @@ func (s *Supervisor) consume(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if token := SplitToken(line); token != "" {
-			s.SetToken(token)
-		}
-		s.remember(RedactToken(line))
-		s.log.Debug("dsh", "line", RedactToken(line))
+		s.consumeLine(scanner.Text())
 	}
 	_ = scanner.Err()
+}
+
+// consumeLine 处理一行 dsh 输出：提令牌、记回放、debug 日志。
+// 管道（consume）与落盘（tailOutput）两条路共用它，语义不会漂移。
+func (s *Supervisor) consumeLine(line string) {
+	if token := SplitToken(line); token != "" {
+		s.SetToken(token)
+	}
+	s.remember(RedactToken(line))
+	s.log.Debug("dsh", "line", RedactToken(line))
+}
+
+// outputRotateBytes 是输出文件的轮转阈值：超过就在下一次 spawn 时 rename 成 .1
+// 再建新文件。只在 spawn 轮转、不在追读中途轮转，tail 的偏移才不会指错文件。
+const outputRotateBytes = 8 << 20
+
+// openOutputFile 以追加方式打开输出文件（0600），返回文件与当前末尾偏移。
+// 超过阈值先轮转；轮转失败不拦启动，继续往原文件追加（大不了大一点）。
+func openOutputFile(path string) (*os.File, int64, error) {
+	if info, err := os.Stat(path); err == nil && info.Size() > outputRotateBytes {
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, 0, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, err
+	}
+	return f, info.Size(), nil
+}
+
+// tailOutput 从 offset 起追读输出文件，把新增的行喂给 consumeLine。
+//
+// 为什么是轮询而不是 inotify：零依赖是底线，250ms 的延迟对「提启动令牌」完全
+// 够用（令牌只在启动时打一次，晚几百毫秒不影响就绪判定）。半行缓冲到换行再
+// 处理；exited 关闭（子进程确实没了）后排空剩余内容再退出，不泄漏 goroutine。
+func (s *Supervisor) tailOutput(path string, offset int64, exited <-chan struct{}) {
+	var pending []byte
+	buf := make([]byte, 32*1024)
+	readNew := func() {
+		f, err := os.Open(path)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return
+		}
+		for {
+			n, readErr := f.Read(buf)
+			if n > 0 {
+				offset += int64(n)
+				pending = append(pending, buf[:n]...)
+				for {
+					i := bytes.IndexByte(pending, '\n')
+					if i < 0 {
+						break
+					}
+					line := strings.TrimRight(string(pending[:i]), "\r")
+					pending = pending[i+1:]
+					s.consumeLine(line)
+				}
+				// 超长行兜底：与管道 scanner 的上限一致，不让一行没有换行的
+				// 输出把内存吃光。
+				if len(pending) > 1024*1024 {
+					s.consumeLine(strings.TrimRight(string(pending), "\r"))
+					pending = pending[:0]
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-exited:
+			readNew()
+			if len(pending) > 0 {
+				s.consumeLine(strings.TrimRight(string(pending), "\r"))
+			}
+			return
+		case <-ticker.C:
+			readNew()
+		}
+	}
 }
 
 // rememberLines 是回放给用户看的行数上限。
@@ -825,6 +975,9 @@ func (s *Supervisor) Shutdown(ctx context.Context) error {
 	s.stopped = true
 	hasChild := s.cmd != nil
 	s.setReadyLocked(false)
+	// 接管态没有子进程句柄，但监视 goroutine 还活着——必须在下面 !hasChild
+	// 提前 return 之前关掉它，否则接管态的 Shutdown 会泄漏监视 goroutine。
+	s.stopWatchLocked()
 	s.mu.Unlock()
 
 	if !hasChild {
@@ -915,8 +1068,97 @@ func (s *Supervisor) forgetAdopted(pid int) {
 	s.mu.Lock()
 	s.adopted = false
 	s.adoptedPID = 0
+	s.stopWatchLocked()
 	s.mu.Unlock()
 	s.log.Info("接管实例已停止", "addr", s.Addr(), "pid", pid)
+}
+
+// stopWatchLocked 关闭接管监视的停止信号并置 nil。调用方必须持有锁。
+// 置 nil 保证「恰好关一次」：监视者自己转 launch、forgetAdopted、Shutdown
+// 三方谁先到谁关，后到的看到 nil 就是空操作。
+func (s *Supervisor) stopWatchLocked() {
+	if s.watchStop != nil {
+		close(s.watchStop)
+		s.watchStop = nil
+	}
+}
+
+// watchAdopted 监视接管来的 dsh 是否还活着，死了就自动恢复。
+//
+// 为什么必须有它：网关升级/崩溃后接管的进程可能已死或将死（旧网关的管道读端
+// 关了，它下一次写日志就 EPIPE 退出），而接管没有子进程句柄、没有 reap 看守——
+// 不监视的话 ready 恒 true、监督者永不重拉，用户只能手动点重启才恢复。这里每
+// 5 秒探一次端口：空了且允许自动拉起就自己 launch；被陌生进程占了就标不可用，
+// 绝不杀陌生进程；还活着就确保 ready（探活抖动自愈）。
+func (s *Supervisor) watchAdopted(stop <-chan struct{}) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		s.mu.Lock()
+		stopped, adopted := s.stopped, s.adopted
+		s.mu.Unlock()
+		if stopped || !adopted {
+			return
+		}
+
+		state := Inspect(s.Addr(), probeTimeout)
+		switch {
+		case !state.InUse:
+			if !s.opts.AutoStart {
+				s.mu.Lock()
+				s.setReadyLocked(false)
+				s.lastErr = "接管的 dsh 已退出，且当前不允许自动拉起"
+				s.mu.Unlock()
+				continue
+			}
+			s.log.Warn("接管的 dsh 已退出，自动重新拉起", "addr", s.Addr())
+			s.mu.Lock()
+			s.adopted = false
+			s.adoptedPID = 0
+			s.setReadyLocked(false)
+			// 转为自管：监视信号由我们自己关（并置 nil），Shutdown 与
+			// forgetAdopted 之后就不会重复关闭。
+			s.stopWatchLocked()
+			s.mu.Unlock()
+			// launch 失败记 lastErr、5 秒后继续重试；spawn 的 stopped 检查与
+			// reaping 标记本来就拦得住「越停越发」和重复孩子，这里不绕过它们。
+			// 注意不能再 select stop：转 launch 时它已被我们自己关闭，select 会
+			// 立即命中导致「失败一次就放弃」；退出条件只剩 stopped（Shutdown 会
+			// 置位，最迟一个重试周期内退出，不泄漏 goroutine）。
+			for {
+				err := s.launch(context.Background())
+				if err == nil {
+					return
+				}
+				s.setLastError(err)
+				s.log.Error("自动重新拉起接管的 dsh 失败，将继续重试", "addr", s.Addr(), "err", err)
+				s.mu.Lock()
+				stopped := s.stopped
+				s.mu.Unlock()
+				if stopped {
+					return
+				}
+				time.Sleep(5 * time.Second)
+			}
+		case state.InUse && !state.DSH:
+			// 陌生进程占了端口：标不可用并继续监视，绝不杀它。
+			s.mu.Lock()
+			s.setReadyLocked(false)
+			s.lastErr = fmt.Sprintf("接管的端口被非 dsh 进程占用：%s", state.Detail)
+			s.mu.Unlock()
+		default:
+			// 还活着且像 dsh：确保 ready（探活抖动自愈）。
+			s.mu.Lock()
+			s.setReadyLocked(true)
+			s.lastErr = ""
+			s.mu.Unlock()
+		}
+	}
 }
 
 // setReadyLocked 更新就绪状态并唤醒等待者。调用方必须持有锁。

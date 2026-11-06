@@ -88,12 +88,35 @@ func installCommand(args []string) int {
 
 	interactive := term.IsTerminal(os.Stdin.Fd())
 
+	// 这次安装「归属哪个用户」：sudo 安装时是发起 sudo 的真实用户。
+	// Linux 的 systemd 单元要写 User=<真实用户>，否则 dsh 以 root 运行会撞权限
+	// 问题；建号与证书也要落到该用户家目录，并在收尾时 chown 给他。
+	targetUser, targetHome, targetGID, elevatedIntoUser := effectiveInstallTarget(
+		os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_USER"))
+	if os.Geteuid() == 0 && strings.TrimSpace(os.Getenv("SUDO_USER")) == "" {
+		fmt.Fprintln(os.Stderr, "警告：当前以 root 直接运行（未经 sudo 切换）。dsh 以 root 运行常有权限问题；"+
+			"建议用普通用户执行：sudo dsh-gate install")
+	}
+
+	// 默认状态目录跟着「归属用户」走：sudo 下 os.UserHomeDir() 是 /root，直接用它
+	// 会把账号库与证书建到 root 家目录，而服务以真实用户运行时读不到。
+	stateDirDefault := ""
+	if targetHome != "" {
+		stateDirDefault = filepath.Join(targetHome, ".dsh-gate")
+	} else if home, err := os.UserHomeDir(); err == nil {
+		stateDirDefault = filepath.Join(home, ".dsh-gate")
+	}
+
 	// 口令的来源在动手之前定清楚：非交互又没给来源，等问完一圈才失败最糟。
 	// 只在「需要建账号」时才强制——库里已有账号时不问口令，也就不需要来源。
 	needPassword := false
 	var existing []portal.User
 	var superID int64
-	if db, err := portalDBPath(strings.TrimSpace(*stateDir)); err == nil {
+	precheckDir := strings.TrimSpace(*stateDir)
+	if precheckDir == "" {
+		precheckDir = stateDirDefault
+	}
+	if db, err := portalDBPath(precheckDir); err == nil {
 		if store, err := portal.Open(db); err == nil {
 			count, _ := store.CountUsers()
 			needPassword = count == 0
@@ -132,7 +155,7 @@ func installCommand(args []string) int {
 	// 选项显式给过的项不再问。
 	visited := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { visited[f.Name] = true })
-	settings, err := collectInstallSettings(fs, visited, *host, *port, *stateDir, *admin, *display, interactive, needPassword, existing, superID, *randomMode, *fromStdin, tlsIn)
+	settings, err := collectInstallSettings(fs, visited, *host, *port, *stateDir, *admin, *display, interactive, needPassword, existing, superID, *randomMode, *fromStdin, tlsIn, stateDirDefault)
 	if err != nil {
 		return fatal("%v", err)
 	}
@@ -193,8 +216,34 @@ func installCommand(args []string) int {
 	if binDir == "" {
 		binDir = strings.TrimSpace(*binDirFlag)
 	}
-	if !settings.service {
-		printInstallSelfResult(binDir)
+	// 两条启动路径都要把命令拷进 PATH（自启时 service install 也会拷，内容一致时
+	// 它是幂等的）。这里统一拷一次，好拿到落点去做属主修正。
+	copiedBin := printInstallSelfResult(binDir)
+
+	// sudo 安装收尾：把安装期自建的 state 目录整棵与拷进 PATH 的二进制都交给
+	// 真实用户。账号库与证书都是在 root 身份下创建的，服务却以真实用户运行——
+	// 不改属主就会「读不到私钥 / 写不了数据库」。只在能从 sudo 解析出真实用户时做。
+	if elevatedIntoUser {
+		// 先关库，让 WAL 落盘，避免 chown 之后又被 root 写回一份。
+		_ = store.Close()
+		uid, gid := -1, -1
+		if u, _, _ := lookupUserIdentity(targetUser); u != "" {
+			if n, ok := parseID(u); ok {
+				uid = n
+			}
+		}
+		if n, ok := parseID(targetGID); ok {
+			gid = n
+		}
+		if uid >= 0 {
+			if failed := chownTree(settings.stateDir, uid, gid); len(failed) > 0 {
+				fmt.Fprintf(os.Stderr, "提示：%d 个路径未能改为用户 %s 所有（服务可能读不到）：%s\n",
+					len(failed), targetUser, strings.Join(firstN(failed, 5), "、"))
+			}
+			if copiedBin != "" && !chownPath(copiedBin, uid, gid) {
+				fmt.Fprintf(os.Stderr, "提示：未能把 %s 改为用户 %s 所有\n", copiedBin, targetUser)
+			}
+		}
 	}
 
 	code := 0
@@ -208,9 +257,19 @@ func installCommand(args []string) int {
 		args := []string{"service", "install", "--bin-dir", binDir,
 			"--host", settings.host, "--port", strconv.Itoa(settings.port),
 			"--state-dir", settings.stateDir}
+		if elevatedIntoUser {
+			// 关键：sudo 下 os.UserHomeDir() 是 /root，不能让 service install 用
+			// 默认的 --user / --working-dir，必须显式点名真实用户与家目录。
+			args = append(args, "--user", targetUser, "--working-dir", targetHome)
+		}
 		args = append(args, tlsArgs...)
 		code = runSelf(args)
 	case settings.start:
+		if elevatedIntoUser {
+			fmt.Fprintln(os.Stderr, "提示：将以 root 身份后台启动管理端，dsh 也会以 root 运行，"+
+				"可能遇到权限问题。建议改用开机自启（service，会以你的身份运行），"+
+				"或用普通用户 sudo 安装但不选启动、之后再以普通用户 start。")
+		}
 		// 转交 start：登记、日志、停机端点都在那边。
 		// 口令相关的选项一律不带——账号上一步已经建好了。
 		args := []string{"start",
@@ -281,12 +340,17 @@ type installSettings struct {
 // 交互式终端里一问一答，端口项带占用检测，被占用时让用户选择换端口 / 停掉
 // 占用者；答完汇总确认，不满意可以重答一轮。
 // 脚本（管道 / CI）里一个都不问，全部用选项给出的值，并做一次端口预检。
-func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host string, port int, stateDir, admin, display string, interactive, needPassword bool, existing []portal.User, superID int64, randomGiven, stdinGiven bool, tlsIn tlsInputs) (installSettings, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
+func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host string, port int, stateDir, admin, display string, interactive, needPassword bool, existing []portal.User, superID int64, randomGiven, stdinGiven bool, tlsIn tlsInputs, defaultStateDir string) (installSettings, error) {
+	// 默认状态目录由调用方算好（sudo 下要指向真实用户的家目录，而不是 /root）。
+	// 传空则退回当前家目录，保证既有的直接调用（含测试）行为不变。
+	defaultState := strings.TrimSpace(defaultStateDir)
+	if defaultState == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = ""
+		}
+		defaultState = filepath.Join(home, ".dsh-gate")
 	}
-	defaultState := filepath.Join(home, ".dsh-gate")
 
 	s := installSettings{
 		admin:        strings.TrimSpace(admin),
@@ -297,6 +361,10 @@ func collectInstallSettings(fs *flag.FlagSet, visited map[string]bool, host stri
 		needPassword: needPassword,
 		existing:     existing,
 		superID:      superID,
+	}
+	// 用户没显式指定状态目录时，脚本模式也要落到默认值（跟随归属用户家目录）。
+	if s.stateDir == "" {
+		s.stateDir = defaultState
 	}
 	for _, name := range []string{"start", "service"} {
 		if f := fs.Lookup(name); f != nil {

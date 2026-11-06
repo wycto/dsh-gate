@@ -196,6 +196,7 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   <div class="tb-right">
     <span class="who">{{.SignedInAs}}</span>
     <nav class="tools">
+    {{if .ShowServices}}<a class="plain" href="/services">{{.ServicesLabel}}</a>{{end}}
     {{if .IsAdmin}}<a class="plain" href="/admin">{{.AdminLabel}}</a>{{end}}
     <a class="plain" href="{{.OtherLangHref}}">{{.OtherLang}}</a>
     <a class="plain" href="{{.SignOutHref}}">{{.SignOut}}</a>
@@ -205,7 +206,9 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
 <div class="window-body">
 
 <main>
-  {{if .Instances}}
+  {{if .NoAccess}}
+  <p class="empty">{{.NoAccess}}</p>
+  {{else if .Instances}}
   <div class="cards">
     {{range .Instances}}
     <div class="card">

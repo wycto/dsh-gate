@@ -33,7 +33,13 @@ import (
 // v2 给 instances 加了 install_mode / install_dir / config_dir / listen_host /
 // start_mode 五列（管理台创建实例时选安装方式与启动方式）。
 // v3 加 dsh_version（装哪个版本或 dist-tag，空 = 跟随 latest）。
-const SchemaVersion = 3
+// v4 加 services / service_grants 两张表（内网服务代理，见 docs/service-proxy.md）；
+// 不动 instances 的任何语义。
+// v5 给 users 加 allow_instances / allow_services 两个类别开关（用户级权限，
+// 见 docs/portal.md「用户级类别权限」）：默认都开，老用户行为与升级前一致。
+// v6 加 settings 键值表，存门户「实例 / 服务」两个全局总开关（键缺省视为开，
+// 老库行为不变）：总开关关掉某类时所有人（含管理员）的该类入口都隐藏。
+const SchemaVersion = 6
 
 // ErrNotFound 表示按 id / 名字查不到记录。
 var ErrNotFound = errors.New("记录不存在")
@@ -116,6 +122,56 @@ ALTER TABLE instances ADD COLUMN start_mode   TEXT NOT NULL DEFAULT 'auto';
 // 逐字一致（老实例不会因为有这一列就突然钉在某个版本上）。
 const schemaV3 = `
 ALTER TABLE instances ADD COLUMN dsh_version TEXT NOT NULL DEFAULT '';
+`
+
+// schemaV4 新增「内网服务」两张表（docs/service-proxy.md）。只建新表、不动老表：
+// 升级对实例与用户零影响。route_mode / listen_port / health_interval_s /
+// test_account 是给 P1 预留的列，P0 只走 path 模式、只按需探活。
+const schemaV4 = `
+CREATE TABLE services (
+  id              TEXT    PRIMARY KEY,
+  name            TEXT    NOT NULL UNIQUE,
+  upstream        TEXT    NOT NULL,
+  host_header     TEXT    NOT NULL DEFAULT 'upstream',
+  insecure_tls    INTEGER NOT NULL DEFAULT 0,
+  route_mode      TEXT    NOT NULL DEFAULT 'path',
+  listen_port     INTEGER NOT NULL DEFAULT 0,
+  note            TEXT    NOT NULL DEFAULT '',
+  test_account    TEXT    NOT NULL DEFAULT '',
+  health_interval_s INTEGER NOT NULL DEFAULT 0,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  source          TEXT    NOT NULL DEFAULT 'manual',
+  created_at      TEXT    NOT NULL,
+  updated_at      TEXT    NOT NULL
+);
+
+CREATE TABLE service_grants (
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  service_id TEXT    NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, service_id)
+);
+CREATE INDEX service_grants_service_idx ON service_grants(service_id);
+`
+
+// schemaV5 给 users 加「实例 / 服务」两个类别开关（用户级权限控制）。
+// 默认 1（开）：老用户升级后两类入口照旧可见，行为与升级前逐字一致；
+// 开关只约束普通用户，管理员恒见全部（判定在 HTTP 层，不在库里）。
+// 与 v2/v3 同一手法：NOT NULL DEFAULT 的 ADD COLUMN 是常数时间，不重写数据。
+const schemaV5 = `
+ALTER TABLE users ADD COLUMN allow_instances INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN allow_services  INTEGER NOT NULL DEFAULT 1;
+`
+
+// schemaV6 新增 settings 键值表，存门户级全局总开关（instances_enabled /
+// services_enabled）。只建新表、不动老表：键不存在时 PortalFeatures 视为「开」，
+// 老库升级后两类入口照旧可见，行为与升级前逐字一致。
+const schemaV6 = `
+CREATE TABLE settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `
 
 // Open 打开（必要时创建并迁移）管理端数据库。
@@ -233,6 +289,21 @@ func (s *Store) migrate() error {
 	if version < 3 {
 		if _, err := tx.Exec(schemaV3); err != nil {
 			return fmt.Errorf("升级管理端数据库到结构版本 3 失败: %w", err)
+		}
+	}
+	if version < 4 {
+		if _, err := tx.Exec(schemaV4); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 4 失败: %w", err)
+		}
+	}
+	if version < 5 {
+		if _, err := tx.Exec(schemaV5); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 5 失败: %w", err)
+		}
+	}
+	if version < 6 {
+		if _, err := tx.Exec(schemaV6); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 6 失败: %w", err)
 		}
 	}
 	// PRAGMA 不接受参数占位符；版本号来自本包常量，不涉及外部输入。

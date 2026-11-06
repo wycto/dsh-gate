@@ -55,11 +55,18 @@ type User struct {
 	Name        string
 	DisplayName string
 	// Hash 是自描述的口令哈希串，永不外传（页面与 API 都不包含它）。
-	Hash      string
-	Role      Role
-	Disabled  bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Hash     string
+	Role     Role
+	Disabled bool
+	// AllowInstances / AllowServices 是「实例 / 服务」两类入口的类别开关
+	// （用户级权限，见 docs/portal.md「用户级类别权限」）：关掉则该类入口
+	// （导航、页面、挂载）对这个用户整体消失。只约束普通用户——管理员恒见
+	// 全部，开关对 admin 不生效（判定在 HTTP 层）。具体能进哪几个仍由 grants
+	// 决定：开关开着但没授权时列表为空，而不是入口消失。
+	AllowInstances bool
+	AllowServices  bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // IsAdmin 是否是管理员。
@@ -173,8 +180,8 @@ func (s *Store) CreateUserWithDisplay(name, password string, role Role, display 
 	}
 	now := nowText()
 	res, err := s.db.Exec(
-		`INSERT INTO users (name, display_name, hash, role, disabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO users (name, display_name, hash, role, disabled, allow_instances, allow_services, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 0, 1, 1, ?, ?)`,
 		name, display, hash, string(role), now, now,
 	)
 	if err != nil {
@@ -187,17 +194,19 @@ func (s *Store) CreateUserWithDisplay(name, password string, role Role, display 
 	return s.UserByID(id)
 }
 
-const userColumns = `id, name, display_name, hash, role, disabled, created_at, updated_at`
+const userColumns = `id, name, display_name, hash, role, disabled, allow_instances, allow_services, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	var (
-		u        User
-		role     string
-		disabled int64
-		created  string
-		updated  string
+		u              User
+		role           string
+		disabled       int64
+		allowInstances int64
+		allowServices  int64
+		created        string
+		updated        string
 	)
-	if err := row.Scan(&u.ID, &u.Name, &u.DisplayName, &u.Hash, &role, &disabled, &created, &updated); err != nil {
+	if err := row.Scan(&u.ID, &u.Name, &u.DisplayName, &u.Hash, &role, &disabled, &allowInstances, &allowServices, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -205,6 +214,8 @@ func scanUser(row interface{ Scan(...any) error }) (*User, error) {
 	}
 	u.Role = Role(role)
 	u.Disabled = intToBool(disabled)
+	u.AllowInstances = intToBool(allowInstances)
+	u.AllowServices = intToBool(allowServices)
 	u.CreatedAt = parseTime(created)
 	u.UpdatedAt = parseTime(updated)
 	return &u, nil
@@ -317,6 +328,15 @@ func (s *Store) SetDisabled(name string, disabled bool) error {
 		}
 	}
 	return s.updateUser(name, `UPDATE users SET disabled = ?, updated_at = ? WHERE name = ?`, boolToInt(disabled), nowText(), name)
+}
+
+// SetUserPerms 设置用户的「实例 / 服务」类别开关（用户级权限控制）。
+// 两个开关只约束普通用户：管理员恒见全部，HTTP 层对 admin 不查开关，
+// 因此这里允许把 admin 的开关写成任意值而不影响其行为（页面上 admin 行
+// 的勾选显示为选中且禁用，不会走到这条写入）。
+func (s *Store) SetUserPerms(name string, allowInstances, allowServices bool) error {
+	return s.updateUser(name, `UPDATE users SET allow_instances = ?, allow_services = ?, updated_at = ? WHERE name = ?`,
+		boolToInt(allowInstances), boolToInt(allowServices), nowText(), name)
 }
 
 // RenameUser 改登录名（审计里的人名会跟着变，历史记录不做回填）。

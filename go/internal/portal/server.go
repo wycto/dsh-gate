@@ -63,6 +63,9 @@ type ServerOptions struct {
 	// LocalToken 是本机控制 API 的共享密钥（CLI 从 <状态目录>/portal.token 读）。
 	// 为空表示不开放本机控制入口——单测与嵌入式使用时不需要它。
 	LocalToken string
+	// CookiePort 是管理端监听端口：CSRF Cookie 名带 _p<端口> 后缀，与 Gate 的
+	// 会话 Cookie 同一口径（同机多网关隔离，见 cookie.ScopeName）。0 不加后缀。
+	CookiePort int
 }
 
 // Server 是管理端的 HTTP 处理器。
@@ -78,6 +81,14 @@ type Server struct {
 
 	mu     sync.Mutex
 	mounts map[string]*mountproxy.Proxy
+
+	// 服务挂载与探活缓存（servicemount.go）：与实例的 mounts 分开，
+	// 惰性初始化，零值 Server（单测直接构造）也能用。
+	svcMu     sync.Mutex
+	svcMounts map[string]*mountproxy.Proxy
+	svcProbes map[string]ServiceProbe
+	// csrfCookie 是带端口后缀的 CSRF Cookie 名（同机多网关隔离）。
+	csrfCookie string
 }
 
 // NewServer 构造管理端 HTTP 层。模板解析失败会在这里就报错（而不是第一次访问才炸）。
@@ -113,7 +124,8 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		// 管理端首页同一份规则）。别的来源、别的脚本仍然是 default-src 'none'。
 		liveCSP: "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src '" + liveHash +
 			"'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-		mounts: map[string]*mountproxy.Proxy{},
+		mounts:     map[string]*mountproxy.Proxy{},
+		csrfCookie: cookie.ScopeName(CSRFCookie, opts.CookiePort),
 	}, nil
 }
 
@@ -126,6 +138,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(AdminActionPath, s.handleAdminJSON)
 	mux.HandleFunc(AdminLivePath, s.handleAdminJSON)
 	mux.HandleFunc(MountPrefix, s.handleMount)
+	mux.HandleFunc(ServiceMountPrefix, s.handleServiceMount)
+	mux.HandleFunc(ServicesPagePath, s.handleServicesPage)
 	mux.HandleFunc(AdminPath, s.handleAdmin)
 	mux.HandleFunc(AdminPath+"/", s.handleAdmin)
 	mux.HandleFunc("/", s.handleIndex)
@@ -150,7 +164,7 @@ func (s *Server) AdminEnabled() bool { return s.adminPage != nil }
 // 会话有效但账号已被删除 / 停用时（管理员在别处操作的结果），就地作废会话并
 // 送去登录页：否则这个会话会一直「有效」却什么都做不了。
 func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (*User, bool) {
-	token := cookie.Get(r, cookie.Session)
+	token := cookie.Get(r, s.opts.Gate.SessionCookieName())
 	name, ok := s.opts.Gate.Sessions().Subject(token)
 	if !ok {
 		s.sendToLogin(w, r)
@@ -167,12 +181,81 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (*User, boo
 
 // sendToLogin 送去登录页，并清掉已经无效的会话 Cookie（避免来回跳）。
 func (s *Server) sendToLogin(w http.ResponseWriter, r *http.Request) {
-	cookie.Clear(w, cookie.Session, cookie.Options{Secure: requestIsHTTPS(r)})
+	cookie.Clear(w, s.opts.Gate.SessionCookieName(), cookie.Options{Secure: requestIsHTTPS(r)})
 	target := auth.PathLogin
 	if next := r.URL.RequestURI(); next != "" && next != "/" {
 		target += "?next=" + url.QueryEscape(next)
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// portalInstanceCard 是首页「我的实例」里的一张卡片。
+type portalInstanceCard struct {
+	ID   string
+	Name string
+	Href string
+}
+
+// portalPageData 是门户页骨架（portal.html）的渲染数据：「我的实例」与
+// 「没有任何访问权限」页共用同一份模板，后者只是 NoAccess 非空、卡片为空。
+type portalPageData struct {
+	Lang          string
+	Title         string
+	SignedInAs    string
+	AdminLabel    string
+	SignOut       string
+	Enter         string
+	NoInstances   string
+	ServicesLabel string
+	FooterPrefix  string
+	Version       string
+	Host          string
+	IsAdmin       bool
+	Instances     []portalInstanceCard
+	OtherLang     string
+	OtherLangHref string
+	SignOutHref   string
+	// NoAccess 非空时渲染「没有任何访问权限」提示而不是实例卡片：
+	// 两类开关都关掉的普通用户落到这里（见 handleIndex / handleServicesPage）。
+	NoAccess string
+	// ShowInstances / ShowServices 决定页头导航链接是否出现：类别开关关掉的
+	// 那一类入口整体消失（管理员恒 true）。模板据此条件渲染互达链接。
+	ShowInstances bool
+	ShowServices  bool
+	// 配色与布局（与登录页 / 管理台同一套模型：明暗三态 + 方案四选一 + 布局三选一）。
+	Theme       string
+	ThemeLabel  string
+	Themes      []auth.ThemeOption
+	Scheme      string
+	SchemeLabel string
+	Schemes     []auth.ThemeOption
+	Style       string
+	StyleLabel  string
+	Styles      []auth.ThemeOption
+}
+
+// globalFeatures 读门户两个全局总开关；读失败按开启处理（退化为仅每用户开关，
+// 不因一次瞬时 DB 错误把所有人锁死）。settings 表迁移后恒存在，错误属异常。
+func (s *Server) globalFeatures() (instances, services bool) {
+	inst, svc, err := s.opts.Store.PortalFeatures()
+	if err != nil {
+		s.log.Error("读取门户总开关失败，按开启处理", "err", err)
+		return true, true
+	}
+	return inst, svc
+}
+
+// canSeeInstances / canSeeServices 是可见性的唯一定义点：
+// 最终可见性 = 全局总开关 AND（管理员 OR 用户类别开关）。全局关掉某类时
+// 所有人（含管理员）都看不到该类；管理员不受每用户开关约束，但受全局约束。
+// 导航、页面重定向、挂载拦截、me API 与管理台分页都走这里，口径不会漂移。
+func (s *Server) canSeeInstances(u *User) bool {
+	inst, _ := s.globalFeatures()
+	return inst && (u.IsAdmin() || u.AllowInstances)
+}
+func (s *Server) canSeeServices(u *User) bool {
+	_, svc := s.globalFeatures()
+	return svc && (u.IsAdmin() || u.AllowServices)
 }
 
 // handleIndex 渲染「我的实例」。
@@ -194,6 +277,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// 类别开关：实例入口整体关掉时，首页不再是他的落地页——还有服务入口就
+	// 送过去，两类都没有就给无权限页（管理员不受开关约束，canSee* 恒真）。
+	if !s.canSeeInstances(user) {
+		if s.canSeeServices(user) {
+			http.Redirect(w, r, ServicesPagePath, http.StatusSeeOther)
+			return
+		}
+		s.renderNoAccess(w, r, lang, user)
+		return
+	}
 
 	instances, err := s.opts.Store.VisibleInstances(user)
 	if err != nil {
@@ -202,43 +295,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type card struct {
-		ID   string
-		Name string
-		Href string
-	}
-	cards := make([]card, 0, len(instances))
+	cards := make([]portalInstanceCard, 0, len(instances))
 	for _, inst := range instances {
-		cards = append(cards, card{ID: inst.ID, Name: inst.Name, Href: MountPrefix + inst.ID + "/"})
+		cards = append(cards, portalInstanceCard{ID: inst.ID, Name: inst.Name, Href: MountPrefix + inst.ID + "/"})
 	}
 
-	data := struct {
-		Lang          string
-		Title         string
-		SignedInAs    string
-		AdminLabel    string
-		SignOut       string
-		Enter         string
-		NoInstances   string
-		FooterPrefix  string
-		Version       string
-		Host          string
-		IsAdmin       bool
-		Instances     []card
-		OtherLang     string
-		OtherLangHref string
-		SignOutHref   string
-		// 配色与布局（与登录页 / 管理台同一套模型：明暗三态 + 方案四选一 + 布局三选一）。
-		Theme       string
-		ThemeLabel  string
-		Themes      []auth.ThemeOption
-		Scheme      string
-		SchemeLabel string
-		Schemes     []auth.ThemeOption
-		Style       string
-		StyleLabel  string
-		Styles      []auth.ThemeOption
-	}{
+	data := portalPageData{
 		Lang:          string(lang),
 		Title:         i18n.T(lang, i18n.KeyPortalTitle),
 		SignedInAs:    i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(user)),
@@ -246,11 +308,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		SignOut:       i18n.T(lang, i18n.KeyPortalSignOut),
 		Enter:         i18n.T(lang, i18n.KeyPortalEnter),
 		NoInstances:   i18n.T(lang, i18n.KeyPortalNoInstances),
+		ServicesLabel: i18n.T(lang, i18n.KeyPortalServices),
 		FooterPrefix:  i18n.T(lang, i18n.KeyLoginFooterPrefix),
 		Version:       s.version(),
 		Host:          displayHost(r, lang),
 		IsAdmin:       user.IsAdmin() && s.AdminEnabled(),
 		Instances:     cards,
+		ShowInstances: s.canSeeInstances(user),
+		ShowServices:  s.canSeeServices(user),
 		OtherLang:     otherLangLabel(lang),
 		OtherLangHref: "?lang=" + string(otherLang(lang)),
 		SignOutHref:   auth.PathLogout,
@@ -283,6 +348,57 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(body.String()))
 }
 
+// renderNoAccess 渲染「没有任何访问权限」页：两类开关都关掉的普通用户
+// 访问首页或服务页时落到这里。复用门户页骨架（同一套配色 / 语言 / 安全头），
+// 只是卡片为空、NoAccess 提示非空、两类导航链接都不出现。管理员恒见全部，
+// 不会走到这里。
+func (s *Server) renderNoAccess(w http.ResponseWriter, r *http.Request, lang i18n.Lang, user *User) {
+	theme := s.opts.Gate.Theme(w, r)
+	scheme := s.opts.Gate.Scheme(w, r)
+	style := s.opts.Gate.Style(w, r)
+	data := portalPageData{
+		Lang:          string(lang),
+		Title:         i18n.T(lang, i18n.KeyPortalNoAccessTitle),
+		SignedInAs:    i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(user)),
+		AdminLabel:    i18n.T(lang, i18n.KeyPortalAdmin),
+		SignOut:       i18n.T(lang, i18n.KeyPortalSignOut),
+		Enter:         i18n.T(lang, i18n.KeyPortalEnter),
+		NoInstances:   i18n.T(lang, i18n.KeyPortalNoInstances),
+		ServicesLabel: i18n.T(lang, i18n.KeyPortalServices),
+		FooterPrefix:  i18n.T(lang, i18n.KeyLoginFooterPrefix),
+		Version:       s.version(),
+		Host:          displayHost(r, lang),
+		NoAccess:      i18n.T(lang, i18n.KeyPortalNoAccess),
+		OtherLang:     otherLangLabel(lang),
+		OtherLangHref: "?lang=" + string(otherLang(lang)),
+		SignOutHref:   auth.PathLogout,
+		Theme:         string(theme),
+		ThemeLabel:    i18n.T(lang, i18n.KeyThemeLabel),
+		Themes:        auth.ThemeOptions(r, theme, lang),
+		Scheme:        string(scheme),
+		SchemeLabel:   i18n.T(lang, i18n.KeySchemeLabel),
+		Schemes:       auth.SchemeOptions(r, scheme, lang),
+		Style:         string(style),
+		StyleLabel:    i18n.T(lang, i18n.KeyStyleLabel),
+		Styles:        auth.StyleOptions(r, style, lang),
+	}
+	body := &strings.Builder{}
+	if err := s.page.Execute(body, data); err != nil {
+		s.log.Error("渲染无权限页失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "same-origin")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(body.String()))
+}
+
 // handleAPIMe 返回当前用户与可见实例（页面脚本与外部工具都用它）。
 func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
 	lang := s.lang(w, r)
@@ -296,11 +412,19 @@ func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	instances, err := s.opts.Store.VisibleInstances(user)
-	if err != nil {
-		s.log.Error("读取可见实例失败", "user", user.Name, "err", err)
-		writeJSONError(w, http.StatusInternalServerError, i18n.T(lang, i18n.KeyPortalErrInternal))
-		return
+	// 类别开关关掉的那一类：列表直接给空（入口整体消失的口径与页面一致），
+	// 管理员恒见全部。布尔字段让外部工具不用猜空列表是「没授权」还是「没开关」。
+	allowInstances := s.canSeeInstances(user)
+	allowServices := s.canSeeServices(user)
+	var instances []Instance
+	if allowInstances {
+		var err error
+		instances, err = s.opts.Store.VisibleInstances(user)
+		if err != nil {
+			s.log.Error("读取可见实例失败", "user", user.Name, "err", err)
+			writeJSONError(w, http.StatusInternalServerError, i18n.T(lang, i18n.KeyPortalErrInternal))
+			return
+		}
 	}
 	type instanceJSON struct {
 		ID   string `json:"id"`
@@ -311,6 +435,25 @@ func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
 	for _, inst := range instances {
 		out = append(out, instanceJSON{ID: inst.ID, Name: inst.Name, URL: MountPrefix + inst.ID + "/"})
 	}
+	var services []Service
+	if allowServices {
+		var err error
+		services, err = s.opts.Store.VisibleServices(user)
+		if err != nil {
+			s.log.Error("读取可见服务失败", "user", user.Name, "err", err)
+			writeJSONError(w, http.StatusInternalServerError, i18n.T(lang, i18n.KeyPortalErrInternal))
+			return
+		}
+	}
+	type serviceJSON struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	svcOut := make([]serviceJSON, 0, len(services))
+	for _, svc := range services {
+		svcOut = append(svcOut, serviceJSON{ID: svc.ID, Name: svc.Name, URL: ServiceMountPrefix + svc.ID + "/"})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"user": map[string]any{
@@ -318,7 +461,10 @@ func (s *Server) handleAPIMe(w http.ResponseWriter, r *http.Request) {
 			"displayName": displayNameOf(user),
 			"role":        string(user.Role),
 		},
-		"instances": out,
+		"instances":      out,
+		"services":       svcOut,
+		"allowInstances": allowInstances,
+		"allowServices":  allowServices,
 	})
 }
 
@@ -335,6 +481,17 @@ func (s *Server) handleMount(w http.ResponseWriter, r *http.Request) {
 
 	id := instanceIDFromPath(r.URL.Path)
 	if id == "" {
+		s.notFoundPage(w, lang)
+		return
+	}
+	// 类别开关关掉的普通用户：即便手里有 grant 也进不来，与未授权同形 404，
+	// 不让挂载路径变成「实例是否存在」的探测器（管理员不受开关约束）。
+	if !s.canSeeInstances(user) {
+		s.log.Info("拒绝对实例的访问（类别权限）", "user", user.Name, "instance", id, "ip", cookie.ClientIP(r))
+		_ = s.opts.Store.Audit(AuditEntry{
+			Actor: user.Name, Action: "instance.denied", Target: id,
+			Detail: "未授权或实例不存在", IP: cookie.ClientIP(r), OK: false,
+		})
 		s.notFoundPage(w, lang)
 		return
 	}

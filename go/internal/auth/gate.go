@@ -67,6 +67,10 @@ type Options struct {
 	LockoutBase time.Duration
 	// CookieSecure 表示网关跑在 HTTPS 上，会话 Cookie 需要 Secure 标记。
 	CookieSecure bool
+	// CookiePort 是网关的监听端口：会话与交接标记 Cookie 名会带上 _p<端口>
+	// 后缀，避免同机多网关互踩（浏览器 Cookie 不分端口，见 cookie.ScopeName）。
+	// 0 表示不加后缀（测试与嵌入式用法）。
+	CookiePort int
 	// Title / Subtitle 是登录页上显示的文字。
 	Title    string
 	Subtitle string
@@ -87,6 +91,9 @@ type Gate struct {
 	limiter  *Limiter
 	tmpl     *template.Template
 	log      *slog.Logger
+	// 会话与交接标记的 Cookie 名按监听端口加后缀（同机多网关隔离）。
+	sessionCookie string
+	handoffCookie string
 }
 
 // New 构造鉴权网关。
@@ -105,13 +112,18 @@ func New(opts Options) (*Gate, error) {
 		return nil, err
 	}
 	return &Gate{
-		opts:     opts,
-		sessions: NewSessions(opts.SessionTTL),
-		limiter:  NewLimiter(opts.MaxFails, opts.LockoutBase),
-		tmpl:     tmpl,
-		log:      opts.Logger,
+		opts:          opts,
+		sessions:      NewSessions(opts.SessionTTL),
+		limiter:       NewLimiter(opts.MaxFails, opts.LockoutBase),
+		tmpl:          tmpl,
+		log:           opts.Logger,
+		sessionCookie: cookie.ScopeName(cookie.Session, opts.CookiePort),
+		handoffCookie: cookie.ScopeName(cookie.Handoff, opts.CookiePort),
 	}, nil
 }
+
+// SessionCookieName 返回本网关的会话 Cookie 名（管理端读/清会话要用同一个名字）。
+func (g *Gate) SessionCookieName() string { return g.sessionCookie }
 
 // Sessions 暴露会话表，便于登出时精确作废。
 func (g *Gate) Sessions() *Sessions { return g.sessions }
@@ -147,7 +159,7 @@ func (g *Gate) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if g.sessions.Valid(cookie.Get(r, cookie.Session)) {
+		if g.sessions.Valid(cookie.Get(r, g.sessionCookie)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -208,7 +220,7 @@ func (g *Gate) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	g.limiter.Reset(ip)
 	// 会话绑定登录名：管理端要按「是谁」查实例授权（grants）。
 	token := g.sessions.Create(name)
-	cookie.Set(w, cookie.Session, token, cookie.Options{
+	cookie.Set(w, g.sessionCookie, token, cookie.Options{
 		Secure: g.opts.CookieSecure,
 		MaxAge: g.opts.SessionTTL,
 	})
@@ -219,11 +231,11 @@ func (g *Gate) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 // handleLogout 作废会话并回到登录页。
 func (g *Gate) handleLogout(w http.ResponseWriter, r *http.Request) {
-	g.sessions.Destroy(cookie.Get(r, cookie.Session))
-	cookie.Clear(w, cookie.Session, cookie.Options{Secure: g.opts.CookieSecure})
+	g.sessions.Destroy(cookie.Get(r, g.sessionCookie))
+	cookie.Clear(w, g.sessionCookie, cookie.Options{Secure: g.opts.CookieSecure})
 	// 连同 dsh 的令牌交接标记一起清掉：登出后再进来必须重新走一次交接，
 	// 否则会出现「网关认为已交接、dsh 那边却没有会话」的错位状态。
-	cookie.Clear(w, cookie.Handoff, cookie.Options{Secure: g.opts.CookieSecure})
+	cookie.Clear(w, g.handoffCookie, cookie.Options{Secure: g.opts.CookieSecure})
 	http.Redirect(w, r, PathLogin, http.StatusSeeOther)
 }
 

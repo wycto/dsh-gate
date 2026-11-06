@@ -71,6 +71,8 @@ type Options struct {
 	Store *portal.Store
 	// TLS 表示管理端这一侧是 HTTPS（决定上游 Cookie 是否补 Secure）。
 	TLS bool
+	// CookiePort 是管理端监听端口（交接标记 Cookie 名按端口隔离，见 cookie.ScopeName）。
+	CookiePort int
 	// PublicURL / TrustedHosts 原样传给每个实例的 dsh。
 	PublicURL    string
 	TrustedHosts []string
@@ -180,6 +182,7 @@ func defaultLaunch(inst portal.Instance, opts LaunchOptions) (Supervisor, error)
 		StartTimeout: startTimeout,
 		StopTimeout:  10 * time.Second,
 		TokenFile:    tokenFileOf(inst),
+		OutputFile:   outputFileOf(inst),
 		Logger:       opts.Logger,
 	}), nil
 }
@@ -195,6 +198,20 @@ func tokenFileOf(inst portal.Instance) string {
 		return ""
 	}
 	return filepath.Join(home, ".dsh-gate-token")
+}
+
+// outputFileOf 返回实例的输出落盘位置：与令牌文件同侧，放在实例自己的 DSH_HOME 里。
+//
+// 为什么落盘而不是接管道：管道读端活在网关进程里，网关被杀（升级、崩溃、launchd
+// 重启）后读端关闭，dsh（Node）下一次写日志收到 EPIPE 即死——「网关重启接管成功，
+// 几分钟后实例不可用」正是这么来的。写文件后子进程的生死不再系于网关，下一个网关
+// 起来还能接管仍活着的它。放实例目录的理由与令牌相同：实例换目录或删掉时它跟着走。
+func outputFileOf(inst portal.Instance) string {
+	home := strings.TrimSpace(homeOf(inst))
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".dsh-gate-output.log")
 }
 
 // homeOf 返回实例该用的 DSH_HOME。
@@ -373,6 +390,7 @@ func (rt *Runtime) ensureInstance(inst portal.Instance) (*instance, error) {
 		Ready:        sup.Ready,
 		Status:       sup.LastError,
 		CookieSecure: rt.opts.TLS,
+		CookiePort:   rt.opts.CookiePort,
 		Logger:       rt.log,
 	})
 	if err != nil {

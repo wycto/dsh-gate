@@ -245,7 +245,7 @@ func dshRemove(args []string) int {
 	name := inst.Name
 	id := inst.ID
 
-	if _, _, apiErr := localEndpoint(stateDir); apiErr == nil {
+	if _, _, _, apiErr := localEndpoint(stateDir); apiErr == nil {
 		store.Close()
 		if _, err := localPost(stateDir, localRequest{
 			Action: "remove", Instance: id, PurgeHome: *purge, PurgeInstall: *purgeInstall,

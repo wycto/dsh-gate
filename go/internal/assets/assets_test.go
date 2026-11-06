@@ -77,7 +77,7 @@ func TestAdminHasMobileCardLayout(t *testing.T) {
 // 少了它，手机上浏览器会按桌面宽度（约 980px）渲染再整体缩小，
 // 媒体查询根本不会触发，前面那套手机端布局等于没写。
 func TestPagesDeclareMobileViewport(t *testing.T) {
-	for _, name := range []string{LoginFile, PortalFile, AdminFile} {
+	for _, name := range []string{LoginFile, PortalFile, ServicesFile, AdminFile} {
 		source, err := files.ReadFile(name)
 		if err != nil {
 			t.Fatalf("读取 %s 失败: %v", name, err)
@@ -95,7 +95,7 @@ func TestPagesDeclareMobileViewport(t *testing.T) {
 // 永远有值），并在自己的 <style> 里注入共享令牌块 {{template "dsh-theme"}}。
 // 页脚两枚胶囊（明暗 / 方案）的链接也是结构约定，少一段就少一种选择。
 func TestPagesSupportThemeSwitch(t *testing.T) {
-	for _, name := range []string{LoginFile, PortalFile, AdminFile} {
+	for _, name := range []string{LoginFile, PortalFile, ServicesFile, AdminFile} {
 		source, err := files.ReadFile(name)
 		if err != nil {
 			t.Fatalf("读取 %s 失败: %v", name, err)
@@ -272,7 +272,7 @@ func TestAdminTabShell(t *testing.T) {
 	}
 	body := string(source)
 
-	for _, tab := range []string{"users", "grants", "instances", "env", "audit"} {
+	for _, tab := range []string{"users", "grants", "instances", "services", "env", "audit"} {
 		panel := `id="panel-` + tab + `"`
 		if !strings.Contains(body, panel) {
 			t.Errorf("管理台缺少分页面板 %s", panel)

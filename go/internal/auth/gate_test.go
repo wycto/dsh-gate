@@ -38,6 +38,48 @@ func newGateForTest(t *testing.T) (*Gate, *bool) {
 	return gate, &triggered
 }
 
+// TestSessionCookieScopedByPort 验证会话 Cookie 名按监听端口隔离：
+// 同机两个网关（不同端口）登录后各自种不同名的 Cookie，互不覆盖。
+// 这修的是「HTTPS 正式网关种了 Secure 的 dsh_gate_sid，HTTP 测试网关再种
+// 同名不带 Secure 的被浏览器静默拒绝，表现成登录成功却立刻弹回登录页」。
+func TestSessionCookieScopedByPort(t *testing.T) {
+	login := func(port int) *http.Cookie {
+		gate, err := New(Options{Users: newTestUsers(t), CookiePort: port})
+		if err != nil {
+			t.Fatalf("构造网关失败: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, PathLogin,
+			strings.NewReader("username=alice&password=password-1234"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "127.0.0.1:5000"
+		rec := httptest.NewRecorder()
+		gate.Handler(http.NotFoundHandler()).ServeHTTP(rec, req)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("port=%d 登录应 303，实际 %d", port, rec.Code)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if strings.HasPrefix(c.Name, "dsh_gate_sid") {
+				return c
+			}
+		}
+		t.Fatalf("port=%d 登录后应种会话 Cookie", port)
+		return nil
+	}
+	a := login(12020)
+	b := login(12021)
+	if a.Name != "dsh_gate_sid_p12020" || b.Name != "dsh_gate_sid_p12021" {
+		t.Fatalf("会话 Cookie 名应带端口后缀，实际 %q / %q", a.Name, b.Name)
+	}
+	if a.Name == b.Name {
+		t.Error("不同端口的会话 Cookie 名必须不同，否则同机多网关互踩")
+	}
+	// port=0 保持原名（嵌入式/测试用法）。
+	plain := login(0)
+	if plain.Name != "dsh_gate_sid" {
+		t.Errorf("port=0 应保持原名，实际 %q", plain.Name)
+	}
+}
+
 // TestShutdownEndpointOnlyFromLoopback 验证停机端点只认回环来源。
 //
 // 否则局域网里的任何设备只要知道端口，就能把别人的网关关掉——而这台机器上的

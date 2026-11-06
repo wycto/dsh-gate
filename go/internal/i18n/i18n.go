@@ -210,6 +210,12 @@ const (
 	KeyPortalSignOut     = "portal.signOut"
 	KeyPortalEnter       = "portal.enter"
 	KeyPortalNoInstances = "portal.noInstances"
+	// KeyPortalServices 是首页页头「我的服务」导航链接的文案。
+	KeyPortalServices = "portal.services"
+	// KeyPortalNoAccess / KeyPortalNoAccessTitle：两类开关都关掉的普通用户
+	// 的落地页（用户级类别权限，见 docs/portal.md）。
+	KeyPortalNoAccess      = "portal.noAccess"
+	KeyPortalNoAccessTitle = "portal.noAccess.title"
 
 	// 管理端错误提示
 	KeyPortalErrNotFound    = "portal.err.notFound"
@@ -243,20 +249,30 @@ const (
 	KeyAdminColDetail    = "admin.col.detail"
 
 	// 管理台：按钮与占位符
-	KeyAdminBtnApply       = "admin.btn.apply"
-	KeyAdminBtnPassword    = "admin.btn.password"
-	KeyAdminBtnEnable      = "admin.btn.enable"
-	KeyAdminBtnDisable     = "admin.btn.disable"
-	KeyAdminBtnDelete      = "admin.btn.delete"
-	KeyAdminBtnCreateUser  = "admin.btn.createUser"
-	KeyAdminBtnSaveGrants  = "admin.btn.saveGrants"
-	KeyAdminPhPassword     = "admin.ph.password"
-	KeyAdminPhNewPassword  = "admin.ph.newPassword"
-	KeyAdminStatusEnabled  = "admin.status.enabled"
-	KeyAdminStatusDisabled = "admin.status.disabled"
-	KeyAdminNoUsers        = "admin.noUsers"
-	KeyAdminNoInstances    = "admin.noInstances"
-	KeyAdminNoAudit        = "admin.noAudit"
+	KeyAdminBtnApply      = "admin.btn.apply"
+	KeyAdminBtnPassword   = "admin.btn.password"
+	KeyAdminBtnEnable     = "admin.btn.enable"
+	KeyAdminBtnDisable    = "admin.btn.disable"
+	KeyAdminBtnDelete     = "admin.btn.delete"
+	KeyAdminBtnCreateUser = "admin.btn.createUser"
+	KeyAdminBtnSaveGrants = "admin.btn.saveGrants"
+	// 用户级类别权限（用户页每行的「实例 / 服务」勾选）。
+	KeyAdminUserPerms          = "admin.user.perms"
+	KeyAdminUserPermInstances  = "admin.user.permInstances"
+	KeyAdminUserPermServices   = "admin.user.permServices"
+	KeyAdminBtnSavePerms       = "admin.btn.savePerms"
+	KeyAdminUserPermsAdminNote = "admin.user.permsAdminNote"
+	// 门户全局总开关（权限控制页顶部）：关掉某类则所有人（含管理员）该类入口隐藏。
+	KeyAdminFeaturesTitle   = "admin.features.title"
+	KeyAdminFeaturesHint    = "admin.features.hint"
+	KeyAdminBtnSaveFeatures = "admin.btn.saveFeatures"
+	KeyAdminPhPassword      = "admin.ph.password"
+	KeyAdminPhNewPassword   = "admin.ph.newPassword"
+	KeyAdminStatusEnabled   = "admin.status.enabled"
+	KeyAdminStatusDisabled  = "admin.status.disabled"
+	KeyAdminNoUsers         = "admin.noUsers"
+	KeyAdminNoInstances     = "admin.noInstances"
+	KeyAdminNoAudit         = "admin.noAudit"
 
 	// 管理台：实例安装（环境检测 + 四种安装方式 + 进度）
 	KeyAdminInstCreate             = "admin.inst.create"
@@ -366,6 +382,8 @@ const (
 	KeyAuditUserRole         = "audit.user.role"
 	KeyAuditUserToggle       = "audit.user.toggle"
 	KeyAuditUserDelete       = "audit.user.delete"
+	KeyAuditUserPerms        = "audit.user.perms"
+	KeyAuditFeaturesSave     = "audit.features.save"
 	KeyAuditGrantsSave       = "audit.grants.save"
 	KeyAuditInstanceCreate   = "audit.instance.create"
 	KeyAuditInstanceInstall  = "audit.instance.install"
@@ -386,6 +404,8 @@ const (
 	KeyAdminMsgEnabled         = "admin.msg.enabled"
 	KeyAdminMsgDisabled        = "admin.msg.disabled"
 	KeyAdminMsgUserDeleted     = "admin.msg.userDeleted"
+	KeyAdminMsgUserPerms       = "admin.msg.userPerms"
+	KeyAdminMsgFeaturesSaved   = "admin.msg.featuresSaved"
 	KeyAdminMsgGrantsSaved     = "admin.msg.grantsSaved"
 
 	// 管理台：错误
@@ -510,6 +530,59 @@ const (
 	KeyDurationMinutesSeconds = "duration.minutesSeconds"
 	KeyDurationHours          = "duration.hours"
 	KeyDurationHoursMinutes   = "duration.hoursMinutes"
+
+	// ---- 内网服务代理（docs/service-proxy.md）：用户侧「我的服务」页 ----
+	KeySvcPageTitle     = "svc.page.title"
+	KeySvcPageEmpty     = "svc.page.empty"
+	KeySvcBackInstances = "svc.back.instances"
+
+	// 管理台「服务」分页：登记 / 编辑表单与卡片
+	KeyAdminServices         = "admin.services"
+	KeyAdminSvcTip           = "admin.services.hint"
+	KeyAdminNoServices       = "admin.noServices"
+	KeyAdminSvcCreate        = "admin.svc.create"
+	KeyAdminSvcCreateHint    = "admin.svc.createHint"
+	KeyAdminSvcName          = "admin.svc.name"
+	KeyAdminSvcUpstream      = "admin.svc.upstream"
+	KeyAdminSvcUpstreamPh    = "admin.svc.upstreamPlaceholder"
+	KeyAdminSvcUpstreamHelp  = "admin.svc.upstreamHelp"
+	KeyAdminSvcHostHeader    = "admin.svc.hostHeader"
+	KeyAdminSvcHostUpstream  = "admin.svc.hostUpstream"
+	KeyAdminSvcHostGateway   = "admin.svc.hostGateway"
+	KeyAdminSvcInsecureTLS   = "admin.svc.insecureTLS"
+	KeyAdminSvcInsecureBadge = "admin.svc.insecureBadge"
+	KeyAdminSvcNote          = "admin.svc.note"
+	KeyAdminSvcMount         = "admin.svc.mount"
+	KeyAdminSvcBtnProbe      = "admin.svc.btnProbe"
+	KeyAdminSvcBtnSave       = "admin.svc.btnSave"
+	KeyAdminSvcCardRemove    = "admin.svc.cardRemove"
+	KeyAdminSvcRemoveHint    = "admin.svc.removeHint"
+	KeyAdminSvcGrants        = "admin.svc.grants"
+	KeyAdminSvcGrantsTip     = "admin.svc.grantsTip"
+	// 探活徽标三态：未探测 / 可达 / 不可达
+	KeyAdminSvcProbeNone = "admin.svc.probeNone"
+	KeyAdminSvcProbeOK   = "admin.svc.probeOK"
+	KeyAdminSvcProbeFail = "admin.svc.probeFail"
+
+	// 服务动作的 PRG 回跳提示
+	KeyAdminMsgSvcCreated     = "admin.msg.svcCreated"
+	KeyAdminMsgSvcUpdated     = "admin.msg.svcUpdated"
+	KeyAdminMsgSvcRemoved     = "admin.msg.svcRemoved"
+	KeyAdminMsgSvcEnabled     = "admin.msg.svcEnabled"
+	KeyAdminMsgSvcDisabled    = "admin.msg.svcDisabled"
+	KeyAdminMsgSvcProbed      = "admin.msg.svcProbed"
+	KeyAdminMsgSvcGrantsSaved = "admin.msg.svcGrantsSaved"
+
+	// 服务审计：动作与说明（与实例审计同一口径）
+	KeyAuditServiceEnter      = "audit.service.enter"
+	KeyAuditServiceDenied     = "audit.service.denied"
+	KeyAuditServiceCreate     = "audit.service.create"
+	KeyAuditServiceUpdate     = "audit.service.update"
+	KeyAuditServiceRemove     = "audit.service.remove"
+	KeyAuditServiceToggle     = "audit.service.toggle"
+	KeyAuditServiceProbe      = "audit.service.probe"
+	KeyAuditServiceGrantsSave = "audit.serviceGrants.save"
+	KeyAuditDetailServiceID   = "audit.detail.serviceID"
 )
 
 // allKeys 列出全部键。新增文案时**两处**都要加：常量 + 这里。
@@ -557,6 +630,9 @@ var allKeys = []string{
 	KeyPortalSignOut,
 	KeyPortalEnter,
 	KeyPortalNoInstances,
+	KeyPortalNoAccess,
+	KeyPortalNoAccessTitle,
+	KeyPortalServices,
 	KeyPortalErrNotFound,
 	KeyPortalErrUnavailable,
 	KeyPortalErrInternal,
@@ -587,6 +663,14 @@ var allKeys = []string{
 	KeyAdminBtnDelete,
 	KeyAdminBtnCreateUser,
 	KeyAdminBtnSaveGrants,
+	KeyAdminUserPerms,
+	KeyAdminUserPermInstances,
+	KeyAdminUserPermServices,
+	KeyAdminBtnSavePerms,
+	KeyAdminUserPermsAdminNote,
+	KeyAdminFeaturesTitle,
+	KeyAdminFeaturesHint,
+	KeyAdminBtnSaveFeatures,
 	KeyAdminPhPassword,
 	KeyAdminPhNewPassword,
 	KeyAdminStatusEnabled,
@@ -690,6 +774,8 @@ var allKeys = []string{
 	KeyAuditUserRole,
 	KeyAuditUserToggle,
 	KeyAuditUserDelete,
+	KeyAuditUserPerms,
+	KeyAuditFeaturesSave,
 	KeyAuditGrantsSave,
 	KeyAuditInstanceCreate,
 	KeyAuditInstanceInstall,
@@ -708,6 +794,8 @@ var allKeys = []string{
 	KeyAdminMsgEnabled,
 	KeyAdminMsgDisabled,
 	KeyAdminMsgUserDeleted,
+	KeyAdminMsgUserPerms,
+	KeyAdminMsgFeaturesSaved,
 	KeyAdminMsgGrantsSaved,
 	KeyAdminErrForbidden,
 	KeyAdminErrCSRF,
@@ -804,6 +892,50 @@ var allKeys = []string{
 	KeyDurationMinutesSeconds,
 	KeyDurationHours,
 	KeyDurationHoursMinutes,
+	KeySvcPageTitle,
+	KeySvcPageEmpty,
+	KeySvcBackInstances,
+	KeyAdminServices,
+	KeyAdminSvcTip,
+	KeyAdminNoServices,
+	KeyAdminSvcCreate,
+	KeyAdminSvcCreateHint,
+	KeyAdminSvcName,
+	KeyAdminSvcUpstream,
+	KeyAdminSvcUpstreamPh,
+	KeyAdminSvcUpstreamHelp,
+	KeyAdminSvcHostHeader,
+	KeyAdminSvcHostUpstream,
+	KeyAdminSvcHostGateway,
+	KeyAdminSvcInsecureTLS,
+	KeyAdminSvcInsecureBadge,
+	KeyAdminSvcNote,
+	KeyAdminSvcMount,
+	KeyAdminSvcBtnProbe,
+	KeyAdminSvcBtnSave,
+	KeyAdminSvcCardRemove,
+	KeyAdminSvcRemoveHint,
+	KeyAdminSvcGrants,
+	KeyAdminSvcGrantsTip,
+	KeyAdminSvcProbeNone,
+	KeyAdminSvcProbeOK,
+	KeyAdminSvcProbeFail,
+	KeyAdminMsgSvcCreated,
+	KeyAdminMsgSvcUpdated,
+	KeyAdminMsgSvcRemoved,
+	KeyAdminMsgSvcEnabled,
+	KeyAdminMsgSvcDisabled,
+	KeyAdminMsgSvcProbed,
+	KeyAdminMsgSvcGrantsSaved,
+	KeyAuditServiceEnter,
+	KeyAuditServiceDenied,
+	KeyAuditServiceCreate,
+	KeyAuditServiceUpdate,
+	KeyAuditServiceRemove,
+	KeyAuditServiceToggle,
+	KeyAuditServiceProbe,
+	KeyAuditServiceGrantsSave,
+	KeyAuditDetailServiceID,
 }
 
 // LoginStrings 是登录页模板需要的结构（模板里用 {{.L.X}} 取值）。

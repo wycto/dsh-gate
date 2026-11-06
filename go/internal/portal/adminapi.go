@@ -48,6 +48,31 @@ type adminStateJSON struct {
 	Grants    map[string][]string `json:"grants"`
 	Counts    map[string]int      `json:"counts"`
 	User      map[string]string   `json:"user"`
+	// Services 与 ServiceGrants 是内网服务代理的全量快照（与实例分开两段，
+	// 页面与脚本都不把两类对象混排）。ServiceGrants 是用户名 → 服务 id 列表。
+	Services      []adminServiceJSON  `json:"services"`
+	ServiceGrants map[string][]string `json:"serviceGrants"`
+	// Features 是门户全局总开关（实例 / 服务）。关掉某类时所有人（含管理员）
+	// 的该类入口隐藏；与 users 段的每用户开关是两层（见 docs/portal.md）。
+	Features adminFeaturesJSON `json:"features"`
+}
+
+// adminFeaturesJSON 是状态端点里的门户全局总开关。
+type adminFeaturesJSON struct {
+	Instances bool `json:"instances"`
+	Services  bool `json:"services"`
+}
+
+// adminServiceJSON 是状态端点里的一条服务登记。
+type adminServiceJSON struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Upstream    string `json:"upstream"`
+	HostHeader  string `json:"hostHeader"`
+	InsecureTLS bool   `json:"insecureTLS"`
+	Note        string `json:"note"`
+	Enabled     bool   `json:"enabled"`
+	URL         string `json:"url"`
 }
 
 type adminUserJSON struct {
@@ -56,6 +81,10 @@ type adminUserJSON struct {
 	Role        string   `json:"role"`
 	Disabled    bool     `json:"disabled"`
 	Instances   []string `json:"instances"`
+	// AllowInstances / AllowServices 是用户级类别开关（见 docs/portal.md
+	// 「用户级类别权限」）：管理员恒为 true（开关对其不生效）。
+	AllowInstances bool `json:"allowInstances"`
+	AllowServices  bool `json:"allowServices"`
 }
 
 type adminInstanceJSON struct {
@@ -90,6 +119,9 @@ type adminLiveJSON struct {
 	OK        bool                    `json:"ok"`
 	Stats     adminLiveStatsJSON      `json:"stats"`
 	Instances []adminLiveInstanceJSON `json:"instances"`
+	// Services 是服务卡片上会变的那几格（探活徽标）。只读缓存、不真探活，
+	// 文案已翻好——与实例段同一口径。
+	Services []adminLiveServiceJSON `json:"services"`
 	// Env 只在请求带 ?env=1 时给出：检测环境要真去 exec 一遍，不能每 3 秒跑。
 	Env   *adminLiveEnvJSON  `json:"env,omitempty"`
 	Audit adminLiveAuditJSON `json:"audit"`
@@ -127,6 +159,17 @@ type adminLiveInstanceJSON struct {
 	RunError string `json:"runError"`
 	// Command 是当前记录的启动命令（安装完成后会变），展示用的兜底文案已拼好。
 	Command string `json:"command"`
+}
+
+// adminLiveServiceJSON 是一张服务卡片上会变的那几格：探活徽标。
+// Probed 为 false 表示还没有缓存（页面显示「未探测」），Reachable 只在
+// Probed 为 true 时有意义。
+type adminLiveServiceJSON struct {
+	ID          string `json:"id"`
+	Probed      bool   `json:"probed"`
+	Reachable   bool   `json:"reachable"`
+	StatusText  string `json:"statusText"`
+	StatusClass string `json:"statusClass"`
 }
 
 // adminLiveEnvJSON 是运行环境页的实时状态（只在该页可见时请求）。
@@ -210,20 +253,33 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, actor 
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	services, err := s.opts.Store.ListServices()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	audit, err := s.opts.Store.RecentAudit(auditLimit)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	featInstances, featServices, err := s.opts.Store.PortalFeatures()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	out := adminStateJSON{
-		OK:        true,
-		Grants:    map[string][]string{},
-		Counts:    map[string]int{"users": len(users), "instances": len(instances)},
-		User:      map[string]string{"name": actor.Name, "role": string(actor.Role)},
-		Users:     make([]adminUserJSON, 0, len(users)),
-		Instances: make([]adminInstanceJSON, 0, len(instances)),
-		Audit:     make([]adminAuditJSON, 0, len(audit)),
+		OK:            true,
+		Features:      adminFeaturesJSON{Instances: featInstances, Services: featServices},
+		Grants:        map[string][]string{},
+		ServiceGrants: map[string][]string{},
+		Counts:        map[string]int{"users": len(users), "instances": len(instances), "services": len(services)},
+		User:          map[string]string{"name": actor.Name, "role": string(actor.Role)},
+		Users:         make([]adminUserJSON, 0, len(users)),
+		Instances:     make([]adminInstanceJSON, 0, len(instances)),
+		Audit:         make([]adminAuditJSON, 0, len(audit)),
+		Services:      make([]adminServiceJSON, 0, len(services)),
 	}
 	for _, u := range users {
 		visible, err := s.opts.Store.InstancesForUser(u.ID)
@@ -236,9 +292,21 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, actor 
 			ids = append(ids, inst.ID)
 		}
 		out.Grants[u.Name] = ids
+		visibleServices, err := s.opts.Store.ServicesForUser(u.ID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		svcIDs := make([]string, 0, len(visibleServices))
+		for _, svc := range visibleServices {
+			svcIDs = append(svcIDs, svc.ID)
+		}
+		out.ServiceGrants[u.Name] = svcIDs
 		out.Users = append(out.Users, adminUserJSON{
 			Name: u.Name, DisplayName: u.DisplayName, Role: string(u.Role),
 			Disabled: u.Disabled, Instances: ids,
+			AllowInstances: s.canSeeInstances(&u),
+			AllowServices:  s.canSeeServices(&u),
 		})
 	}
 	for _, inst := range instances {
@@ -251,6 +319,13 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, actor 
 			// 只代表这台实例被装过、有命令可用。
 			Installed: strings.TrimSpace(inst.DshCmd) != "",
 			Enabled:   inst.Enabled, URL: MountPrefix + inst.ID + "/",
+		})
+	}
+	for _, svc := range services {
+		out.Services = append(out.Services, adminServiceJSON{
+			ID: svc.ID, Name: svc.Name, Upstream: svc.Upstream,
+			HostHeader: svc.HostHeader, InsecureTLS: svc.InsecureTLS,
+			Note: svc.Note, Enabled: svc.Enabled, URL: ServiceMountPrefix + svc.ID + "/",
 		})
 	}
 	for _, e := range audit {
@@ -278,6 +353,11 @@ func (s *Server) handleAdminLive(w http.ResponseWriter, r *http.Request, lang i1
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	services, err := s.opts.Store.ListServices()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	users, err := s.opts.Store.ListUsers()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -293,6 +373,7 @@ func (s *Server) handleAdminLive(w http.ResponseWriter, r *http.Request, lang i1
 	out := adminLiveJSON{
 		OK:        true,
 		Instances: make([]adminLiveInstanceJSON, 0, len(instances)),
+		Services:  make([]adminLiveServiceJSON, 0, len(services)),
 	}
 	for _, inst := range instances {
 		live := s.instanceLiveState(r.Context(), lang, inst)
@@ -312,6 +393,15 @@ func (s *Server) handleAdminLive(w http.ResponseWriter, r *http.Request, lang i1
 			InstalledLabel: live.InstalledLabel, NotReadyLabel: live.NotReadyLabel,
 			JobPhase: live.JobPhase, JobNote: live.JobNote,
 			RunError: live.RunError, Command: live.Command,
+		})
+	}
+	// 服务探活徽标：只读缓存，与页面渲染共用 serviceProbeLabel 一份口径。
+	for _, svc := range services {
+		probe, probed := s.cachedServiceProbe(svc.ID)
+		text, class := serviceProbeLabel(lang, probe, probed)
+		out.Services = append(out.Services, adminLiveServiceJSON{
+			ID: svc.ID, Probed: probed, Reachable: probed && probe.Reachable,
+			StatusText: text, StatusClass: class,
 		})
 	}
 	out.Stats = adminLiveStatsJSON{

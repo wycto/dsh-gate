@@ -37,6 +37,13 @@ type localRequest struct {
 	// PurgeHome / PurgeInstall 只在 remove 时有意义：删数据目录 / 安装目录。
 	PurgeHome    bool `json:"purgeHome"`
 	PurgeInstall bool `json:"purgeInstall"`
+	// Service 是服务名或不透明 id（svc.* 动作用；svc.add 时是展示名）。
+	Service string `json:"service"`
+	// Upstream / HostHeader / Note / InsecureTLS 只在 svc.add 时有意义。
+	Upstream    string `json:"upstream"`
+	HostHeader  string `json:"hostHeader"`
+	Note        string `json:"note"`
+	InsecureTLS bool   `json:"insecureTLS"`
 }
 
 // localInstance 是本机 API 返回的一个实例（定义 + 运行状态）。
@@ -56,11 +63,24 @@ type localInstance struct {
 	URL        string `json:"url"`
 }
 
+// localService 是本机 API 返回的一个内网服务（定义 + 挂载地址）。
+type localService struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Upstream string `json:"upstream"`
+	Enabled  bool   `json:"enabled"`
+	URL      string `json:"url"`
+	Note     string `json:"note"`
+}
+
 // localResponse 是本机 API 的统一响应体。
 type localResponse struct {
 	OK        bool            `json:"ok"`
 	Error     string          `json:"error,omitempty"`
 	Instances []localInstance `json:"instances,omitempty"`
+	Services  []localService  `json:"services,omitempty"`
+	// Probe 只在 svc.probe 时返回（按需探活的结果，同时写入探活缓存）。
+	Probe *ServiceProbe `json:"probe,omitempty"`
 }
 
 // handleLocalAPI 处理 /_portal/api/local。
@@ -101,6 +121,16 @@ func (s *Server) handleLocalAPI(w http.ResponseWriter, r *http.Request) {
 		s.localLifecycle(w, req)
 	case "remove":
 		s.localRemove(w, req)
+	case "svc.list":
+		s.localSvcList(w)
+	case "svc.add":
+		s.localSvcAdd(w, req)
+	case "svc.remove":
+		s.localSvcRemove(w, req)
+	case "svc.enable", "svc.disable":
+		s.localSvcToggle(w, req)
+	case "svc.probe":
+		s.localSvcProbe(w, r, req)
 	default:
 		s.writeLocalError(w, http.StatusBadRequest, fmt.Sprintf("不认识的 action %q", req.Action))
 	}
@@ -197,6 +227,125 @@ func (s *Server) resolveLocalInstance(ref string) (*Instance, error) {
 		return nil, fmt.Errorf("找不到实例 %q", ref)
 	}
 	return inst, nil
+}
+
+// ---- 内网服务（svc.* 动作，见 docs/service-proxy.md 第 5/11 节）----
+//
+// 与实例动作同一口径：写动作经 Store.Audit 留痕（actor 固定 local-cli——
+// 本机 API 只接受回环 + portal.token，操作者就是本机管理员）；
+// 改动服务后一律 invalidateServiceMount，运行中的门户下一次请求按新定义重建。
+
+// localSvcList 返回全部登记的服务。
+func (s *Server) localSvcList(w http.ResponseWriter) {
+	services, err := s.opts.Store.ListServices()
+	if err != nil {
+		s.writeLocalError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeLocalJSON(w, http.StatusOK, localResponse{OK: true, Services: localServicesOf(services)})
+}
+
+// localServicesOf 把库里的服务转成本机 API 的返回形状。
+func localServicesOf(services []Service) []localService {
+	out := make([]localService, 0, len(services))
+	for _, svc := range services {
+		out = append(out, localService{
+			ID: svc.ID, Name: svc.Name, Upstream: svc.Upstream,
+			Enabled: svc.Enabled, URL: ServiceMountPrefix + svc.ID + "/", Note: svc.Note,
+		})
+	}
+	return out
+}
+
+// localSvcAdd 登记一条服务：Name（Service 字段）与 Upstream 必填。
+func (s *Server) localSvcAdd(w http.ResponseWriter, req localRequest) {
+	if strings.TrimSpace(req.Service) == "" || strings.TrimSpace(req.Upstream) == "" {
+		s.writeLocalError(w, http.StatusBadRequest, "svc.add 需要 service（服务名）与 upstream（上游地址）")
+		return
+	}
+	svc := &Service{
+		Name: strings.TrimSpace(req.Service), Upstream: req.Upstream,
+		HostHeader: req.HostHeader, Note: req.Note, InsecureTLS: req.InsecureTLS,
+	}
+	if err := s.opts.Store.CreateService(svc); err != nil {
+		s.writeLocalError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_ = s.opts.Store.Audit(AuditEntry{
+		Actor: "local-cli", Action: "admin.service.create", Target: svc.Name,
+		Detail: svc.Upstream, IP: "127.0.0.1", OK: true,
+	})
+	s.writeLocalJSON(w, http.StatusOK, localResponse{OK: true, Services: localServicesOf([]Service{*svc})})
+}
+
+// localSvcRemove 删除服务登记（服务进程不归门户管，删的只是登记与授权）。
+func (s *Server) localSvcRemove(w http.ResponseWriter, req localRequest) {
+	svc, err := s.resolveLocalService(req.Service)
+	if err != nil {
+		s.writeLocalError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if err := s.opts.Store.DeleteService(svc.ID); err != nil {
+		s.writeLocalError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.invalidateServiceMount(svc.ID)
+	_ = s.opts.Store.Audit(AuditEntry{
+		Actor: "local-cli", Action: "admin.service.delete", Target: svc.Name,
+		Detail: svc.ID, IP: "127.0.0.1", OK: true,
+	})
+	s.writeLocalJSON(w, http.StatusOK, localResponse{OK: true})
+}
+
+// localSvcToggle 执行 svc.enable / svc.disable。
+func (s *Server) localSvcToggle(w http.ResponseWriter, req localRequest) {
+	svc, err := s.resolveLocalService(req.Service)
+	if err != nil {
+		s.writeLocalError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	svc.Enabled = req.Action == "svc.enable"
+	if err := s.opts.Store.UpdateService(*svc); err != nil {
+		s.writeLocalError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.invalidateServiceMount(svc.ID)
+	_ = s.opts.Store.Audit(AuditEntry{
+		Actor: "local-cli", Action: "admin.service." + strings.TrimPrefix(req.Action, "svc."),
+		Target: svc.Name, Detail: svc.ID, IP: "127.0.0.1", OK: true,
+	})
+	s.writeLocalJSON(w, http.StatusOK, localResponse{OK: true, Services: localServicesOf([]Service{*svc})})
+}
+
+// localSvcProbe 按需探活：真打一次上游，结果写入探活缓存并随响应返回。
+func (s *Server) localSvcProbe(w http.ResponseWriter, r *http.Request, req localRequest) {
+	svc, err := s.resolveLocalService(req.Service)
+	if err != nil {
+		s.writeLocalError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	probe := s.probeService(r.Context(), *svc)
+	s.storeServiceProbe(svc.ID, probe)
+	s.writeLocalJSON(w, http.StatusOK, localResponse{OK: true, Probe: &probe})
+}
+
+// resolveLocalService 按 id 或名字取服务。id 优先：它不会与展示名撞车
+// （与 resolveLocalInstance 同一写法）。
+func (s *Server) resolveLocalService(ref string) (*Service, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, errors.New("缺少服务名或 id")
+	}
+	if ServiceIDPattern.MatchString(ref) {
+		if svc, err := s.opts.Store.ServiceByID(ref); err == nil {
+			return svc, nil
+		}
+	}
+	svc, err := s.opts.Store.ServiceByName(ref)
+	if err != nil {
+		return nil, fmt.Errorf("找不到服务 %q", ref)
+	}
+	return svc, nil
 }
 
 // writeLocalJSON 写一个 JSON 响应。

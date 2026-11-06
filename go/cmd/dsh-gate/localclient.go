@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,30 +53,39 @@ type localRequest struct {
 	PurgeInstall bool   `json:"purgeInstall,omitempty"`
 }
 
-// localEndpoint 找到管理端的回环端口与令牌。
+// localEndpoint 找到管理端的回环端口、协议与令牌。
 //
 // 管理端没在运行（或令牌文件缺失，例如升级前启动的旧进程）时返回可读错误：
 // 调用方据此决定「提示先启动管理端」还是「退回直接改库」。
-func localEndpoint(stateDir string) (int, string, error) {
+//
+// scheme 必须跟着登记记录走，不能写死 http：管理端一旦启用 TLS（--tls-cert），
+// 回环端口上就只有 HTTPS，明文请求会被直接回 400「Client sent an HTTP request
+// to an HTTPS server」，于是所有走本机接口的子命令（dsh list / start / stop /
+// rm）都成了「管理端未运行」的假故障。TLS 是常用配置，这不是边角情况。
+func localEndpoint(stateDir string) (port int, token, scheme string, err error) {
 	record, ok := portalRecord(resolveRunDir(""))
 	if !ok {
-		return 0, "", fmt.Errorf("管理端没有在运行：先 dsh-gate start")
+		return 0, "", "", fmt.Errorf("管理端没有在运行：先 dsh-gate start")
 	}
 	raw, err := os.ReadFile(filepath.Join(stateDir, localTokenName))
 	if err != nil {
-		return 0, "", fmt.Errorf("读不到本机控制令牌（%s）：管理端可能还在用旧版本，重启一次 dsh-gate 即可", filepath.Join(stateDir, localTokenName))
+		return 0, "", "", fmt.Errorf("读不到本机控制令牌（%s）：管理端可能还在用旧版本，重启一次 dsh-gate 即可", filepath.Join(stateDir, localTokenName))
 	}
-	token := strings.TrimSpace(string(raw))
+	token = strings.TrimSpace(string(raw))
 	if token == "" {
-		return 0, "", fmt.Errorf("本机控制令牌是空的：重启一次管理端")
+		return 0, "", "", fmt.Errorf("本机控制令牌是空的：重启一次管理端")
 	}
-	return record.Port, token, nil
+	scheme = "http"
+	if record.TLS {
+		scheme = "https"
+	}
+	return record.Port, token, scheme, nil
 }
 
 // localPost 发一个本机控制请求并解析响应。
 func localPost(stateDir string, req localRequest) (localResponse, error) {
 	var out localResponse
-	port, token, err := localEndpoint(stateDir)
+	port, token, scheme, err := localEndpoint(stateDir)
 	if err != nil {
 		return out, err
 	}
@@ -83,8 +93,14 @@ func localPost(stateDir string, req localRequest) (localResponse, error) {
 	if err != nil {
 		return out, err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + localAPIPath
+	// 管理端用自签证书时，回环上的 HTTPS 同样是不被系统信任的：这里只与本机
+	// 自己的管理端通信，跳过校验即可（与浏览器里点「继续访问」是同一种取舍）。
+	transport := &http.Transport{}
+	if scheme == "https" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	url := scheme + "://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + localAPIPath
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return out, err
