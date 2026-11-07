@@ -272,7 +272,7 @@ func TestAdminTabShell(t *testing.T) {
 	}
 	body := string(source)
 
-	for _, tab := range []string{"users", "grants", "instances", "services", "env", "audit"} {
+	for _, tab := range []string{"users", "grants", "instances", "services", "env", "audit", "api", "site"} {
 		panel := `id="panel-` + tab + `"`
 		if !strings.Contains(body, panel) {
 			t.Errorf("管理台缺少分页面板 %s", panel)

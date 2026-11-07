@@ -32,12 +32,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wycto/dsh-gate/internal/auth"
 	"github.com/wycto/dsh-gate/internal/cookie"
 	// 只取版本名的校验：钉住哪个 dsh 版本是安装引擎（dshproc）的语义，管理台
 	// 不该自己抄一份正则，否则两边的接受字符集会各自漂移——而这份校验挡的是
 	// 「版本名里塞参数」这种注入。
+	"github.com/wycto/dsh-gate/internal/discover"
 	"github.com/wycto/dsh-gate/internal/dshproc"
 	"github.com/wycto/dsh-gate/internal/i18n"
 )
@@ -58,7 +60,7 @@ const auditLimit = 50
 //
 // ID 同时是 URL 里的 ?tab= 值与模板里面板 id 的一段，两处必须一致：
 // panel-<ID>（模板）与 adminTabs（这里）由测试锁死。
-var adminTabs = []string{"instances", "services", "users", "grants", "env", "audit"}
+var adminTabs = []string{"instances", "services", "users", "grants", "env", "audit", "api", "site"}
 
 // adminTabDefault 是默认分页：管理台最常用的操作是管实例，打开就该停在实例列表。
 const adminTabDefault = "instances"
@@ -126,6 +128,10 @@ func adminTabForAction(action string, hasInstaller, showInstances, showServices 
 		tab = "grants"
 	case strings.HasPrefix(action, "service."):
 		tab = "services"
+	case strings.HasPrefix(action, "apikey."), action == "api.toggle":
+		tab = "api"
+	case action == "site.save":
+		tab = "site"
 	case action == "env.install":
 		tab = "env"
 	}
@@ -510,13 +516,13 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	featI, featS := s.globalFeatures()
 	if !user.IsAdmin() {
 		s.log.Warn("非管理员访问管理台", "user", user.Name, "ip", cookie.ClientIP(r))
-		s.renderAdmin(w, r, lang, user, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrForbidden), "", adminTabFromRequest(r, s.opts.Installer != nil, featI, featS))
+		s.renderAdmin(w, r, lang, user, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrForbidden), "", adminTabFromRequest(r, s.opts.Installer != nil, featI, featS), "", nil)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		s.renderAdmin(w, r, lang, user, http.StatusOK, "", s.flashMessage(lang, r), adminTabFromRequest(r, s.opts.Installer != nil, featI, featS))
+		s.renderAdmin(w, r, lang, user, http.StatusOK, "", s.flashMessage(lang, r), adminTabFromRequest(r, s.opts.Installer != nil, featI, featS), "", nil)
 	case http.MethodPost:
 		s.handleAdminPost(w, r, lang, user)
 	default:
@@ -594,11 +600,54 @@ type adminAction struct {
 	// InsecureTLS 是「跳过上游证书校验」勾选框：与 DeleteHome 同一口径，
 	// 表单里出现且非空就是勾上了。
 	InsecureTLS bool `json:"insecureTLS,omitempty"`
+	// ---- 受管服务（P1：managed 进程，见 docs/service-api.md 第 7 节）----
+	// Managed 为真表示该服务由网关按 StartCmd 拉起/守护，可启停重启。
+	Managed bool `json:"managed,omitempty"`
+	// StartCmd 是启动命令（受管时必填）；StopCmd 可选（空=按进程组终止）。
+	StartCmd string
+	StopCmd  string
+	// WorkDir 是子进程工作目录（空=网关当前目录）；Env 每行 KEY=VALUE。
+	WorkDir string
+	Env     string
+	// AutoStart 为真表示网关启动时自动拉起该受管服务。
+	AutoStart bool `json:"autoStart,omitempty"`
+	// HealthPath 是就绪探测路径（空=探测上游端口）。
+	HealthPath string
 	// Services 是 serviceGrants.save 勾选的服务 id 集合（表单键 service）。
 	Services []string
 	// AuditDetail 是动作成功后要写进审计的补充说明（目前只有 service.probe
 	// 的探活结果用）。它是**输出**字段：不接受请求方伪造。
 	AuditDetail string `json:"-"`
+
+	// ---- 对外 API（api.toggle / apikey.*，见 api.go）----
+	// ExternalAPIEnabled 是「开启对外 API」勾选框（表单里出现且非空即勾上）。
+	ExternalAPIEnabled bool `json:"externalAPIEnabled,omitempty"`
+	// KeyName 是新建密钥的名称，也用于停用/启用/删除时的展示名。
+	KeyName string
+	// KeyID 是已有密钥的不透明 id（停用/启用/删除按它定位）。
+	KeyID string
+	// KeyScopes 是创建密钥时勾选的权限范围（表单键 key_scope）。
+	KeyScopes []string
+	// KeyIPAllowlist 是创建密钥时的 IP 白名单（逗号分隔，空=不限）。
+	KeyIPAllowlist string
+	// NewKeySecret 是 apikey.create 成功后的明文密钥。**输出**字段，只用于
+	// 一次性横幅展示；不来自请求，也不进审计（审计只记名称）。
+	NewKeySecret string `json:"-"`
+
+	// ---- 站点（site.save）----
+	// SiteTitle 是自定义站点名称（空 = 恢复默认标题）。显示在浏览器标签页与
+	// 登录页上，用于区分多台设备上的网关。
+	SiteTitle string
+
+	// ---- 服务发现（service.discover.local/scan/add）----
+	// Mode/CIDR/Ports 是扫描参数；DiscSelect 是勾选的候选（值 "host:port"）。
+	Mode       string
+	CIDR       string
+	Ports      string
+	DiscSelect []string
+	// Discovered / DiscMessage 是 scan/local 的输出（渲染候选表用），不接受请求伪造。
+	Discovered  []adminDiscoverRow `json:"-"`
+	DiscMessage string             `json:"-"`
 }
 
 // adminActionFromForm 从表单里取出动作参数。
@@ -641,6 +690,14 @@ func adminActionFromForm(r *http.Request) adminAction {
 	act.HostHeader = strings.TrimSpace(r.FormValue("host_header"))
 	act.Note = strings.TrimSpace(r.FormValue("note"))
 	act.InsecureTLS = strings.TrimSpace(r.FormValue("insecure_tls")) != ""
+	// 受管服务：复选框同「出现且非空即勾上」口径；命令/目录/环境取文本。
+	act.Managed = strings.TrimSpace(r.FormValue("managed")) != ""
+	act.StartCmd = strings.TrimSpace(r.FormValue("start_cmd"))
+	act.StopCmd = strings.TrimSpace(r.FormValue("stop_cmd"))
+	act.WorkDir = strings.TrimSpace(r.FormValue("work_dir"))
+	act.Env = strings.TrimSpace(r.FormValue("env"))
+	act.AutoStart = strings.TrimSpace(r.FormValue("auto_start")) != ""
+	act.HealthPath = strings.TrimSpace(r.FormValue("health_path"))
 	act.Services = r.Form["service"]
 	// 用户级类别权限：仅 user.perms 表单与带 perms_present 标记的 grants.save
 	// 矩阵表单才解析勾选（出现且非空就是勾上了）。旧的 grants.save 表单不带
@@ -654,13 +711,26 @@ func adminActionFromForm(r *http.Request) adminAction {
 	// 门户全局总开关：复选框与 DeleteHome 同一口径（出现且非空就是勾上了）。
 	act.FeaturesInstances = strings.TrimSpace(r.FormValue("features_instances")) != ""
 	act.FeaturesServices = strings.TrimSpace(r.FormValue("features_services")) != ""
+	// 对外 API：开关是复选框；密钥创建/操作字段。
+	act.ExternalAPIEnabled = strings.TrimSpace(r.FormValue("external_api_enabled")) != ""
+	act.KeyName = strings.TrimSpace(r.FormValue("key_name"))
+	act.KeyID = strings.TrimSpace(r.FormValue("key_id"))
+	act.KeyScopes = r.Form["key_scope"]
+	act.KeyIPAllowlist = strings.TrimSpace(r.FormValue("key_ip_allowlist"))
+	// 站点名称：文本框，空串合法（恢复默认标题）。
+	act.SiteTitle = strings.TrimSpace(r.FormValue("site_title"))
+	// 服务发现：扫描参数与勾选的候选。
+	act.Mode = strings.TrimSpace(r.FormValue("mode"))
+	act.CIDR = strings.TrimSpace(r.FormValue("cidr"))
+	act.Ports = strings.TrimSpace(r.FormValue("ports"))
+	act.DiscSelect = r.Form["disc"]
 	return act
 }
 
 // handleAdminPost 校验 CSRF 后执行一个管理动作；成功走 303 回跳（PRG）。
 func (s *Server) handleAdminPost(w http.ResponseWriter, r *http.Request, lang i18n.Lang, actor *User) {
 	if err := r.ParseForm(); err != nil {
-		s.renderAdmin(w, r, lang, actor, http.StatusBadRequest, i18n.T(lang, i18n.KeyAdminErrBadRequest), "", adminTabDefault)
+		s.renderAdmin(w, r, lang, actor, http.StatusBadRequest, i18n.T(lang, i18n.KeyAdminErrBadRequest), "", adminTabDefault, "", nil)
 		return
 	}
 	if !s.csrfOK(r) {
@@ -669,7 +739,7 @@ func (s *Server) handleAdminPost(w http.ResponseWriter, r *http.Request, lang i1
 			Actor: actor.Name, Action: "admin.csrf-rejected", Target: r.FormValue("action"),
 			IP: cookie.ClientIP(r), OK: false,
 		})
-		s.renderAdmin(w, r, lang, actor, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrCSRF), "", adminTabDefault)
+		s.renderAdmin(w, r, lang, actor, http.StatusForbidden, i18n.T(lang, i18n.KeyAdminErrCSRF), "", adminTabDefault, "", nil)
 		return
 	}
 
@@ -677,7 +747,17 @@ func (s *Server) handleAdminPost(w http.ResponseWriter, r *http.Request, lang i1
 	featI, featS := s.globalFeatures()
 	if err := s.runAdminAction(actor, &act, cookie.ClientIP(r)); err != nil {
 		s.renderAdmin(w, r, lang, actor, http.StatusBadRequest,
-			s.adminErrorText(lang, act.Action, act.Name, err), "", adminTabForAction(act.Action, s.opts.Installer != nil, featI, featS))
+			s.adminErrorText(lang, act.Action, act.Name, err), "", adminTabForAction(act.Action, s.opts.Installer != nil, featI, featS), "", nil)
+		return
+	}
+	// apikey.create 不走 PRG：明文密钥只显示一次，必须这次直接渲染在页面上。
+	if act.Action == "apikey.create" && act.NewKeySecret != "" {
+		s.renderAdmin(w, r, lang, actor, http.StatusOK, "", "", "api", act.NewKeySecret, nil)
+		return
+	}
+	// 发现扫描把候选直接渲染回页面（需回显候选表），不走 PRG。
+	if act.Action == "service.discover.local" || act.Action == "service.discover.scan" {
+		s.renderAdmin(w, r, lang, actor, http.StatusOK, "", act.DiscMessage, "services", "", act.Discovered)
 		return
 	}
 
@@ -848,8 +928,58 @@ func (s *Server) applyAdminAction(actor *User, act *adminAction) error {
 	case "service.probe":
 		return s.applyServiceProbe(act)
 
+	case "service.start":
+		return s.applyServiceStart(act)
+
+	case "service.stop":
+		return s.applyServiceStop(act)
+
+	case "service.restart":
+		return s.applyServiceRestart(act)
+
+	case "service.discover.local":
+		return s.applyServiceDiscoverLocal(act)
+
+	case "service.discover.scan":
+		return s.applyServiceDiscoverScan(act)
+
+	case "service.discover.add":
+		return s.applyServiceDiscoverAdd(act)
+
 	case "serviceGrants.save":
 		return s.applyServiceGrantsSave(actor, act)
+
+	case "api.toggle":
+		return s.opts.Store.SetExternalAPIEnabled(act.ExternalAPIEnabled)
+
+	case "site.save":
+		return s.opts.Store.SetSiteTitle(act.SiteTitle)
+
+	case "apikey.create":
+		secret, _, err := s.opts.Store.CreateAPIKey(act.KeyName, act.KeyScopes, act.KeyIPAllowlist, actor.Name)
+		if err != nil {
+			return err
+		}
+		act.NewKeySecret = secret
+		return nil
+
+	case "apikey.disable":
+		if act.KeyID == "" {
+			return errors.New("missing key id")
+		}
+		return s.opts.Store.SetAPIKeyDisabled(act.KeyID, true)
+
+	case "apikey.enable":
+		if act.KeyID == "" {
+			return errors.New("missing key id")
+		}
+		return s.opts.Store.SetAPIKeyDisabled(act.KeyID, false)
+
+	case "apikey.delete":
+		if act.KeyID == "" {
+			return errors.New("missing key id")
+		}
+		return s.opts.Store.DeleteAPIKey(act.KeyID)
 
 	default:
 		return fmt.Errorf("未知动作 %q", act.Action)
@@ -1333,14 +1463,35 @@ func (s *Server) flashMessage(lang i18n.Lang, r *http.Request) string {
 		return i18n.T(lang, i18n.KeyAdminMsgSvcDisabled, arg)
 	case "service.probe":
 		return i18n.T(lang, i18n.KeyAdminMsgSvcProbed, arg)
+	case "service.start":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcStarted, arg)
+	case "service.stop":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcStopped, arg)
+	case "service.restart":
+		return i18n.T(lang, i18n.KeyAdminMsgSvcRestarted, arg)
+	case "service.discover.add":
+		return i18n.T(lang, i18n.KeyAdminMsgDiscAdded, arg)
 	case "serviceGrants.save":
 		return i18n.T(lang, i18n.KeyAdminMsgSvcGrantsSaved, arg)
+	case "api.toggle":
+		if on, err := s.opts.Store.ExternalAPIEnabled(); err == nil && on {
+			return i18n.T(lang, i18n.KeyAdminMsgAPIToggledOn)
+		}
+		return i18n.T(lang, i18n.KeyAdminMsgAPIToggledOff)
+	case "apikey.disable":
+		return i18n.T(lang, i18n.KeyAdminMsgAPIKeyDisabled, arg)
+	case "apikey.enable":
+		return i18n.T(lang, i18n.KeyAdminMsgAPIKeyEnabled, arg)
+	case "apikey.delete":
+		return i18n.T(lang, i18n.KeyAdminMsgAPIKeyDeleted, arg)
+	case "site.save":
+		return i18n.T(lang, i18n.KeyAdminMsgSiteSaved)
 	}
 	return ""
 }
 
 // renderAdmin 渲染管理台。tab 是当前显示的分页（悬浮导航高亮项）。
-func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.Lang, actor *User, status int, problem, message, tab string) {
+func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.Lang, actor *User, status int, problem, message, tab, oneTimeSecret string, discovered []adminDiscoverRow) {
 	// 配色和语言一样由服务端定：?theme= / ?scheme= 会在这里写 Cookie，响应头都还没发，
 	// 所以 Set-Cookie 能跟这次的页面一起到达。
 	theme := s.opts.Gate.Theme(w, r)
@@ -1361,6 +1512,24 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 	services, err := s.opts.Store.ListServices()
 	if err != nil {
 		s.log.Error("管理台读取服务失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
+	apiKeys, err := s.opts.Store.ListAPIKeys()
+	if err != nil {
+		s.log.Error("管理台读取 API 密钥失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
+	apiEnabled, err := s.opts.Store.ExternalAPIEnabled()
+	if err != nil {
+		s.log.Error("管理台读取对外 API 开关失败", "err", err)
+		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
+		return
+	}
+	siteTitle, err := s.opts.Store.SiteTitle()
+	if err != nil {
+		s.log.Error("管理台读取站点名称失败", "err", err)
 		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
 		return
 	}
@@ -1507,6 +1676,32 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		s.log.Error("管理台读取服务授权失败", "err", err)
 		http.Error(w, i18n.T(lang, i18n.KeyPortalErrInternal), http.StatusInternalServerError)
 		return
+	}
+
+	// API 分页：密钥列表（只含前缀，无明文/哈希）与 scope 复选项。
+	apiKeyRows := make([]adminAPIKeyRow, 0, len(apiKeys))
+	for _, k := range apiKeys {
+		status := i18n.T(lang, i18n.KeyAdminStatusEnabled)
+		if k.Disabled {
+			status = i18n.T(lang, i18n.KeyAdminStatusDisabled)
+		}
+		lastUsed := i18n.T(lang, i18n.KeyAdminAPINever)
+		if !k.LastUsedAt.IsZero() {
+			lastUsed = k.LastUsedAt.Local().Format("2006-01-02 15:04")
+		}
+		scopes := make([]string, 0, 5)
+		for _, sc := range k.ScopeList() {
+			scopes = append(scopes, apiScopeLabel(lang, sc))
+		}
+		apiKeyRows = append(apiKeyRows, adminAPIKeyRow{
+			ID: k.ID, Name: k.Name, Prefix: k.Prefix,
+			ScopesLabel: strings.Join(scopes, " · "),
+			Disabled:    k.Disabled, StatusLabel: status, LastUsed: lastUsed,
+		})
+	}
+	scopeOptions := make([]adminScopeOption, 0, 5)
+	for _, sc := range apiScopes() {
+		scopeOptions = append(scopeOptions, adminScopeOption{Value: sc, Label: apiScopeLabel(lang, sc)})
 	}
 
 	auditRows := make([]adminAuditRow, 0, len(audit))
@@ -1736,9 +1931,74 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		Audit              []adminAuditRow
 		Services           []adminServiceRow
 		ServiceGrants      []adminServiceGrantRow
+		// ---- 受管服务（P1）----
+		SvcManagedLabel    string
+		SvcManagedBadge    string
+		SvcStartCmdLabel   string
+		SvcStopCmdLabel    string
+		SvcWorkDirLabel    string
+		SvcEnvLabel        string
+		SvcAutoStartLabel  string
+		SvcHealthPathLabel string
+		SvcBtnStart        string
+		SvcBtnStop         string
+		SvcBtnRestart      string
+		SvcBtnLogs         string
+		SvcRunningLabel    string
+		SvcStoppedLabel    string
+		SvcLogsTitle       string
+
+		// ---- 对外 API ----
+		APITitle          string
+		APIHint           string
+		APIEnabled        bool
+		APIStateLabel     string
+		APIToggleLabel    string
+		APIBtnSave        string
+		APIKeyCreate      string
+		APIKeyCreateHint  string
+		APIKeyNameLabel   string
+		APIKeyScopesLabel string
+		APIKeyIPLabel     string
+		APIKeyIPPh        string
+		APIBtnCreateKey   string
+		APIColPrefix      string
+		APIColScopes      string
+		APIColLastUsed    string
+		APINoKeys         string
+		APIKeyCreated     string
+		APIKeyCreatedHint string
+		APIKeySecretLabel string
+		NewKeySecret      string
+		ScopeOptions      []adminScopeOption
+		APIKeys           []adminAPIKeyRow
+		// ---- 服务发现 ----
+		Discovered     []adminDiscoverRow
+		DiscTitle      string
+		DiscHint       string
+		DiscLocalBtn   string
+		DiscCidrLabel  string
+		DiscPortsLabel string
+		DiscScanBtn    string
+		DiscAddBtn     string
+		DiscColSource  string
+		DiscColTarget  string
+		DiscColDetail  string
+		DiscColHTTP    string
+		DiscColReg     string
+		DiscAlready    string
+		DiscEmpty      string
+		DiscMessage    string
+		// ---- 站点（自定义站点名称）----
+		SiteTitle      string
+		SiteNameLabel  string
+		SiteHint       string
+		SitePh         string
+		SiteBtnSave    string
+		SiteTitleValue string
 	}{
 		Lang:         string(lang),
-		Title:        i18n.T(lang, i18n.KeyAdminTitle),
+		Title:        s.pageTitle(lang, i18n.KeyAdminTitle),
 		SignedInAs:   i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(actor)),
 		BackToPortal: i18n.T(lang, i18n.KeyAdminBack),
 		OtherLang:    otherLangLabel(lang),
@@ -1816,6 +2076,22 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		SvcRemoveHint:    i18n.T(lang, i18n.KeyAdminSvcRemoveHint),
 		SvcGrantsTitle:   i18n.T(lang, i18n.KeyAdminSvcGrants),
 		SvcGrantsTip:     i18n.T(lang, i18n.KeyAdminSvcGrantsTip),
+
+		SvcManagedLabel:    i18n.T(lang, i18n.KeyAdminSvcManaged),
+		SvcManagedBadge:    i18n.T(lang, i18n.KeyAdminSvcManagedBadge),
+		SvcStartCmdLabel:   i18n.T(lang, i18n.KeyAdminSvcStartCmd),
+		SvcStopCmdLabel:    i18n.T(lang, i18n.KeyAdminSvcStopCmd),
+		SvcWorkDirLabel:    i18n.T(lang, i18n.KeyAdminSvcWorkDir),
+		SvcEnvLabel:        i18n.T(lang, i18n.KeyAdminSvcEnv),
+		SvcAutoStartLabel:  i18n.T(lang, i18n.KeyAdminSvcAutoStart),
+		SvcHealthPathLabel: i18n.T(lang, i18n.KeyAdminSvcHealthPath),
+		SvcBtnStart:        i18n.T(lang, i18n.KeyAdminSvcStart),
+		SvcBtnStop:         i18n.T(lang, i18n.KeyAdminSvcStop),
+		SvcBtnRestart:      i18n.T(lang, i18n.KeyAdminSvcRestart),
+		SvcBtnLogs:         i18n.T(lang, i18n.KeyAdminSvcLogs),
+		SvcRunningLabel:    i18n.T(lang, i18n.KeyAdminSvcRunning),
+		SvcStoppedLabel:    i18n.T(lang, i18n.KeyAdminSvcStopped),
+		SvcLogsTitle:       i18n.T(lang, i18n.KeyAdminSvcLogsTitle),
 
 		// ---- 分页导航 ----
 		ActiveTab: tab,
@@ -1920,6 +2196,54 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, lang i18n.L
 		Audit:              auditRows,
 		Services:           serviceRows,
 		ServiceGrants:      serviceGrantRows,
+
+		APITitle:          i18n.T(lang, i18n.KeyAdminAPITitle),
+		APIHint:           i18n.T(lang, i18n.KeyAdminAPIHint),
+		APIEnabled:        apiEnabled,
+		APIStateLabel:     apiStateLabel(lang, apiEnabled),
+		APIToggleLabel:    i18n.T(lang, i18n.KeyAdminAPIToggle),
+		APIBtnSave:        i18n.T(lang, i18n.KeyAdminAPIBtnSave),
+		APIKeyCreate:      i18n.T(lang, i18n.KeyAdminAPIKeyCreate),
+		APIKeyCreateHint:  i18n.T(lang, i18n.KeyAdminAPIKeyCreateHint),
+		APIKeyNameLabel:   i18n.T(lang, i18n.KeyAdminAPIKeyName),
+		APIKeyScopesLabel: i18n.T(lang, i18n.KeyAdminAPIKeyScopes),
+		APIKeyIPLabel:     i18n.T(lang, i18n.KeyAdminAPIKeyIP),
+		APIKeyIPPh:        i18n.T(lang, i18n.KeyAdminAPIKeyIPPh),
+		APIBtnCreateKey:   i18n.T(lang, i18n.KeyAdminAPIBtnCreateKey),
+		APIColPrefix:      i18n.T(lang, i18n.KeyAdminAPIColPrefix),
+		APIColScopes:      i18n.T(lang, i18n.KeyAdminAPIColScopes),
+		APIColLastUsed:    i18n.T(lang, i18n.KeyAdminAPIColLastUsed),
+		APINoKeys:         i18n.T(lang, i18n.KeyAdminAPINoKeys),
+		APIKeyCreated:     i18n.T(lang, i18n.KeyAdminAPIKeyCreated),
+		APIKeyCreatedHint: i18n.T(lang, i18n.KeyAdminAPIKeyCreatedHint),
+		APIKeySecretLabel: i18n.T(lang, i18n.KeyAdminAPIKeySecret),
+		NewKeySecret:      oneTimeSecret,
+		ScopeOptions:      scopeOptions,
+		APIKeys:           apiKeyRows,
+
+		Discovered:     discovered,
+		DiscTitle:      i18n.T(lang, i18n.KeyAdminDiscTitle),
+		DiscHint:       i18n.T(lang, i18n.KeyAdminDiscHint),
+		DiscLocalBtn:   i18n.T(lang, i18n.KeyAdminDiscLocalBtn),
+		DiscCidrLabel:  i18n.T(lang, i18n.KeyAdminDiscCidr),
+		DiscPortsLabel: i18n.T(lang, i18n.KeyAdminDiscPorts),
+		DiscScanBtn:    i18n.T(lang, i18n.KeyAdminDiscScanBtn),
+		DiscAddBtn:     i18n.T(lang, i18n.KeyAdminDiscAddBtn),
+		DiscColSource:  i18n.T(lang, i18n.KeyAdminDiscColSource),
+		DiscColTarget:  i18n.T(lang, i18n.KeyAdminDiscColTarget),
+		DiscColDetail:  i18n.T(lang, i18n.KeyAdminDiscColDetail),
+		DiscColHTTP:    i18n.T(lang, i18n.KeyAdminDiscColHTTP),
+		DiscColReg:     i18n.T(lang, i18n.KeyAdminDiscColReg),
+		DiscAlready:    i18n.T(lang, i18n.KeyAdminDiscAlready),
+		DiscEmpty:      i18n.T(lang, i18n.KeyAdminDiscEmpty),
+		DiscMessage:    message,
+
+		SiteTitle:      i18n.T(lang, i18n.KeyAdminNavSite),
+		SiteNameLabel:  i18n.T(lang, i18n.KeyAdminSiteName),
+		SiteHint:       i18n.T(lang, i18n.KeyAdminSiteHint),
+		SitePh:         i18n.T(lang, i18n.KeyAdminSitePh),
+		SiteBtnSave:    i18n.T(lang, i18n.KeyAdminSiteBtnSave),
+		SiteTitleValue: siteTitle,
 	}
 
 	body := &strings.Builder{}
@@ -2108,6 +2432,9 @@ func navItems(lang i18n.Lang, tab string, hasInstaller, showInstances, showServi
 		items = append(items, adminNavItem{"env", i18n.T(lang, i18n.KeyAdminNavEnv), tab == "env"})
 	}
 	items = append(items, adminNavItem{"audit", i18n.T(lang, i18n.KeyAdminAudit), tab == "audit"})
+	// 对外 API 与站点是管理员级配置页，常驻在最后。
+	items = append(items, adminNavItem{"api", i18n.T(lang, i18n.KeyAdminNavAPI), tab == "api"})
+	items = append(items, adminNavItem{"site", i18n.T(lang, i18n.KeyAdminNavSite), tab == "site"})
 	return items
 }
 
@@ -2124,4 +2451,159 @@ func runStateLabel(lang i18n.Lang, st InstanceStatus) string {
 	default:
 		return i18n.T(lang, i18n.KeyAdminRunStopped)
 	}
+}
+
+// adminAPIKeyRow 是「API」分页密钥列表的一行（不含明文，只含前缀）。
+type adminAPIKeyRow struct {
+	ID          string
+	Name        string
+	Prefix      string
+	ScopesLabel string
+	Disabled    bool
+	StatusLabel string
+	LastUsed    string
+}
+
+// adminScopeOption 是创建密钥表单里的一个 scope 复选项。
+type adminScopeOption struct {
+	Value   string
+	Label   string
+	Checked bool
+}
+
+// apiScopes 返回按固定顺序的权限范围列表。
+func apiScopes() []string {
+	return []string{ScopeServicesRead, ScopeServicesWrite, ScopeServicesLifecycle, ScopeInstancesRead, ScopeInstancesLifecycle}
+}
+
+// apiScopeLabel 把 scope 翻成当前语言的显示名。
+func apiScopeLabel(lang i18n.Lang, scope string) string {
+	switch scope {
+	case ScopeServicesRead:
+		return i18n.T(lang, i18n.KeyAPIScopeServicesRead)
+	case ScopeServicesWrite:
+		return i18n.T(lang, i18n.KeyAPIScopeServicesWrite)
+	case ScopeServicesLifecycle:
+		return i18n.T(lang, i18n.KeyAPIScopeServicesLifecycle)
+	case ScopeInstancesRead:
+		return i18n.T(lang, i18n.KeyAPIScopeInstancesRead)
+	case ScopeInstancesLifecycle:
+		return i18n.T(lang, i18n.KeyAPIScopeInstancesLifecycle)
+	}
+	return scope
+}
+
+// apiStateLabel 返回对外 API 开关的状态文案。
+func apiStateLabel(lang i18n.Lang, on bool) string {
+	if on {
+		return i18n.T(lang, i18n.KeyAdminAPIStateOn)
+	}
+	return i18n.T(lang, i18n.KeyAdminAPIStateOff)
+}
+
+// ---- 服务发现（管理台「服务」分页的发现面板，docs/service-api.md 第 15 节）----
+
+// adminDiscoverRow 是发现面板里的一行候选。
+type adminDiscoverRow struct {
+	Source  string
+	Host    string
+	Port    int
+	Addr    string
+	Command string
+	Title   string
+	HTTP    bool
+	Already bool
+}
+
+// discoverAdminRows 把发现候选转成页面行，并标出「已登记」。
+func (s *Server) discoverAdminRows(cands []discover.Candidate) []adminDiscoverRow {
+	reg := s.registeredUpstreams()
+	rows := make([]adminDiscoverRow, 0, len(cands))
+	for _, c := range cands {
+		addr := fmt.Sprintf("%s:%d", c.Host, c.Port)
+		rows = append(rows, adminDiscoverRow{
+			Source: c.Source, Host: c.Host, Port: c.Port, Addr: addr,
+			Command: c.Command, Title: c.Title, HTTP: c.HTTP, Already: reg["http://"+addr],
+		})
+	}
+	return rows
+}
+
+// applyServiceDiscoverLocal 扫描本机监听的服务（不可用时把原因带给页面）。
+func (s *Server) applyServiceDiscoverLocal(act *adminAction) error {
+	cands, err := discover.Local()
+	if errors.Is(err, discover.ErrUnsupported) {
+		act.Discovered = nil
+		act.DiscMessage = err.Error()
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	act.Discovered = s.discoverAdminRows(cands)
+	act.AuditDetail = fmt.Sprintf("本机发现 %d 个候选", len(act.Discovered))
+	return nil
+}
+
+// applyServiceDiscoverScan 扫描私有网段（只允许私有网段，10s 超时）。
+func (s *Server) applyServiceDiscoverScan(act *adminAction) error {
+	cidr := strings.TrimSpace(act.CIDR)
+	if cidr == "" {
+		return errors.New("缺少网段（CIDR），例如 192.168.1.0/24")
+	}
+	ok, err := discover.IsPrivateCIDR(cidr)
+	if err != nil || !ok {
+		return errors.New("只允许私有网段（10/8、172.16/12、192.168/16）")
+	}
+	ports, err := discover.ParsePorts(strings.TrimSpace(act.Ports))
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cands, serr := discover.Scan(ctx, cidr, ports, discover.ScanOptions{})
+	if serr != nil && len(cands) == 0 {
+		return serr
+	}
+	act.Discovered = s.discoverAdminRows(cands)
+	act.AuditDetail = fmt.Sprintf("网段 %s 发现 %d 个候选", cidr, len(act.Discovered))
+	return nil
+}
+
+// applyServiceDiscoverAdd 把勾选的候选（值 "host:port"）登记为纯代理服务。
+func (s *Server) applyServiceDiscoverAdd(act *adminAction) error {
+	created, skipped := 0, 0
+	for _, addr := range act.DiscSelect {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		i := strings.LastIndex(addr, ":")
+		if i <= 0 {
+			skipped++
+			continue
+		}
+		host := addr[:i]
+		port, perr := strconv.Atoi(addr[i+1:])
+		if perr != nil || port <= 0 || port > 65535 {
+			skipped++
+			continue
+		}
+		up := "http://" + addr
+		if _, err := s.findServiceByUpstream(up); err == nil {
+			skipped++
+			continue
+		}
+		base := "svc-" + sanitizeNamePart(host) + "-" + strconv.Itoa(port)
+		name := s.uniqueServiceName(base)
+		if err := s.opts.Store.CreateService(&Service{Name: name, Upstream: up}); err != nil {
+			skipped++
+			continue
+		}
+		created++
+	}
+	summary := fmt.Sprintf("新建 %d、跳过 %d", created, skipped)
+	act.Name = summary
+	act.AuditDetail = "发现登记：" + summary
+	return nil
 }

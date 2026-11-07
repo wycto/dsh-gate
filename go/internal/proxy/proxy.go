@@ -47,6 +47,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -95,6 +96,9 @@ type Options struct {
 	// CookiePort 是网关监听端口：交接标记 Cookie 名带 _p<端口> 后缀，
 	// 与 auth 侧的会话 Cookie 同一口径（同机多网关隔离，见 cookie.ScopeName）。
 	CookiePort int
+	// TitlePrefix 返回「站点名称」前缀（可为 nil）：非空时给被代理的 dsh 页面注入脚本，
+	// 把 document.title 改成「站点名 · 原标题」，用于多台设备区分。
+	TitlePrefix func() string
 	// Logger 收日志；为 nil 时丢弃全部记录。
 	Logger *slog.Logger
 }
@@ -255,6 +259,7 @@ func needsExchange(r *http.Request, token, handoffCookie string) bool {
 // 才不破坏 WebSocket 与流式输出；而 ModifyResponse 天然发生在第一个字节写出
 // 之前，改起来没有任何副作用。
 func (h *Handler) modifyResponse(res *http.Response) error {
+	h.maybeInjectTitle(res)
 	exchanged, _ := res.Request.Context().Value(exchangeKey{}).(bool)
 	// 只有**交接成功**才种标记：失败也种的话，浏览器会被标成「已交接」，
 	// 而它其实没拿到会话——下一次访问 / 网关就不补令牌了，于是永远卡在 401。
@@ -329,6 +334,66 @@ func (h *Handler) modifyResponse(res *http.Response) error {
 	res.ContentLength = int64(len(page))
 	res.StatusCode = http.StatusOK
 	return nil
+}
+
+// maybeInjectTitle 给被代理的 dsh HTML 页面注入脚本，把标签标题改成「<站点名> · 原标题」。
+// dsh 的 index.html 不带 CSP，内联脚本可用；用 MutationObserver 保证 SPA 之后改标题仍带前缀。
+// 只处理 GET 的 text/html；gzip 会先解开再以明文回写（去掉 Content-Encoding）。
+func (h *Handler) maybeInjectTitle(res *http.Response) {
+	if h.opts.TitlePrefix == nil || res.Request == nil || res.Request.Method != http.MethodGet {
+		return
+	}
+	if !strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "text/html") {
+		return
+	}
+	if res.ContentLength > 4<<20 {
+		return
+	}
+	var body []byte
+	var err error
+	enc := strings.ToLower(strings.TrimSpace(res.Header.Get("Content-Encoding")))
+	switch enc {
+	case "":
+		body, err = io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	case "gzip":
+		var gz *gzip.Reader
+		if gz, err = gzip.NewReader(res.Body); err == nil {
+			body, err = io.ReadAll(io.LimitReader(gz, 4<<20))
+			_ = gz.Close()
+		}
+	default:
+		return
+	}
+	if err != nil {
+		return
+	}
+	_ = res.Body.Close()
+	res.Header.Del("Content-Encoding")
+	prefix := strings.TrimSpace(h.opts.TitlePrefix())
+	if prefix == "" || bytes.Contains(body, []byte("data-dsh-gate-title")) {
+		res.Body = io.NopCloser(bytes.NewReader(body))
+		res.Header.Del("Content-Length")
+		res.ContentLength = int64(len(body))
+		return
+	}
+	pj, _ := json.Marshal(prefix)
+	script := []byte(`<script data-dsh-gate-title="1">(function(){var p=` + string(pj) +
+		`;function f(){var t=document.title||"";var w=p+" · ";if(t.slice(0,w.length)!==w){document.title=w+t;}}` +
+		`function h(){f();try{var e=document.querySelector("title");if(e){new MutationObserver(f).observe(e,{childList:true,characterData:true,subtree:true});}}catch(x){}}` +
+		`if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",h);}else{h();}setTimeout(f,0);})();</script>`)
+	lower := bytes.ToLower(body)
+	if idx := bytes.Index(lower, []byte("</head>")); idx >= 0 {
+		out := make([]byte, 0, len(body)+len(script))
+		out = append(out, body[:idx]...)
+		out = append(out, script...)
+		out = append(out, body[idx:]...)
+		body = out
+	} else {
+		body = append(script, body...)
+	}
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	res.Header.Del("Content-Length")
+	res.ContentLength = int64(len(body))
 }
 
 // errorHandler 处理连不上上游的情况：dsh 刚崩、被杀、或正在重启。

@@ -25,6 +25,9 @@ var ServiceIDPattern = regexp.MustCompile(`^[a-z0-9]{4,64}$`)
 // 挡空白/分隔符/控制字符与开头的 - .），理由见 instanceNamePattern 的注释。
 var serviceNamePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$`)
 
+// envKeyPattern 校验环境变量名：字母或下划线开头，后接字母数字下划线。
+var envKeyPattern = regexp.MustCompile("^[A-Za-z_][A-Za-z0-9_]*$")
+
 // ValidateServiceName 校验服务展示名。
 func ValidateServiceName(name string) error {
 	if !serviceNamePattern.MatchString(name) {
@@ -77,6 +80,22 @@ type Service struct {
 	Enabled         bool
 	// Source 是登记来源（manual / discover / import），空视为 manual。
 	Source string
+	// ---- 受管进程生命周期（文档第 6/7 节；纯代理服务这些字段恒为空）----
+	// Managed 为真表示这是「受管进程」服务：由网关按 StartCmd 拉起/守护、可停止与重启；
+	// false 为纯代理型（默认），行为与之前完全一致。
+	Managed bool
+	// StartCmd 是启动命令（经 sh -c / cmd /c 执行）；Managed 为真时必填。
+	StartCmd string
+	// StopCmd 是可选的自定义停止命令；空则按进程组 SIGTERM→SIGKILL。
+	StopCmd string
+	// WorkDir 是子进程工作目录（空=网关当前目录）。
+	WorkDir string
+	// Env 是追加给子进程的环境变量，每行 KEY=VALUE（允许空行）。
+	Env string
+	// AutoStart 为真表示网关启动时自动拉起该受管服务。
+	AutoStart bool
+	// HealthPath 是就绪探测路径（GET 该路径 2xx/3xx 算就绪）；空则探测 Upstream 端口。
+	HealthPath string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -162,8 +181,39 @@ func (svc *Service) validate() error {
 	if svc.Source != ServiceSourceManual && svc.Source != ServiceSourceDiscover && svc.Source != ServiceSourceImport {
 		return fmt.Errorf("服务来源 %q 非法", svc.Source)
 	}
+	if svc.Managed {
+		if strings.TrimSpace(svc.StartCmd) == "" {
+			return errors.New("受管服务必须设置启动命令")
+		}
+		if err := validateServiceEnv(svc.Env); err != nil {
+			return err
+		}
+	} else {
+		// 纯代理型：清掉生命周期字段，别把无意义的值带进库与界面。
+		svc.StartCmd, svc.StopCmd, svc.WorkDir, svc.Env, svc.HealthPath = "", "", "", "", ""
+		svc.AutoStart = false
+	}
 	if svc.ListenPort != 0 || svc.HealthIntervalS != 0 {
 		return errors.New("port 映射与周期健康检查尚未开放（P1），请先用子路径模式")
+	}
+	return nil
+}
+
+// validateServiceEnv 校验 Env（每行 KEY=VALUE，允许空行）。
+func validateServiceEnv(env string) error {
+	for i, line := range strings.Split(env, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			return fmt.Errorf("环境变量第 %d 行格式应为 KEY=VALUE：%q", i+1, line)
+		}
+		key := strings.TrimSpace(line[:eq])
+		if !envKeyPattern.MatchString(key) {
+			return fmt.Errorf("环境变量名 %q 非法（只允许字母数字下划线，且不以数字开头）", key)
+		}
 	}
 	return nil
 }
@@ -172,11 +222,11 @@ func (svc *Service) validate() error {
 // base32 小写，满足路径白名单）。
 func NewServiceID() (string, error) { return NewInstanceID() }
 
-const serviceColumns = `id, name, upstream, host_header, insecure_tls, route_mode, listen_port, note, test_account, health_interval_s, enabled, source, created_at, updated_at`
+const serviceColumns = `id, name, upstream, host_header, insecure_tls, route_mode, listen_port, note, test_account, health_interval_s, enabled, source, created_at, updated_at, managed, start_cmd, stop_cmd, work_dir, env, auto_start, health_path`
 
 // serviceColumnsQualified 是带 s. 前缀的列名：与 service_grants join 时
 // 两张表都有 created_at，不加前缀会报 ambiguous column name。
-const serviceColumnsQualified = `s.id, s.name, s.upstream, s.host_header, s.insecure_tls, s.route_mode, s.listen_port, s.note, s.test_account, s.health_interval_s, s.enabled, s.source, s.created_at, s.updated_at`
+const serviceColumnsQualified = `s.id, s.name, s.upstream, s.host_header, s.insecure_tls, s.route_mode, s.listen_port, s.note, s.test_account, s.health_interval_s, s.enabled, s.source, s.created_at, s.updated_at, s.managed, s.start_cmd, s.stop_cmd, s.work_dir, s.env, s.auto_start, s.health_path`
 
 func scanService(row interface{ Scan(...any) error }) (*Service, error) {
 	var (
@@ -185,12 +235,15 @@ func scanService(row interface{ Scan(...any) error }) (*Service, error) {
 		enabled    int64
 		listenPort int64
 		healthSecs int64
+		managed    int64
+		autoStart  int64
 		created    string
 		updated    string
 	)
 	if err := row.Scan(&svc.ID, &svc.Name, &svc.Upstream, &svc.HostHeader, &insecure,
 		&svc.RouteMode, &listenPort, &svc.Note, &svc.TestAccount, &healthSecs,
-		&enabled, &svc.Source, &created, &updated); err != nil {
+		&enabled, &svc.Source, &created, &updated,
+		&managed, &svc.StartCmd, &svc.StopCmd, &svc.WorkDir, &svc.Env, &autoStart, &svc.HealthPath); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -200,6 +253,8 @@ func scanService(row interface{ Scan(...any) error }) (*Service, error) {
 	svc.Enabled = intToBool(enabled)
 	svc.ListenPort = int(listenPort)
 	svc.HealthIntervalS = int(healthSecs)
+	svc.Managed = intToBool(managed)
+	svc.AutoStart = intToBool(autoStart)
 	svc.CreatedAt = parseTime(created)
 	svc.UpdatedAt = parseTime(updated)
 	svc.applyDefaults()
@@ -244,10 +299,12 @@ func (s *Store) CreateService(svc *Service) error {
 	now := nowText()
 	if _, err := s.db.Exec(
 		`INSERT INTO services (`+serviceColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, svc.Name, svc.Upstream, svc.HostHeader, boolToInt(svc.InsecureTLS),
 		svc.RouteMode, svc.ListenPort, strings.TrimSpace(svc.Note), strings.TrimSpace(svc.TestAccount),
 		svc.HealthIntervalS, 1, svc.Source, now, now,
+		boolToInt(svc.Managed), strings.TrimSpace(svc.StartCmd), strings.TrimSpace(svc.StopCmd),
+		strings.TrimSpace(svc.WorkDir), strings.TrimSpace(svc.Env), boolToInt(svc.AutoStart), strings.TrimSpace(svc.HealthPath),
 	); err != nil {
 		return fmt.Errorf("写入服务失败: %w", err)
 	}
@@ -301,11 +358,15 @@ func (s *Store) UpdateService(svc Service) error {
 	res, err := s.db.Exec(
 		`UPDATE services SET name = ?, upstream = ?, host_header = ?, insecure_tls = ?,
 		 route_mode = ?, listen_port = ?, note = ?, test_account = ?, health_interval_s = ?,
-		 enabled = ?, source = ?, updated_at = ?
+		 enabled = ?, source = ?, updated_at = ?,
+		 managed = ?, start_cmd = ?, stop_cmd = ?, work_dir = ?, env = ?, auto_start = ?, health_path = ?
 		 WHERE id = ?`,
 		svc.Name, svc.Upstream, svc.HostHeader, boolToInt(svc.InsecureTLS),
 		svc.RouteMode, svc.ListenPort, strings.TrimSpace(svc.Note), strings.TrimSpace(svc.TestAccount),
-		svc.HealthIntervalS, boolToInt(svc.Enabled), svc.Source, nowText(), svc.ID,
+		svc.HealthIntervalS, boolToInt(svc.Enabled), svc.Source, nowText(),
+		boolToInt(svc.Managed), strings.TrimSpace(svc.StartCmd), strings.TrimSpace(svc.StopCmd),
+		strings.TrimSpace(svc.WorkDir), strings.TrimSpace(svc.Env), boolToInt(svc.AutoStart), strings.TrimSpace(svc.HealthPath),
+		svc.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("更新服务 %q 失败: %w", svc.ID, err)

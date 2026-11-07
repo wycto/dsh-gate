@@ -74,6 +74,9 @@ type Options struct {
 	// Title / Subtitle 是登录页上显示的文字。
 	Title    string
 	Subtitle string
+	// TitleFunc 动态覆盖 Title（可为 nil）：管理端用它读 settings 里的「站点
+	// 名称」，改名后不重启网关即刻生效。返回空串时回退静态 Title。
+	TitleFunc func() string
 	// Version 是页脚显示的版本号。
 	Version string
 	// Ready 报告上游 dsh 是否就绪，供健康检查端点使用。
@@ -336,7 +339,7 @@ func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, m
 		StyleLabel  string
 		Styles      []ThemeOption
 	}{
-		Title:       g.opts.Title,
+		Title:       g.loginTitle(),
 		Subtitle:    g.opts.Subtitle,
 		Error:       message,
 		Next:        safeNext(r.URL.Query().Get("next")),
@@ -381,6 +384,17 @@ func (g *Gate) renderLogin(w http.ResponseWriter, r *http.Request, status int, m
 	header.Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, body.String())
+}
+
+// loginTitle 返回登录页标题：动态覆盖（站点名称）优先，空则回退静态 Title。
+// 登录页的 <title> 与大标题共用这一个值，浏览器标签页与页面上看到的名字一致。
+func (g *Gate) loginTitle() string {
+	if g.opts.TitleFunc != nil {
+		if t := g.opts.TitleFunc(); t != "" {
+			return t
+		}
+	}
+	return g.opts.Title
 }
 
 // version 返回页脚显示的版本号。

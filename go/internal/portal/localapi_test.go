@@ -130,6 +130,119 @@ func TestLocalAPIListAndLifecycle(t *testing.T) {
 	}
 }
 
+// svcFakeLifespan 记录受管服务生命周期调用，不真拉进程。
+type svcFakeLifespan struct {
+	started  []string
+	stopped  []string
+	restart  []string
+	state    map[string]string
+	logsText string
+}
+
+func newSvcFake() *svcFakeLifespan { return &svcFakeLifespan{state: map[string]string{}} }
+
+func (f *svcFakeLifespan) StartService(svc Service) error {
+	f.started = append(f.started, svc.ID)
+	f.state[svc.ID] = "running"
+	return nil
+}
+func (f *svcFakeLifespan) StopService(id string) error {
+	f.stopped = append(f.stopped, id)
+	f.state[id] = "stopped"
+	return nil
+}
+func (f *svcFakeLifespan) RestartService(svc Service) error {
+	f.restart = append(f.restart, svc.ID)
+	f.state[svc.ID] = "running"
+	return nil
+}
+func (f *svcFakeLifespan) Status(id string) ServiceRunStatus {
+	return ServiceRunStatus{State: f.state[id], Running: f.state[id] == "running"}
+}
+func (f *svcFakeLifespan) Logs(id string, tail int) (string, error) { return f.logsText, nil }
+
+func newSvcLocalServer(t *testing.T, withRuntime bool) (*Server, *Store, *svcFakeLifespan) {
+	t.Helper()
+	store := newStore(t)
+	fake := newSvcFake()
+	opts := ServerOptions{Store: store, LocalToken: "test-token"}
+	if withRuntime {
+		opts.ServiceLifespan = fake
+	}
+	return &Server{opts: opts}, store, fake
+}
+
+func mustCreateSvc(t *testing.T, store *Store, name string, managed bool) *Service {
+	t.Helper()
+	svc := &Service{Name: name, Upstream: "http://127.0.0.1:18080"}
+	if managed {
+		svc.Managed = true
+		svc.StartCmd = "python3 -m http.server 18080"
+	}
+	if err := store.CreateService(svc); err != nil {
+		t.Fatalf("建服务失败: %v", err)
+	}
+	return svc
+}
+
+func TestLocalSvcManagedLifecycleAndLogs(t *testing.T) {
+	s, store, fake := newSvcLocalServer(t, true)
+	fake.logsText = "line1\nline2"
+	svc := mustCreateSvc(t, store, "m1", true)
+
+	for _, action := range []string{"svc.start", "svc.stop", "svc.restart"} {
+		rec, resp := callLocal(t, s, "test-token", localRequest{Action: action, Service: "m1"})
+		if rec.Code != http.StatusOK || !resp.OK {
+			t.Fatalf("%s 应成功，实际 %d %+v", action, rec.Code, resp)
+		}
+	}
+	if len(fake.started) != 1 || len(fake.stopped) != 1 || len(fake.restart) != 1 {
+		t.Errorf("生命周期调用次数不对: %+v", fake)
+	}
+	rec, resp := callLocal(t, s, "test-token", localRequest{Action: "svc.logs", Service: svc.ID, Tail: 10})
+	if rec.Code != http.StatusOK || resp.Logs != "line1\nline2" {
+		t.Fatalf("logs 应返回内容，实际 %d %q", rec.Code, resp.Logs)
+	}
+	// list 显示 managed 与运行态
+	rec, resp = callLocal(t, s, "test-token", localRequest{Action: "svc.list"})
+	if rec.Code != http.StatusOK || len(resp.Services) != 1 || !resp.Services[0].Managed {
+		t.Fatalf("list 应显示受管，实际 %+v", resp.Services)
+	}
+}
+
+func TestLocalSvcProxyRejectsLifecycle(t *testing.T) {
+	s, store, _ := newSvcLocalServer(t, true)
+	mustCreateSvc(t, store, "px", false)
+	rec, resp := callLocal(t, s, "test-token", localRequest{Action: "svc.start", Service: "px"})
+	if rec.Code != http.StatusBadRequest || resp.OK {
+		t.Fatalf("纯代理服务 start 应 400，实际 %d %+v", rec.Code, resp)
+	}
+}
+
+func TestLocalSvcLifecycleRequiresRuntime(t *testing.T) {
+	s, store, _ := newSvcLocalServer(t, false)
+	mustCreateSvc(t, store, "m2", true)
+	rec, resp := callLocal(t, s, "test-token", localRequest{Action: "svc.start", Service: "m2"})
+	if rec.Code != http.StatusServiceUnavailable || resp.OK {
+		t.Fatalf("无运行时 start 应 503，实际 %d %+v", rec.Code, resp)
+	}
+}
+
+func TestLocalSvcAddManaged(t *testing.T) {
+	s, store, _ := newSvcLocalServer(t, true)
+	rec, resp := callLocal(t, s, "test-token", localRequest{
+		Action: "svc.add", Service: "m3", Upstream: "http://127.0.0.1:18081",
+		StartCmd: "sleep 1", AutoStart: true,
+	})
+	if rec.Code != http.StatusOK || !resp.OK || len(resp.Services) != 1 || !resp.Services[0].Managed {
+		t.Fatalf("svc.add 受管应成功，实际 %d %+v", rec.Code, resp)
+	}
+	got, err := store.ServiceByName("m3")
+	if err != nil || !got.Managed || got.StartCmd != "sleep 1" || !got.AutoStart {
+		t.Fatalf("受管字段未落库: %+v / %v", got, err)
+	}
+}
+
 // TestLocalAPIRemoveStopsAndPurges 验证删除：先停、再删目录、最后删记录。
 func TestLocalAPIRemoveStopsAndPurges(t *testing.T) {
 	s, store, life := newLocalTestServer(t)
@@ -183,5 +296,22 @@ func TestLocalAPIRemoveRejectsDangerousPath(t *testing.T) {
 	}
 	if _, err := store.InstanceByID(inst.ID); err != nil {
 		t.Error("删除失败时实例记录应保留")
+	}
+}
+
+func TestLocalSvcDiscoverAdd(t *testing.T) {
+	s, store, _ := newLocalTestServer(t)
+	_, resp := callLocal(t, s, "test-token", localRequest{
+		Action: "svc.discover.add",
+		Candidates: []localCandidate{
+			{Host: "10.1.1.1", Port: 8080},
+			{Host: "10.1.1.1", Port: 8080},
+		},
+	})
+	if resp.Created != 1 || resp.Skipped != 1 {
+		t.Fatalf("应新建 1 跳过 1，实际 created=%d skipped=%d", resp.Created, resp.Skipped)
+	}
+	if _, err := store.ServiceByName("svc-10-1-1-1-8080"); err != nil {
+		t.Errorf("应登记服务 svc-10-1-1-1-8080: %v", err)
 	}
 }

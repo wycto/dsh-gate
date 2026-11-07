@@ -33,6 +33,7 @@ import (
 	"github.com/wycto/dsh-gate/internal/portal"
 	"github.com/wycto/dsh-gate/internal/portalruntime"
 	"github.com/wycto/dsh-gate/internal/registry"
+	"github.com/wycto/dsh-gate/internal/svclife"
 	"github.com/wycto/dsh-gate/internal/tlscert"
 	"github.com/wycto/dsh-gate/internal/version"
 )
@@ -111,8 +112,18 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		CookieSecure: opts.TLS,
 		CookiePort:   opts.Port,
 		Title:        "dsh-gate",
-		Subtitle:     "管理端",
-		Version:      version.Version,
+		// 站点名称：每次渲染登录页时从 settings 读，管理台改名后即刻生效，
+		// 不用重启网关。未设置或读失败都回退默认名（一次瞬时 DB 错误不该
+		// 把登录页标题变成空白）。
+		TitleFunc: func() string {
+			t, err := store.SiteTitle()
+			if err != nil || t == "" {
+				return "dsh-gate"
+			}
+			return t
+		},
+		Subtitle: "管理端",
+		Version:  version.Version,
 		// 管理端的「就绪」指的是管理端自己在服务，而不是某个 dsh 起来了：实例各有各的
 		// 就绪状态（页面上逐实例显示），healthz 只回答「这个进程活着吗」。不设它
 		// 的话 healthz 会一直 503，健康检查与启动脚本都会误判。
@@ -143,6 +154,14 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		return nil, err
 	}
 
+	// 受管服务的进程监督器：日志落在 <状态目录>/services/logs/<id>.log。
+	// opts.StateDir 已是绝对路径（config 归一过），可直接拼。
+	svcSup := svclife.New(svclife.Options{
+		StateDir: filepath.Join(opts.StateDir, "services"),
+		Logger:   opts.Logger,
+	})
+	serviceAdapter := &portalruntime.ServiceLifespanAdapter{Sup: svcSup}
+
 	// 管理台的「创建实例」需要环境检测与安装能力。适配器把 runtime 接到
 	// portal.Installer 接口上——两个包不能互相 import（会成环），接口定义在
 	// portal 侧、实现在 portalruntime 侧，装配在这里。
@@ -168,15 +187,29 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		Upstream:  runtime.Upstream,
 		Installer: installer,
 		// 启停能力单独注入：管理台的启动 / 停止 / 重启按钮靠它。
-		Lifespan:   &portalruntime.LifespanAdapter{Runtime: runtime},
-		Version:    version.Version,
-		Logger:     opts.Logger,
-		LocalToken: localToken,
-		CookiePort: opts.Port,
+		Lifespan: &portalruntime.LifespanAdapter{Runtime: runtime},
+		// 受管服务的启停/状态/日志由 svclife 监督器提供。
+		ServiceLifespan: serviceAdapter,
+		Version:         version.Version,
+		Logger:          opts.Logger,
+		LocalToken:      localToken,
+		CookiePort:      opts.Port,
 	})
 	if err != nil {
 		store.Close()
 		return nil, err
+	}
+
+	// 自动拉起设了 auto_start 的受管服务。失败只记日志、不阻断管理端启动——一条
+	// 配错的服务命令不该把整个网关拖到起不来。
+	if services, err := store.ListServices(); err == nil {
+		for _, svc := range services {
+			if svc.Managed && svc.Enabled && svc.AutoStart {
+				if err := svcSup.Start(portalruntime.ServiceSpec(svc)); err != nil {
+					opts.Logger.Warn("自动启动受管服务失败", "service", svc.Name, "err", err)
+				}
+			}
+		}
 	}
 
 	return &portalAssembly{
@@ -184,6 +217,7 @@ func buildPortal(opts portalRunOptions) (*portalAssembly, error) {
 		Runtime: runtime,
 		Store:   store,
 		stop: func(ctx context.Context) error {
+			svcSup.StopAll()
 			runtimeErr := runtime.Stop(ctx)
 			closeErr := store.Close()
 			if runtimeErr != nil {

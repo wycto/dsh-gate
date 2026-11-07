@@ -33,6 +33,13 @@ func (s *Server) applyServiceCreate(actor *User, act *adminAction) error {
 		HostHeader:  strings.TrimSpace(act.HostHeader),
 		InsecureTLS: act.InsecureTLS,
 		Note:        act.Note,
+		Managed:     act.Managed,
+		StartCmd:    act.StartCmd,
+		StopCmd:     act.StopCmd,
+		WorkDir:     act.WorkDir,
+		Env:         act.Env,
+		AutoStart:   act.AutoStart,
+		HealthPath:  act.HealthPath,
 	}
 	if err := s.opts.Store.CreateService(svc); err != nil {
 		return err
@@ -62,11 +69,25 @@ func (s *Server) applyServiceUpdate(actor *User, act *adminAction) error {
 	if name == "" {
 		return errors.New("missing name")
 	}
+	// 改了受管服务的启动命令/目录/环境时，先停掉在跑的旧进程，避免它按旧配置
+	// 继续跑成孤儿（新配置只在下次启动生效）。
+	if svc.Managed && s.serviceRunStatus(svc.ID).Running {
+		if err := s.stopServiceProc(svc); err != nil {
+			return err
+		}
+	}
 	svc.Name = name
 	svc.Upstream = strings.TrimSpace(act.Upstream)
 	svc.HostHeader = strings.TrimSpace(act.HostHeader)
 	svc.InsecureTLS = act.InsecureTLS
 	svc.Note = act.Note
+	svc.Managed = act.Managed
+	svc.StartCmd = act.StartCmd
+	svc.StopCmd = act.StopCmd
+	svc.WorkDir = act.WorkDir
+	svc.Env = act.Env
+	svc.AutoStart = act.AutoStart
+	svc.HealthPath = act.HealthPath
 	if err := s.opts.Store.UpdateService(*svc); err != nil {
 		return err
 	}
@@ -81,6 +102,12 @@ func (s *Server) applyServiceRemove(act *adminAction) error {
 	svc, err := s.requireService(act)
 	if err != nil {
 		return err
+	}
+	// 删登记前先停掉受管进程，避免留下孤儿进程占端口。
+	if svc.Managed && s.serviceRunStatus(svc.ID).Running {
+		if err := s.stopServiceProc(svc); err != nil {
+			return err
+		}
 	}
 	if err := s.opts.Store.DeleteService(svc.ID); err != nil {
 		return err
@@ -99,6 +126,12 @@ func (s *Server) applyServiceToggle(act *adminAction) error {
 	svc, err := s.requireService(act)
 	if err != nil {
 		return err
+	}
+	// 由启用切到停用时，先停掉受管进程（停用语义是「不要它对外可用」，进程也该停）。
+	if svc.Enabled && svc.Managed && s.serviceRunStatus(svc.ID).Running {
+		if err := s.stopServiceProc(svc); err != nil {
+			return err
+		}
 	}
 	svc.Enabled = !svc.Enabled
 	if err := s.opts.Store.UpdateService(*svc); err != nil {
@@ -147,6 +180,88 @@ func (s *Server) applyServiceGrantsSave(actor *User, act *adminAction) error {
 	return s.opts.Store.SetUserServiceGrants(act.Name, act.Services, actor.Name)
 }
 
+// serviceRunStatus 读受管服务的运行状态；未接运行时（nil）时返回零值。
+func (s *Server) serviceRunStatus(id string) ServiceRunStatus {
+	if s.opts.ServiceLifespan == nil {
+		return ServiceRunStatus{}
+	}
+	return s.opts.ServiceLifespan.Status(id)
+}
+
+// stopServiceProc 停掉受管服务的进程（未接运行时直接报错，避免静默「以为停了」）。
+func (s *Server) stopServiceProc(svc *Service) error {
+	if s.opts.ServiceLifespan == nil {
+		return errors.New("未接入服务运行时，无法停止受管进程")
+	}
+	if err := s.opts.ServiceLifespan.StopService(svc.ID); err != nil {
+		return fmt.Errorf("停止服务 %q 失败: %w", svc.Name, err)
+	}
+	return nil
+}
+
+// requireManagedService 取服务并确认它是受管进程、且运行时已接入。
+func (s *Server) requireManagedService(act *adminAction) (*Service, error) {
+	svc, err := s.requireService(act)
+	if err != nil {
+		return nil, err
+	}
+	if !svc.Managed {
+		return nil, errors.New("纯代理服务不支持启停（只有受管服务才由网关拉起进程）")
+	}
+	if s.opts.ServiceLifespan == nil {
+		return nil, errors.New("未接入服务运行时")
+	}
+	return svc, nil
+}
+
+// applyServiceStart 启动受管服务。
+func (s *Server) applyServiceStart(act *adminAction) error {
+	svc, err := s.requireManagedService(act)
+	if err != nil {
+		return err
+	}
+	if err := s.opts.ServiceLifespan.StartService(*svc); err != nil {
+		return err
+	}
+	s.invalidateServiceMount(svc.ID)
+	if strings.TrimSpace(act.Name) == "" {
+		act.Name = svc.Name
+	}
+	return nil
+}
+
+// applyServiceStop 停止受管服务。
+func (s *Server) applyServiceStop(act *adminAction) error {
+	svc, err := s.requireManagedService(act)
+	if err != nil {
+		return err
+	}
+	if err := s.opts.ServiceLifespan.StopService(svc.ID); err != nil {
+		return err
+	}
+	s.invalidateServiceMount(svc.ID)
+	if strings.TrimSpace(act.Name) == "" {
+		act.Name = svc.Name
+	}
+	return nil
+}
+
+// applyServiceRestart 重启受管服务。
+func (s *Server) applyServiceRestart(act *adminAction) error {
+	svc, err := s.requireManagedService(act)
+	if err != nil {
+		return err
+	}
+	if err := s.opts.ServiceLifespan.RestartService(*svc); err != nil {
+		return err
+	}
+	s.invalidateServiceMount(svc.ID)
+	if strings.TrimSpace(act.Name) == "" {
+		act.Name = svc.Name
+	}
+	return nil
+}
+
 // ---- 渲染数据（管理台「服务」分页）----
 
 // adminServiceRow 是一张服务卡片。探活徽标只读缓存（cachedServiceProbe），
@@ -166,6 +281,19 @@ type adminServiceRow struct {
 	Href        string
 	ProbeLabel  string
 	ProbeClass  string
+	// ---- 受管服务（P1）----
+	Managed    bool
+	Running    bool
+	RunLabel   string
+	RunClass   string
+	StartCmd   string
+	StopCmd    string
+	WorkDir    string
+	Env        string
+	AutoStart  bool
+	HealthPath string
+	// Logs 是最近日志的纯文本（受管服务才填，用于卡片里的 details 展开）。
+	Logs string
 }
 
 // adminServiceGrantRow 是服务授权矩阵里的一行（一个用户 × 全部服务）。
@@ -219,6 +347,19 @@ func (s *Server) buildServiceRows(lang i18n.Lang, services []Service) []adminSer
 		}
 		probe, ok := s.cachedServiceProbe(svc.ID)
 		probeLabel, probeClass := serviceProbeLabel(lang, probe, ok)
+		runLabel, runClass, runLogs := "", "", ""
+		if svc.Managed {
+			st := s.serviceRunStatus(svc.ID)
+			runLabel, runClass = i18n.T(lang, i18n.KeyAdminSvcStopped), "off"
+			if st.Running {
+				runLabel, runClass = i18n.T(lang, i18n.KeyAdminSvcRunning), "on"
+			}
+			if s.opts.ServiceLifespan != nil {
+				if l, err := s.opts.ServiceLifespan.Logs(svc.ID, 100); err == nil {
+					runLogs = l
+				}
+			}
+		}
 		rows = append(rows, adminServiceRow{
 			ID:              svc.ID,
 			Name:            svc.Name,
@@ -232,6 +373,17 @@ func (s *Server) buildServiceRows(lang i18n.Lang, services []Service) []adminSer
 			Href:            ServiceMountPrefix + svc.ID + "/",
 			ProbeLabel:      probeLabel,
 			ProbeClass:      probeClass,
+			Managed:         svc.Managed,
+			Running:         svc.Managed && s.serviceRunStatus(svc.ID).Running,
+			RunLabel:        runLabel,
+			RunClass:        runClass,
+			StartCmd:        svc.StartCmd,
+			StopCmd:         svc.StopCmd,
+			WorkDir:         svc.WorkDir,
+			Env:             svc.Env,
+			AutoStart:       svc.AutoStart,
+			HealthPath:      svc.HealthPath,
+			Logs:            runLogs,
 		})
 	}
 	return rows

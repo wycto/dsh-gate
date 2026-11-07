@@ -120,7 +120,7 @@ func (s *Server) handleServicesPage(w http.ResponseWriter, r *http.Request) {
 		Styles      []auth.ThemeOption
 	}{
 		Lang:          string(lang),
-		Title:         i18n.T(lang, i18n.KeySvcPageTitle),
+		Title:         s.pageTitle(lang, i18n.KeySvcPageTitle),
 		SignedInAs:    i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(user)),
 		AdminLabel:    i18n.T(lang, i18n.KeyPortalAdmin),
 		SignOut:       i18n.T(lang, i18n.KeyPortalSignOut),

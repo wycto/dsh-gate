@@ -14,6 +14,7 @@
 //	dsh-gate dsh <list|add|edit|rename|start|stop|restart|rm|install>  管理 dsh 实例
 //	dsh-gate manage <user|grant>  用户与授权
 //	dsh-gate svc <list|add|rm|enable|disable|probe>  内网服务登记与探活
+//	dsh-gate mcp [--base-url ... --api-key ...]      以 MCP（stdio）方式暴露对外 API 给 AI/客户端
 //	dsh-gate service <unit|install|uninstall|status>  开机自启（只托管管理端）
 //	dsh-gate plugin / model       dsh 配置档与模型的辅助命令（--instance 指定实例）
 //
@@ -85,6 +86,8 @@ func run(argv []string) int {
 		return manageCommand(rest)
 	case "svc":
 		return svcCommand(rest)
+	case "mcp":
+		return mcpCommand(rest)
 	case "service":
 		return serviceCommand(rest)
 	case "plugin":
@@ -102,7 +105,7 @@ func run(argv []string) int {
 func isCommand(name string) bool {
 	switch name {
 	case "install", "start", "stop", "restart", "status", "uninstall",
-		"dsh", "manage", "svc", "service", "plugin", "model", "version":
+		"dsh", "manage", "svc", "mcp", "service", "plugin", "model", "version":
 		return true
 	}
 	return false
@@ -137,6 +140,10 @@ dsh 实例（与 /admin 页面能力对等）:
   dsh-gate svc list                          列出登记的服务
   dsh-gate svc add --name <名字> --upstream <地址> [--host-header ...] [--insecure-tls] [--note ...]
   dsh-gate svc rm|enable|disable|probe <名字或 id>
+
+MCP（把对外 API 包成 MCP 工具，供 AI/客户端直接调用）:
+  dsh-gate mcp --base-url <网关地址> --api-key <dgk_…> [--insecure]
+  也可用环境变量 DSH_GATE_API_URL / DSH_GATE_API_KEY
 
 用户与授权:
   dsh-gate manage user add|passwd|role|rename|disable|enable|list|rm <用户名>

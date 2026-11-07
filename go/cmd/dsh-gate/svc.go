@@ -46,11 +46,21 @@ func svcCommand(args []string) int {
 		return svcRefAction("svc.disable", "停用", args[1:])
 	case "probe":
 		return svcProbe(args[1:])
+	case "start":
+		return svcRefAction("svc.start", "启动", args[1:])
+	case "stop":
+		return svcRefAction("svc.stop", "停止", args[1:])
+	case "restart":
+		return svcRefAction("svc.restart", "重启", args[1:])
+	case "logs":
+		return svcLogs(args[1:])
+	case "discover":
+		return svcDiscover(args[1:])
 	case "-h", "--help", "help":
 		printSvcHelp(os.Stdout)
 		return 0
 	default:
-		return usageError("未知的 svc 子命令 %q，可用：list / add / rm / enable / disable / probe", args[0])
+		return usageError("未知的 svc 子命令 %q，可用：list / add / rm / enable / disable / probe / start / stop / restart / logs", args[0])
 	}
 }
 
@@ -68,9 +78,18 @@ func printSvcHelp(w *os.File) {
                                              登记服务；地址形如
                                              http://192.168.1.20:8080 或
                                              https://wiki.corp.example/base
+  dsh-gate svc add ... --start-cmd <命令> [--stop-cmd <命令>] [--work-dir <目录>]
+        [--env <K=V;K=V>] [--health-path </路径>] [--auto-start]
+                                             登记为「受管服务」：网关按启动命令拉
+                                             起并守护，可 start/stop/restart
   dsh-gate svc rm <名字或 id>                删除登记（不影响服务本身）
   dsh-gate svc enable|disable <名字或 id>    启用 / 停用挂载
   dsh-gate svc probe <名字或 id>             探活：真打一次上游（2s 超时）
+  dsh-gate svc start|stop|restart <名字或 id>  受管服务的启停重启
+  dsh-gate svc logs <名字或 id> [--tail N]   查看受管服务最近日志
+  dsh-gate svc discover --local [--add]      发现本机正在监听的服务
+  dsh-gate svc discover --cidr <网段> --ports <80,443,3000-3100> [--add]
+                                             扫描私有网段内的服务；--add 批量登记
 
 公共选项: --state-dir <目录>  --db <路径>  --lang zh-CN|en
 `)
@@ -89,6 +108,32 @@ type svcLocalRequest struct {
 	HostHeader  string `json:"hostHeader,omitempty"`
 	Note        string `json:"note,omitempty"`
 	InsecureTLS bool   `json:"insecureTLS,omitempty"`
+	// 受管服务字段（svc.add 时）。
+	Managed    bool   `json:"managed,omitempty"`
+	StartCmd   string `json:"startCmd,omitempty"`
+	StopCmd    string `json:"stopCmd,omitempty"`
+	WorkDir    string `json:"workDir,omitempty"`
+	Env        string `json:"env,omitempty"`
+	AutoStart  bool   `json:"autoStart,omitempty"`
+	HealthPath string `json:"healthPath,omitempty"`
+	// Tail 只在 svc.logs 时用。
+	Tail int `json:"tail,omitempty"`
+	// 服务发现字段（svc.discover / svc.discover.add）。
+	Mode       string         `json:"mode,omitempty"`
+	CIDR       string         `json:"cidr,omitempty"`
+	Ports      string         `json:"ports,omitempty"`
+	Candidates []svcCandidate `json:"candidates,omitempty"`
+}
+
+// svcCandidate 是服务发现的一个候选。
+type svcCandidate struct {
+	Source  string `json:"source,omitempty"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Name    string `json:"name,omitempty"`
+	Command string `json:"command,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Already bool   `json:"alreadyRegistered"`
 }
 
 // svcLocalService 是响应里的一条服务。
@@ -99,6 +144,8 @@ type svcLocalService struct {
 	Enabled  bool   `json:"enabled"`
 	URL      string `json:"url"`
 	Note     string `json:"note"`
+	Managed  bool   `json:"managed"`
+	State    string `json:"state,omitempty"`
 }
 
 // svcProbeInfo 是探活结果。服务端 ServiceProbe 不带 JSON 标签，
@@ -112,10 +159,14 @@ type svcProbeInfo struct {
 
 // svcLocalResponse 是 svc.* 动作的响应体。
 type svcLocalResponse struct {
-	OK       bool              `json:"ok"`
-	Error    string            `json:"error"`
-	Services []svcLocalService `json:"services"`
-	Probe    *svcProbeInfo     `json:"probe"`
+	OK         bool              `json:"ok"`
+	Error      string            `json:"error"`
+	Services   []svcLocalService `json:"services"`
+	Probe      *svcProbeInfo     `json:"probe"`
+	Logs       string            `json:"logs"`
+	Candidates []svcCandidate    `json:"candidates"`
+	Created    int               `json:"created"`
+	Skipped    int               `json:"skipped"`
 }
 
 // svcPost 发一个 svc.* 本机控制请求。地址发现与令牌复用 localEndpoint
@@ -191,7 +242,15 @@ func svcList(args []string) int {
 		if !svc.Enabled {
 			state = "停用"
 		}
-		fmt.Printf("  %-20s %-12s %-4s %s\n", svc.Name, svc.ID, state, svc.Upstream)
+		kind := "代理"
+		if svc.Managed {
+			kind = "受管"
+		}
+		run := ""
+		if svc.Managed && svc.State != "" {
+			run = "[" + svc.State + "]"
+		}
+		fmt.Printf("  %-20s %-12s %-4s %-4s %-8s %s\n", svc.Name, svc.ID, state, kind, run, svc.Upstream)
 		fmt.Printf("    挂载 %s\n", svc.URL)
 		if strings.TrimSpace(svc.Note) != "" {
 			fmt.Printf("    备注 %s\n", svc.Note)
@@ -209,6 +268,12 @@ func svcAdd(args []string) int {
 	hostHeader := fs.String("host-header", "", "Host 头策略：upstream（默认）/ gateway")
 	insecure := fs.Bool("insecure-tls", false, "跳过上游 TLS 证书校验（自签内网服务）")
 	note := fs.String("note", "", "备注")
+	startCmd := fs.String("start-cmd", "", "受管服务的启动命令（给了即为受管服务）")
+	stopCmd := fs.String("stop-cmd", "", "受管服务的自定义停止命令（空=按进程组终止）")
+	workDir := fs.String("work-dir", "", "受管服务的子进程工作目录")
+	env := fs.String("env", "", "受管服务追加的环境变量，分号分隔 KEY=VALUE")
+	healthPath := fs.String("health-path", "", "受管服务就绪探测路径（空=探测上游端口）")
+	autoStart := fs.Bool("auto-start", false, "网关启动时自动拉起该受管服务")
 	_, stateDir, err := parsePortalFlagsFull(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -225,6 +290,9 @@ func svcAdd(args []string) int {
 	resp, err := svcPost(stateDir, svcLocalRequest{
 		Action: "svc.add", Service: *name, Upstream: *upstream,
 		HostHeader: *hostHeader, InsecureTLS: *insecure, Note: *note,
+		Managed:  strings.TrimSpace(*startCmd) != "",
+		StartCmd: *startCmd, StopCmd: *stopCmd, WorkDir: *workDir,
+		Env: *env, AutoStart: *autoStart, HealthPath: *healthPath,
 	})
 	if err != nil {
 		return fatal("%v", err)
@@ -257,6 +325,33 @@ func svcRefAction(action, label string, args []string) int {
 		return fatal("%v", err)
 	}
 	fmt.Printf("服务 %q 已%s。\n", fs.Arg(0), label)
+	return 0
+}
+
+// svcLogs 查看受管服务最近日志。
+func svcLogs(args []string) int {
+	fs := flag.NewFlagSet("svc logs", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	tail := fs.Int("tail", 200, "读取最近多少行")
+	_, stateDir, err := parsePortalFlagsFull(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return usageError("%v", err)
+	}
+	if fs.NArg() != 1 {
+		return usageError("svc logs 需要一个服务名或 id")
+	}
+	resp, err := svcPost(stateDir, svcLocalRequest{Action: "svc.logs", Service: fs.Arg(0), Tail: *tail})
+	if err != nil {
+		return fatal("%v", err)
+	}
+	if strings.TrimSpace(resp.Logs) == "" {
+		fmt.Println("（暂无日志）")
+		return 0
+	}
+	fmt.Println(resp.Logs)
 	return 0
 }
 
@@ -295,4 +390,75 @@ func svcProbe(args []string) int {
 	}
 	fmt.Println()
 	return 1
+}
+
+// svcDiscover 执行服务发现并可批量登记。
+func svcDiscover(args []string) int {
+	fs := flag.NewFlagSet("svc discover", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	local := fs.Bool("local", false, "发现本机正在监听的服务")
+	cidr := fs.String("cidr", "", "要扫描的私有网段，如 192.168.1.0/24")
+	ports := fs.String("ports", "", "端口列表/区间，如 80,443,3000-3100")
+	add := fs.Bool("add", false, "把未登记的候选批量登记为纯代理服务")
+	_, stateDir, err := parsePortalFlagsFull(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return usageError("%v", err)
+	}
+	if fs.NArg() > 0 {
+		return usageError("svc discover 不接受位置参数")
+	}
+	req := svcLocalRequest{Action: "svc.discover"}
+	if strings.TrimSpace(*cidr) != "" {
+		req.Mode = "cidr"
+		req.CIDR = strings.TrimSpace(*cidr)
+		req.Ports = strings.TrimSpace(*ports)
+	} else if *local {
+		req.Mode = "local"
+	} else {
+		return usageError("请指定 --local 或 --cidr")
+	}
+	resp, err := svcPost(stateDir, req)
+	if err != nil {
+		return fatal("%v", err)
+	}
+	if len(resp.Candidates) == 0 {
+		fmt.Println("没有发现候选服务。")
+		return 0
+	}
+	fmt.Printf("发现 %d 个候选：\n", len(resp.Candidates))
+	for _, c := range resp.Candidates {
+		detail := c.Title
+		if detail == "" {
+			detail = c.Command
+		}
+		if detail == "" {
+			detail = c.Source
+		}
+		mark := ""
+		if c.Already {
+			mark = " [已登记]"
+		}
+		fmt.Printf("  %-22s %-8s %s%s\n", fmt.Sprintf("%s:%d", c.Host, c.Port), "", detail, mark)
+	}
+	if *add {
+		pending := make([]svcCandidate, 0, len(resp.Candidates))
+		for _, c := range resp.Candidates {
+			if !c.Already {
+				pending = append(pending, c)
+			}
+		}
+		if len(pending) == 0 {
+			fmt.Println("全部候选都已登记，无需新增。")
+			return 0
+		}
+		out, err := svcPost(stateDir, svcLocalRequest{Action: "svc.discover.add", Candidates: pending})
+		if err != nil {
+			return fatal("%v", err)
+		}
+		fmt.Printf("已登记：新建 %d，跳过 %d。\n", out.Created, out.Skipped)
+	}
+	return 0
 }

@@ -563,6 +563,75 @@ const (
 	KeyAdminSvcProbeNone = "admin.svc.probeNone"
 	KeyAdminSvcProbeOK   = "admin.svc.probeOK"
 	KeyAdminSvcProbeFail = "admin.svc.probeFail"
+	// 受管服务（P1：managed 进程）
+	KeyAdminSvcManaged      = "admin.svc.managed"
+	KeyAdminSvcManagedBadge = "admin.svc.managedBadge"
+	KeyAdminSvcStartCmd     = "admin.svc.startCmd"
+	KeyAdminSvcStopCmd      = "admin.svc.stopCmd"
+	KeyAdminSvcWorkDir      = "admin.svc.workDir"
+	KeyAdminSvcEnv          = "admin.svc.env"
+	KeyAdminSvcAutoStart    = "admin.svc.autoStart"
+	KeyAdminSvcHealthPath   = "admin.svc.healthPath"
+	KeyAdminSvcStart        = "admin.svc.start"
+	KeyAdminSvcStop         = "admin.svc.stop"
+	KeyAdminSvcRestart      = "admin.svc.restart"
+	KeyAdminSvcLogs         = "admin.svc.logs"
+	KeyAdminSvcRunning      = "admin.svc.running"
+	KeyAdminSvcStopped      = "admin.svc.stopped"
+	KeyAdminSvcLogsTitle    = "admin.svc.logsTitle"
+
+	// 管理台：对外 API（docs/service-api.md）
+	KeyAdminNavAPI = "admin.nav.api"
+	// 管理台：自定义站点名称（浏览器标签标题，区分多台设备）
+	KeyAdminNavSite           = "admin.nav.site"
+	KeyAdminSiteName          = "admin.site.name"
+	KeyAdminSiteHint          = "admin.site.hint"
+	KeyAdminSitePh            = "admin.site.ph"
+	KeyAdminSiteBtnSave       = "admin.site.btnSave"
+	KeyAdminMsgSiteSaved      = "admin.msg.siteSaved"
+	KeyAuditSiteSave          = "audit.site.save"
+	KeyAdminAPITitle          = "admin.api.title"
+	KeyAdminAPIHint           = "admin.api.hint"
+	KeyAdminAPIStateOn        = "admin.api.stateOn"
+	KeyAdminAPIStateOff       = "admin.api.stateOff"
+	KeyAdminAPIToggle         = "admin.api.toggle"
+	KeyAdminAPIBtnSave        = "admin.api.btnSave"
+	KeyAdminAPIKeyCreate      = "admin.api.keyCreate"
+	KeyAdminAPIKeyCreateHint  = "admin.api.keyCreateHint"
+	KeyAdminAPIKeyName        = "admin.api.keyName"
+	KeyAdminAPIKeyScopes      = "admin.api.keyScopes"
+	KeyAdminAPIKeyIP          = "admin.api.keyIP"
+	KeyAdminAPIKeyIPPh        = "admin.api.keyIPPlaceholder"
+	KeyAdminAPIBtnCreateKey   = "admin.api.btnCreateKey"
+	KeyAdminAPIColPrefix      = "admin.api.colPrefix"
+	KeyAdminAPIColScopes      = "admin.api.colScopes"
+	KeyAdminAPIColLastUsed    = "admin.api.colLastUsed"
+	KeyAdminAPINoKeys         = "admin.api.noKeys"
+	KeyAdminAPIKeyCreated     = "admin.api.keyCreated"
+	KeyAdminAPIKeyCreatedHint = "admin.api.keyCreatedHint"
+	KeyAdminAPIKeySecret      = "admin.api.keySecret"
+	KeyAdminAPINever          = "admin.api.never"
+
+	// 管理台：对外 API 操作结果
+	KeyAdminMsgAPIToggledOn   = "admin.msg.apiToggledOn"
+	KeyAdminMsgAPIToggledOff  = "admin.msg.apiToggledOff"
+	KeyAdminMsgAPIKeyDisabled = "admin.msg.apiKeyDisabled"
+	KeyAdminMsgAPIKeyEnabled  = "admin.msg.apiKeyEnabled"
+	KeyAdminMsgAPIKeyDeleted  = "admin.msg.apiKeyDeleted"
+
+	// 对外 API 的 scope 显示名
+	KeyAPIScopeServicesRead       = "api.scope.servicesRead"
+	KeyAPIScopeServicesWrite      = "api.scope.servicesWrite"
+	KeyAPIScopeServicesLifecycle  = "api.scope.servicesLifecycle"
+	KeyAPIScopeInstancesRead      = "api.scope.instancesRead"
+	KeyAPIScopeInstancesLifecycle = "api.scope.instancesLifecycle"
+
+	// 审计：对外 API
+	KeyAuditAPIToggle     = "audit.api.toggle"
+	KeyAuditAPIKeyCreate  = "audit.apiKey.create"
+	KeyAuditAPIKeyDisable = "audit.apiKey.disable"
+	KeyAuditAPIKeyEnable  = "audit.apiKey.enable"
+	KeyAuditAPIKeyDelete  = "audit.apiKey.delete"
 
 	// 服务动作的 PRG 回跳提示
 	KeyAdminMsgSvcCreated     = "admin.msg.svcCreated"
@@ -572,6 +641,29 @@ const (
 	KeyAdminMsgSvcDisabled    = "admin.msg.svcDisabled"
 	KeyAdminMsgSvcProbed      = "admin.msg.svcProbed"
 	KeyAdminMsgSvcGrantsSaved = "admin.msg.svcGrantsSaved"
+	KeyAdminMsgSvcStarted     = "admin.msg.svcStarted"
+	KeyAdminMsgSvcStopped     = "admin.msg.svcStopped"
+	KeyAdminMsgSvcRestarted   = "admin.msg.svcRestarted"
+
+	// 服务发现（管理台面板 + 审计）
+	KeyAdminDiscTitle        = "admin.disc.title"
+	KeyAdminDiscHint         = "admin.disc.hint"
+	KeyAdminDiscLocalBtn     = "admin.disc.localBtn"
+	KeyAdminDiscCidr         = "admin.disc.cidr"
+	KeyAdminDiscPorts        = "admin.disc.ports"
+	KeyAdminDiscScanBtn      = "admin.disc.scanBtn"
+	KeyAdminDiscAddBtn       = "admin.disc.addBtn"
+	KeyAdminDiscColSource    = "admin.disc.colSource"
+	KeyAdminDiscColTarget    = "admin.disc.colTarget"
+	KeyAdminDiscColDetail    = "admin.disc.colDetail"
+	KeyAdminDiscColHTTP      = "admin.disc.colHTTP"
+	KeyAdminDiscColReg       = "admin.disc.colReg"
+	KeyAdminDiscAlready      = "admin.disc.already"
+	KeyAdminDiscEmpty        = "admin.disc.empty"
+	KeyAdminMsgDiscAdded     = "admin.msg.discAdded"
+	KeyAuditDiscoverLocal    = "audit.discover.local"
+	KeyAuditDiscoverScan     = "audit.discover.scan"
+	KeyAuditDiscoverRegister = "audit.discover.register"
 
 	// 服务审计：动作与说明（与实例审计同一口径）
 	KeyAuditServiceEnter      = "audit.service.enter"
@@ -581,6 +673,9 @@ const (
 	KeyAuditServiceRemove     = "audit.service.remove"
 	KeyAuditServiceToggle     = "audit.service.toggle"
 	KeyAuditServiceProbe      = "audit.service.probe"
+	KeyAuditServiceStart      = "audit.service.start"
+	KeyAuditServiceStop       = "audit.service.stop"
+	KeyAuditServiceRestart    = "audit.service.restart"
 	KeyAuditServiceGrantsSave = "audit.serviceGrants.save"
 	KeyAuditDetailServiceID   = "audit.detail.serviceID"
 )
@@ -920,6 +1015,21 @@ var allKeys = []string{
 	KeyAdminSvcProbeNone,
 	KeyAdminSvcProbeOK,
 	KeyAdminSvcProbeFail,
+	KeyAdminSvcManaged,
+	KeyAdminSvcManagedBadge,
+	KeyAdminSvcStartCmd,
+	KeyAdminSvcStopCmd,
+	KeyAdminSvcWorkDir,
+	KeyAdminSvcEnv,
+	KeyAdminSvcAutoStart,
+	KeyAdminSvcHealthPath,
+	KeyAdminSvcStart,
+	KeyAdminSvcStop,
+	KeyAdminSvcRestart,
+	KeyAdminSvcLogs,
+	KeyAdminSvcRunning,
+	KeyAdminSvcStopped,
+	KeyAdminSvcLogsTitle,
 	KeyAdminMsgSvcCreated,
 	KeyAdminMsgSvcUpdated,
 	KeyAdminMsgSvcRemoved,
@@ -927,6 +1037,27 @@ var allKeys = []string{
 	KeyAdminMsgSvcDisabled,
 	KeyAdminMsgSvcProbed,
 	KeyAdminMsgSvcGrantsSaved,
+	KeyAdminMsgSvcStarted,
+	KeyAdminMsgSvcStopped,
+	KeyAdminMsgSvcRestarted,
+	KeyAdminDiscTitle,
+	KeyAdminDiscHint,
+	KeyAdminDiscLocalBtn,
+	KeyAdminDiscCidr,
+	KeyAdminDiscPorts,
+	KeyAdminDiscScanBtn,
+	KeyAdminDiscAddBtn,
+	KeyAdminDiscColSource,
+	KeyAdminDiscColTarget,
+	KeyAdminDiscColDetail,
+	KeyAdminDiscColHTTP,
+	KeyAdminDiscColReg,
+	KeyAdminDiscAlready,
+	KeyAdminDiscEmpty,
+	KeyAdminMsgDiscAdded,
+	KeyAuditDiscoverLocal,
+	KeyAuditDiscoverScan,
+	KeyAuditDiscoverRegister,
 	KeyAuditServiceEnter,
 	KeyAuditServiceDenied,
 	KeyAuditServiceCreate,
@@ -934,7 +1065,54 @@ var allKeys = []string{
 	KeyAuditServiceRemove,
 	KeyAuditServiceToggle,
 	KeyAuditServiceProbe,
+	KeyAuditServiceStart,
+	KeyAuditServiceStop,
+	KeyAuditServiceRestart,
 	KeyAuditServiceGrantsSave,
+	KeyAdminNavAPI,
+	KeyAdminNavSite,
+	KeyAdminSiteName,
+	KeyAdminSiteHint,
+	KeyAdminSitePh,
+	KeyAdminSiteBtnSave,
+	KeyAdminMsgSiteSaved,
+	KeyAuditSiteSave,
+	KeyAdminAPITitle,
+	KeyAdminAPIHint,
+	KeyAdminAPIStateOn,
+	KeyAdminAPIStateOff,
+	KeyAdminAPIToggle,
+	KeyAdminAPIBtnSave,
+	KeyAdminAPIKeyCreate,
+	KeyAdminAPIKeyCreateHint,
+	KeyAdminAPIKeyName,
+	KeyAdminAPIKeyScopes,
+	KeyAdminAPIKeyIP,
+	KeyAdminAPIKeyIPPh,
+	KeyAdminAPIBtnCreateKey,
+	KeyAdminAPIColPrefix,
+	KeyAdminAPIColScopes,
+	KeyAdminAPIColLastUsed,
+	KeyAdminAPINoKeys,
+	KeyAdminAPIKeyCreated,
+	KeyAdminAPIKeyCreatedHint,
+	KeyAdminAPIKeySecret,
+	KeyAdminAPINever,
+	KeyAdminMsgAPIToggledOn,
+	KeyAdminMsgAPIToggledOff,
+	KeyAdminMsgAPIKeyDisabled,
+	KeyAdminMsgAPIKeyEnabled,
+	KeyAdminMsgAPIKeyDeleted,
+	KeyAPIScopeServicesRead,
+	KeyAPIScopeServicesWrite,
+	KeyAPIScopeServicesLifecycle,
+	KeyAPIScopeInstancesRead,
+	KeyAPIScopeInstancesLifecycle,
+	KeyAuditAPIToggle,
+	KeyAuditAPIKeyCreate,
+	KeyAuditAPIKeyDisable,
+	KeyAuditAPIKeyEnable,
+	KeyAuditAPIKeyDelete,
 	KeyAuditDetailServiceID,
 }
 

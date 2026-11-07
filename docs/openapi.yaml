@@ -1,0 +1,181 @@
+openapi: 3.0.3
+info:
+  title: dsh-gate 对外 API
+  version: "1.0"
+  description: |
+    dsh-gate 管理端的对外 HTTP API：登记/管理内网服务、查看与启停 dsh 实例。
+    默认关闭，需在管理台「API」分页开启并创建 API Key；所有请求用
+    `Authorization: Bearer dgk_…` 鉴权。
+servers:
+  - url: https://127.0.0.1:12020
+    description: 本机默认；使用时替换为你的网关地址
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 管理台「API」分页创建的 dgk_ 密钥
+  schemas:
+    Error:
+      type: object
+      properties:
+        ok: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [unauthorized, forbidden, not_found, invalid_argument, conflict, rate_limited, unsupported, internal]
+            message: { type: string }
+    Service:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        upstream: { type: string, example: "http://127.0.0.1:8080" }
+        hostHeader: { type: string, enum: [upstream, gateway] }
+        insecureTLS: { type: boolean }
+        note: { type: string }
+        enabled: { type: boolean }
+        url: { type: string, description: 挂载路径 /s/<id>/ }
+        managed: { type: boolean, description: 是否由网关托管进程 }
+    ServiceInput:
+      type: object
+      required: [name, upstream]
+      properties:
+        name: { type: string }
+        upstream: { type: string }
+        hostHeader: { type: string, enum: [upstream, gateway] }
+        insecureTLS: { type: boolean }
+        note: { type: string }
+        managed: { type: boolean }
+        startCmd: { type: string, description: 受管服务的启动命令 }
+        stopCmd: { type: string }
+        workDir: { type: string }
+        env: { type: string, description: 每行 KEY=VALUE }
+        autoStart: { type: boolean }
+        healthPath: { type: string }
+    Instance:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        port: { type: integer }
+        enabled: { type: boolean }
+        running: { type: boolean }
+        url: { type: string }
+paths:
+  /api/v1/health:
+    get:
+      summary: 健康探针（无需鉴权，仍需总开关开启）
+      security: []
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean } } } } } }
+        "404": { description: 外部 API 未开启 }
+  /api/v1/services:
+    get:
+      summary: 列出服务（scope services:read）
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  services: { type: array, items: { $ref: "#/components/schemas/Service" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: 登记服务（scope services:write）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ServiceInput" } } }
+      responses:
+        "201": { description: 已创建 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/v1/services/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string }, description: 服务 id 或名称 }
+    get:
+      summary: 服务详情（scope services:read）
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, service: { $ref: "#/components/schemas/Service" } } } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      summary: 修改服务（scope services:write）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ServiceInput" } } }
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: 删除服务（scope services:write）
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/services/{id}/start:
+    post:
+      summary: 启动受管服务（scope services:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: OK }
+        "409": { description: 非受管服务（unsupported） }
+  /api/v1/services/{id}/stop:
+    post:
+      summary: 停止受管服务（scope services:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: OK }
+  /api/v1/services/{id}/restart:
+    post:
+      summary: 重启受管服务（scope services:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: OK }
+  /api/v1/services/{id}/status:
+    get:
+      summary: 服务运行状态（scope services:read）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: OK }
+  /api/v1/services/{id}/logs:
+    get:
+      summary: 服务最近日志（scope services:read）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: tail, in: query, required: false, schema: { type: integer, default: 200 } }
+      responses:
+        "200": { description: OK }
+  /api/v1/instances:
+    get:
+      summary: 列出 dsh 实例（scope instances:read）
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  instances: { type: array, items: { $ref: "#/components/schemas/Instance" } }
+  /api/v1/instances/{id}/start:
+    post:
+      summary: 启动实例（scope instances:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: OK } }
+  /api/v1/instances/{id}/stop:
+    post:
+      summary: 停止实例（scope instances:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: OK } }
+  /api/v1/instances/{id}/restart:
+    post:
+      summary: 重启实例（scope instances:lifecycle）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: OK } }

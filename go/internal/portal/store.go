@@ -39,7 +39,11 @@ import (
 // 见 docs/portal.md「用户级类别权限」）：默认都开，老用户行为与升级前一致。
 // v6 加 settings 键值表，存门户「实例 / 服务」两个全局总开关（键缺省视为开，
 // 老库行为不变）：总开关关掉某类时所有人（含管理员）的该类入口都隐藏。
-const SchemaVersion = 6
+// v7 加 api_keys 表（对外 HTTP API 的鉴权密钥，见 docs/service-api.md）；只建新表，
+// 不动老表。external_api_enabled 走 settings（缺省关）。
+// v8 给 services 加「受管进程」生命周期列（managed/start_cmd/stop_cmd/work_dir/env/
+// auto_start/health_path，见 docs/service-api.md）；纯代理服务 managed=0，行为不变。
+const SchemaVersion = 8
 
 // ErrNotFound 表示按 id / 名字查不到记录。
 var ErrNotFound = errors.New("记录不存在")
@@ -174,6 +178,36 @@ CREATE TABLE settings (
 );
 `
 
+// schemaV7 新增 api_keys 表：对外 HTTP API 的鉴权密钥（docs/service-api.md）。
+// 只存 sha256 哈希与用于查找/展示的前缀，明文只在创建时返回一次。只建新表、不动老表。
+const schemaV7 = `
+CREATE TABLE api_keys (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  prefix       TEXT NOT NULL,
+  hash         TEXT NOT NULL,
+  scopes       TEXT NOT NULL DEFAULT '',
+  ip_allowlist TEXT NOT NULL DEFAULT '',
+  disabled     INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL,
+  created_by   TEXT NOT NULL DEFAULT '',
+  last_used_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX api_keys_prefix_idx ON api_keys(prefix);
+`
+
+// schemaV8 给 services 加受管进程的生命周期列（docs/service-api.md 第 6/7 节）。
+// 全部 NOT NULL DEFAULT：老服务读出来 managed=0、其余为空，行为与升级前逐字一致。
+const schemaV8 = `
+ALTER TABLE services ADD COLUMN managed     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN start_cmd   TEXT    NOT NULL DEFAULT '';
+ALTER TABLE services ADD COLUMN stop_cmd    TEXT    NOT NULL DEFAULT '';
+ALTER TABLE services ADD COLUMN work_dir    TEXT    NOT NULL DEFAULT '';
+ALTER TABLE services ADD COLUMN env         TEXT    NOT NULL DEFAULT '';
+ALTER TABLE services ADD COLUMN auto_start  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE services ADD COLUMN health_path TEXT    NOT NULL DEFAULT '';
+`
+
 // Open 打开（必要时创建并迁移）管理端数据库。
 //
 // 文件不存在不算错误：建一个空库。文件存在但结构版本比程序更新则报错，
@@ -304,6 +338,16 @@ func (s *Store) migrate() error {
 	if version < 6 {
 		if _, err := tx.Exec(schemaV6); err != nil {
 			return fmt.Errorf("升级管理端数据库到结构版本 6 失败: %w", err)
+		}
+	}
+	if version < 7 {
+		if _, err := tx.Exec(schemaV7); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 7 失败: %w", err)
+		}
+	}
+	if version < 8 {
+		if _, err := tx.Exec(schemaV8); err != nil {
+			return fmt.Errorf("升级管理端数据库到结构版本 8 失败: %w", err)
 		}
 	}
 	// PRAGMA 不接受参数占位符；版本号来自本包常量，不涉及外部输入。

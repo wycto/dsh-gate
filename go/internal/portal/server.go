@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wycto/dsh-gate/internal/assets"
 	"github.com/wycto/dsh-gate/internal/auth"
@@ -66,6 +67,30 @@ type ServerOptions struct {
 	// CookiePort 是管理端监听端口：CSRF Cookie 名带 _p<端口> 后缀，与 Gate 的
 	// 会话 Cookie 同一口径（同机多网关隔离，见 cookie.ScopeName）。0 不加后缀。
 	CookiePort int
+	// APIRateLimitPerMin 是外部 API 每个密钥的每分钟请求上限；0 用默认 60。
+	APIRateLimitPerMin int
+	// ServiceLifespan 提供「受管服务」的启停/状态/日志（P1）。为 nil 时不支持受管
+	// 服务的生命周期操作（纯代理服务不受影响）。
+	ServiceLifespan ServiceLifespan
+}
+
+// ServiceRunStatus 是受管服务的一次运行状态快照（运行态不落库，内存态）。
+type ServiceRunStatus struct {
+	Running   bool
+	PID       int
+	State     string
+	StartedAt time.Time
+	LastError string
+}
+
+// ServiceLifespan 抽象「受管服务」的进程生命周期，由 portalruntime 用 internal/svclife
+// 实现、在装配处注入。管理端与对外 API 只依赖这个窄接口，不直接碰 svclife。
+type ServiceLifespan interface {
+	StartService(svc Service) error
+	StopService(id string) error
+	RestartService(svc Service) error
+	Status(id string) ServiceRunStatus
+	Logs(id string, tail int) (string, error)
 }
 
 // Server 是管理端的 HTTP 处理器。
@@ -89,6 +114,8 @@ type Server struct {
 	svcProbes map[string]ServiceProbe
 	// csrfCookie 是带端口后缀的 CSRF Cookie 名（同机多网关隔离）。
 	csrfCookie string
+	// apiLimiter 是外部 API 的每密钥限速器（见 api.go）。
+	apiLimiter *apiRateLimiter
 }
 
 // NewServer 构造管理端 HTTP 层。模板解析失败会在这里就报错（而不是第一次访问才炸）。
@@ -126,6 +153,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 			"'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 		mounts:     map[string]*mountproxy.Proxy{},
 		csrfCookie: cookie.ScopeName(CSRFCookie, opts.CookiePort),
+		apiLimiter: newAPIRateLimiter(opts.APIRateLimitPerMin),
 	}, nil
 }
 
@@ -147,6 +175,12 @@ func (s *Server) Handler() http.Handler {
 	// 管理员口令也会调它；拒绝非回环来源与错 token 都在处理函数里做。
 	guarded := s.opts.Gate.Handler(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 外部 API 走 API Key 鉴权、不过登录门，且必须在 Gate 之前分流
+		// （否则未登录的 API 调用会被重定向去登录页）。
+		if apiPathMatches(r.URL.Path) {
+			s.handleExternalAPI(w, r)
+			return
+		}
 		if r.URL.Path == LocalAPIPath {
 			s.handleLocalAPI(w, r)
 			return
@@ -258,6 +292,23 @@ func (s *Server) canSeeServices(u *User) bool {
 	return svc && (u.IsAdmin() || u.AllowServices)
 }
 
+// pageTitle 给页面标题加上自定义站点名称前缀：管理多台设备上的网关时，
+// 浏览器标签页一眼能分出「这是哪台」（如「家里 NAS · 管理控制台」）。
+// 未设置或读失败都返回原文案：一次瞬时 DB 错误不该改变页面标题。
+// 登录页不走这里——它走 auth 的 TitleFunc（登录页大标题也要跟着变）。
+func (s *Server) pageTitle(lang i18n.Lang, key string) string {
+	title := i18n.T(lang, key)
+	site, err := s.opts.Store.SiteTitle()
+	if err != nil {
+		s.log.Error("读取站点名称失败，按默认标题处理", "err", err)
+		return title
+	}
+	if site == "" {
+		return title
+	}
+	return site + " · " + title
+}
+
 // handleIndex 渲染「我的实例」。
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -302,7 +353,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	data := portalPageData{
 		Lang:          string(lang),
-		Title:         i18n.T(lang, i18n.KeyPortalTitle),
+		Title:         s.pageTitle(lang, i18n.KeyPortalTitle),
 		SignedInAs:    i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(user)),
 		AdminLabel:    i18n.T(lang, i18n.KeyPortalAdmin),
 		SignOut:       i18n.T(lang, i18n.KeyPortalSignOut),
@@ -358,7 +409,7 @@ func (s *Server) renderNoAccess(w http.ResponseWriter, r *http.Request, lang i18
 	style := s.opts.Gate.Style(w, r)
 	data := portalPageData{
 		Lang:          string(lang),
-		Title:         i18n.T(lang, i18n.KeyPortalNoAccessTitle),
+		Title:         s.pageTitle(lang, i18n.KeyPortalNoAccessTitle),
 		SignedInAs:    i18n.T(lang, i18n.KeyPortalSignedInAs, displayNameOf(user)),
 		AdminLabel:    i18n.T(lang, i18n.KeyPortalAdmin),
 		SignOut:       i18n.T(lang, i18n.KeyPortalSignOut),

@@ -133,7 +133,8 @@ body:has(#tab-grants:checked) #panel-grants,
 body:has(#tab-instances:checked) #panel-instances,
 body:has(#tab-services:checked) #panel-services,
 body:has(#tab-env:checked) #panel-env,
-body:has(#tab-audit:checked) #panel-audit{display:block}
+body:has(#tab-audit:checked) #panel-audit,
+body:has(#tab-api:checked) #panel-api{display:block}
 
 /* ---------------- 底部 Dock ----------------
    macOS 的 Dock：居中、玻璃、悬停放大、当前页下方一个小圆点。 */
@@ -181,6 +182,7 @@ body:has(#tab-services:checked) .dock [for="tab-services"],
 body:has(#tab-users:checked) .dock [for="tab-users"],
 body:has(#tab-grants:checked) .dock [for="tab-grants"],
 body:has(#tab-env:checked) .dock [for="tab-env"],
+body:has(#tab-api:checked) .dock [for="tab-api"],
 body:has(#tab-audit:checked) .dock [for="tab-audit"]{color:var(--text);background:var(--card-2);
   border-color:var(--line-strong)}
 body:has(#tab-instances:checked) .dock [for="tab-instances"]::after,
@@ -188,6 +190,7 @@ body:has(#tab-services:checked) .dock [for="tab-services"]::after,
 body:has(#tab-users:checked) .dock [for="tab-users"]::after,
 body:has(#tab-grants:checked) .dock [for="tab-grants"]::after,
 body:has(#tab-env:checked) .dock [for="tab-env"]::after,
+body:has(#tab-api:checked) .dock [for="tab-api"]::after,
 body:has(#tab-audit:checked) .dock [for="tab-audit"]::after{content:"";position:absolute;bottom:1px;left:50%;
   transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--accent)}
 body:has(#tab-instances:focus-visible) .dock [for="tab-instances"],
@@ -195,6 +198,7 @@ body:has(#tab-services:focus-visible) .dock [for="tab-services"],
 body:has(#tab-users:focus-visible) .dock [for="tab-users"],
 body:has(#tab-grants:focus-visible) .dock [for="tab-grants"],
 body:has(#tab-env:focus-visible) .dock [for="tab-env"],
+body:has(#tab-api:focus-visible) .dock [for="tab-api"],
 body:has(#tab-audit:focus-visible) .dock [for="tab-audit"]{outline:2px solid var(--accent);outline-offset:2px}
 
 /* ---------------- 布局风格（<html data-style>）：控制台 / 总览 / 分栏 ----------------
@@ -231,6 +235,7 @@ body:has(#tab-services:checked) .tn[for="tab-services"],
 body:has(#tab-users:checked) .tn[for="tab-users"],
 body:has(#tab-grants:checked) .tn[for="tab-grants"],
 body:has(#tab-env:checked) .tn[for="tab-env"],
+body:has(#tab-api:checked) .tn[for="tab-api"],
 body:has(#tab-audit:checked) .tn[for="tab-audit"]{color:var(--text);background:var(--card);
   border-color:var(--line);box-shadow:inset 0 2px 0 var(--accent)}
 body:has(#tab-instances:focus-visible) .tn[for="tab-instances"],
@@ -238,6 +243,7 @@ body:has(#tab-services:focus-visible) .tn[for="tab-services"],
 body:has(#tab-users:focus-visible) .tn[for="tab-users"],
 body:has(#tab-grants:focus-visible) .tn[for="tab-grants"],
 body:has(#tab-env:focus-visible) .tn[for="tab-env"],
+body:has(#tab-api:focus-visible) .tn[for="tab-api"],
 body:has(#tab-audit:focus-visible) .tn[for="tab-audit"]{outline:2px solid var(--accent);outline-offset:-2px}
 
 /* 统计条：总览的四张卡；分栏下压成一行紧凑小卡。 */
@@ -268,6 +274,7 @@ body:has(#tab-services:checked) .sn[for="tab-services"],
 body:has(#tab-users:checked) .sn[for="tab-users"],
 body:has(#tab-grants:checked) .sn[for="tab-grants"],
 body:has(#tab-env:checked) .sn[for="tab-env"],
+body:has(#tab-api:checked) .sn[for="tab-api"],
 body:has(#tab-audit:checked) .sn[for="tab-audit"]{color:var(--text);background:var(--card-2);
   border-color:var(--line-strong);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
 body:has(#tab-instances:focus-visible) .sn[for="tab-instances"],
@@ -275,6 +282,7 @@ body:has(#tab-services:focus-visible) .sn[for="tab-services"],
 body:has(#tab-users:focus-visible) .sn[for="tab-users"],
 body:has(#tab-grants:focus-visible) .sn[for="tab-grants"],
 body:has(#tab-env:focus-visible) .sn[for="tab-env"],
+body:has(#tab-api:focus-visible) .sn[for="tab-api"],
 body:has(#tab-audit:focus-visible) .sn[for="tab-audit"]{outline:2px solid var(--accent);outline-offset:-2px}
 :root[data-style="split"] .sidebar{display:flex}
 :root[data-style="split"] .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
@@ -724,6 +732,14 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
   .bg span{animation:none}
   .tab:hover,.tab:hover + .tab,.tab:has(+ .tab:hover){transform:none}
 }
+.ico-api{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="3.4"/><path d="M10.4 10.4 20 20M17 17l-1.6 1.6M13.8 13.8 12.2 15.4"/></svg>')}
+/* 站点页（自定义站点名称） */
+body:has(#tab-site:checked) #panel-site{display:block}
+body:has(#tab-site:checked) .dock [for="tab-site"]{color:var(--text);background:var(--card-2);border-color:var(--line-strong)}
+body:has(#tab-site:checked) .dock [for="tab-site"]::after{content:"";position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--accent)}
+body:has(#tab-site:checked) .tn[for="tab-site"]{color:var(--text);background:var(--card);border-color:var(--line);box-shadow:inset 0 2px 0 var(--accent)}
+body:has(#tab-site:checked) .sn[for="tab-site"]{color:var(--text);background:var(--card-2);border-color:var(--line-strong);font-weight:600;box-shadow:inset 2px 0 0 var(--accent)}
+.ico-site{--i:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/></svg>')}
 </style>
 </head>
 <body data-live="{{.LivePath}}" data-audit-rev="{{.AuditRev}}">
@@ -1166,6 +1182,53 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
        渲染与轮询都不真探活。 */}}
   <section class="panel" id="panel-services">
     <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="6" rx="1.8"></rect><rect x="3.5" y="13.5" width="17" height="6" rx="1.8"></rect><path d="M7 7.5h.01M7 16.5h.01"></path></svg></span><h2>{{.ServicesTitle}}</h2></div>
+    <details class="pop" style="margin:0 0 14px">
+      <summary>{{$.DiscTitle}}</summary>
+      <div class="pop-panel">
+        <p style="margin:0 0 10px;opacity:.85;font-size:13px">{{$.DiscHint}}</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <form method="post" action="{{$.AdminPath}}" style="display:flex;gap:8px;align-items:flex-end;margin:0">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.discover.local">
+            <button type="submit">{{$.DiscLocalBtn}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}" style="display:flex;gap:8px;align-items:flex-end;margin:0;flex-wrap:wrap">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.discover.scan">
+            <label class="field">{{$.DiscCidrLabel}}<input type="text" name="cidr" placeholder="192.168.1.0/24"></label>
+            <label class="field">{{$.DiscPortsLabel}}<input type="text" name="ports" placeholder="80,443,3000-3100"></label>
+            <button type="submit">{{$.DiscScanBtn}}</button>
+          </form>
+        </div>
+        {{if $.DiscMessage}}<p style="margin:10px 0 0;color:#f5a623">{{$.DiscMessage}}</p>{{end}}
+        {{if $.Discovered}}
+        <form method="post" action="{{$.AdminPath}}" style="margin-top:12px">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
+          <input type="hidden" name="action" value="service.discover.add">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="text-align:left;opacity:.7">
+              <th style="padding:4px"></th><th style="padding:4px">{{$.DiscColSource}}</th><th style="padding:4px">{{$.DiscColTarget}}</th><th style="padding:4px">{{$.DiscColDetail}}</th><th style="padding:4px">{{$.DiscColHTTP}}</th><th style="padding:4px">{{$.DiscColReg}}</th>
+            </tr></thead>
+            <tbody>
+              {{range $.Discovered}}
+              <tr style="border-top:1px solid rgba(255,255,255,.08)">
+                <td style="padding:4px" data-label="">{{if .Already}}—{{else}}<input type="checkbox" name="disc" value="{{.Addr}}" checked>{{end}}</td>
+                <td style="padding:4px" data-label="{{$.DiscColSource}}">{{.Source}}</td>
+                <td style="padding:4px" class="mono" data-label="{{$.DiscColTarget}}">{{.Addr}}</td>
+                <td style="padding:4px" data-label="{{$.DiscColDetail}}">{{if .Title}}{{.Title}}{{else}}{{.Command}}{{end}}</td>
+                <td style="padding:4px" data-label="{{$.DiscColHTTP}}">{{if .HTTP}}✓{{else}}—{{end}}</td>
+                <td style="padding:4px" data-label="{{$.DiscColReg}}">{{if .Already}}{{$.DiscAlready}}{{else}}—{{end}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+          <button type="submit" style="margin-top:10px">{{$.DiscAddBtn}}</button>
+        </form>
+        {{else}}
+          <p style="margin:10px 0 0;opacity:.7;font-size:13px">{{$.DiscEmpty}}</p>
+        {{end}}
+      </div>
+    </details>
     {{if .Services}}
     <div class="inst-grid">
       {{range .Services}}
@@ -1175,6 +1238,7 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
           <span class="inst-badges">
             <span class="tag {{if .Enabled}}on{{else}}off{{end}}">{{.StatusLabel}}</span>
             <span class="tag {{.ProbeClass}}" data-badge="probe">{{.ProbeLabel}}</span>
+            {{if .Managed}}<span class="tag {{.RunClass}}">{{.RunLabel}}</span>{{end}}
             {{if .InsecureTLS}}<span class="tag warn">{{$.SvcInsecureBadge}}</span>{{end}}
           </span>
         </header>
@@ -1184,9 +1248,39 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
           <div class="im"><dt>{{$.SvcHostLabel}}</dt><dd>{{.HostHeaderLabel}}</dd></div>
           <div class="im"><dt>ID</dt><dd class="mono">{{.ID}}</dd></div>
           {{if .Note}}<div class="im wide"><dt>{{$.SvcNoteLabel}}</dt><dd>{{.Note}}</dd></div>{{end}}
+          {{if .Managed}}<div class="im wide"><dt>{{$.SvcStartCmdLabel}}</dt><dd class="mono path">{{.StartCmd}}</dd></div>{{end}}
         </dl>
+        {{if .Managed}}
+        <details class="pop" style="margin:6px 0 10px">
+          <summary>{{$.SvcBtnLogs}}</summary>
+          <div class="pop-panel"><pre class="mono path" style="white-space:pre-wrap;max-height:240px;overflow:auto;margin:0">{{if .Logs}}{{.Logs}}{{else}}-{{end}}</pre></div>
+        </details>
+        {{end}}
         <div class="inst-actions">
           <a class="open-btn" href="{{.Href}}" target="_blank" rel="noopener">{{$.BtnInstOpen}}</a>
+          {{if .Managed}}
+          <form method="post" action="{{$.AdminPath}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.start">
+            <input type="hidden" name="service_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.SvcBtnStart}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.stop">
+            <input type="hidden" name="service_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.SvcBtnStop}}</button>
+          </form>
+          <form method="post" action="{{$.AdminPath}}">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="action" value="service.restart">
+            <input type="hidden" name="service_id" value="{{.ID}}">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit">{{$.SvcBtnRestart}}</button>
+          </form>
+          {{end}}
           <form method="post" action="{{$.AdminPath}}">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <input type="hidden" name="action" value="service.probe">
@@ -1222,6 +1316,21 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
                     </select>
                   </label>
                   <label class="field">{{$.SvcNoteLabel}}<input type="text" name="note" value="{{.Note}}"></label>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="check"><input type="checkbox" name="managed" value="1"{{if .Managed}} checked{{end}}>{{$.SvcManagedLabel}}</label>
+                  <label class="check"><input type="checkbox" name="auto_start" value="1"{{if .AutoStart}} checked{{end}}>{{$.SvcAutoStartLabel}}</label>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="field">{{$.SvcStartCmdLabel}}<input type="text" name="start_cmd" value="{{.StartCmd}}"></label>
+                  <label class="field">{{$.SvcStopCmdLabel}}<input type="text" name="stop_cmd" value="{{.StopCmd}}"></label>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="field">{{$.SvcWorkDirLabel}}<input type="text" name="work_dir" value="{{.WorkDir}}"></label>
+                  <label class="field">{{$.SvcHealthPathLabel}}<input type="text" name="health_path" value="{{.HealthPath}}"></label>
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <label class="field">{{$.SvcEnvLabel}}<textarea name="env" rows="2">{{.Env}}</textarea></label>
                 </div>
                 <div class="row" style="margin-top:10px">
                   <label class="check"><input type="checkbox" name="insecure_tls" value="1"{{if .InsecureTLS}} checked{{end}}>{{$.SvcInsecureLabel}}</label>
@@ -1269,6 +1378,21 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
         <label class="check"><input type="checkbox" name="insecure_tls" value="1">{{.SvcInsecureLabel}}</label>
         <button type="submit" class="primary">{{.SvcBtnCreate}}</button>
       </div>
+      <div class="row" style="margin-top:10px">
+        <label class="check"><input type="checkbox" name="managed" value="1">{{.SvcManagedLabel}}</label>
+        <label class="check"><input type="checkbox" name="auto_start" value="1">{{.SvcAutoStartLabel}}</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">{{.SvcStartCmdLabel}}<input type="text" name="start_cmd"></label>
+        <label class="field">{{.SvcStopCmdLabel}}<input type="text" name="stop_cmd"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">{{.SvcWorkDirLabel}}<input type="text" name="work_dir"></label>
+        <label class="field">{{.SvcHealthPathLabel}}<input type="text" name="health_path"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="field">{{.SvcEnvLabel}}<textarea name="env" rows="2"></textarea></label>
+      </div>
       <p class="empty">{{.SvcCreateHint}}</p>
     </form>
 
@@ -1289,6 +1413,93 @@ footer{border-top:1px solid var(--line);padding:10px clamp(16px,1.6vw,28px);
     </table>
     <p class="empty" data-audit-empty{{if .Audit}} hidden{{end}}>{{.NoAudit}}</p>
   </section>
+
+  <section class="panel" id="panel-api">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3.4"></circle><path d="M10.4 10.4 20 20M17 17l-1.6 1.6M13.8 13.8 12.2 15.4"></path></svg></span><h2>{{.APITitle}}</h2></div>
+
+    {{/* 一次性明文密钥横幅：apikey.create 成功时直接渲染，不走 PRG。 */}}
+    {{if .NewKeySecret}}
+    <div class="notice ok" role="status" style="margin-bottom:14px">
+      <strong>{{.APIKeyCreated}}</strong><br>
+      {{.APIKeySecretLabel}}：<code class="mono" style="user-select:all">{{.NewKeySecret}}</code><br>
+      <span class="empty" style="margin:6px 0 0">{{.APIKeyCreatedHint}}</span>
+    </div>
+    {{end}}
+
+    <form method="post" action="{{.AdminPath}}" class="create-form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="api.toggle">
+      <div class="row">
+        <label class="check"><input type="checkbox" name="external_api_enabled" value="1"{{if .APIEnabled}} checked{{end}}>{{.APIToggleLabel}}</label>
+        <button type="submit" class="primary">{{.APIBtnSave}}</button>
+        <span class="tag {{if .APIEnabled}}on{{else}}off{{end}}">{{.APIStateLabel}}</span>
+      </div>
+      <p class="empty">{{.APIHint}}</p>
+    </form>
+
+    <div class="sec-head" style="margin-top:clamp(16px,1.4vw,22px)"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></span><h2>{{.APIKeyCreate}}</h2></div>
+    <form method="post" action="{{.AdminPath}}" class="create-form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="apikey.create">
+      <div class="row">
+        <label class="field">{{.APIKeyNameLabel}}<input type="text" name="key_name" required></label>
+        <label class="field">{{.APIKeyIPLabel}}<input type="text" name="key_ip_allowlist" placeholder="{{.APIKeyIPPh}}"></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <span class="field"><span class="lb">{{.APIKeyScopesLabel}}</span>
+          {{range .ScopeOptions}}<label class="check" style="display:inline-flex;margin-right:10px"><input type="checkbox" name="key_scope" value="{{.Value}}"{{if .Checked}} checked{{end}}>{{.Label}}</label>{{end}}
+        </span>
+      </div>
+      <div class="row" style="margin-top:10px"><button type="submit" class="primary">{{.APIBtnCreateKey}}</button></div>
+      <p class="empty">{{.APIKeyCreateHint}}</p>
+    </form>
+
+    {{if .APIKeys}}
+    <table style="margin-top:14px">
+      <thead><tr><th>{{.ColName}}</th><th>{{.APIColPrefix}}</th><th>{{.APIColScopes}}</th><th>{{.ColStatus}}</th><th>{{.APIColLastUsed}}</th><th></th></tr></thead>
+      <tbody>
+      {{range .APIKeys}}
+        <tr>
+          <td data-label="{{$.ColName}}">{{.Name}}</td>
+          <td class="mono" data-label="{{$.APIColPrefix}}">{{.Prefix}}…</td>
+          <td data-label="{{$.APIColScopes}}">{{.ScopesLabel}}</td>
+          <td data-label="{{$.ColStatus}}"><span class="tag {{if .Disabled}}off{{else}}on{{end}}">{{.StatusLabel}}</span></td>
+          <td data-label="{{$.APIColLastUsed}}">{{.LastUsed}}</td>
+          <td class="actions" style="white-space:nowrap">
+            <form method="post" action="{{$.AdminPath}}" style="display:inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="{{if .Disabled}}apikey.enable{{else}}apikey.disable{{end}}">
+              <input type="hidden" name="key_id" value="{{.ID}}">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <button type="submit">{{if .Disabled}}{{$.BtnEnable}}{{else}}{{$.BtnDisable}}{{end}}</button>
+            </form>
+            <form method="post" action="{{$.AdminPath}}" style="display:inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <input type="hidden" name="action" value="apikey.delete">
+              <input type="hidden" name="key_id" value="{{.ID}}">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <button type="submit" class="danger">{{$.BtnDelete}}</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}<p class="empty">{{.APINoKeys}}</p>{{end}}
+  </section>
+  <section class="panel" id="panel-site">
+    <div class="sec-head"><span class="sec-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"></path></svg></span><h2>{{.SiteTitle}}</h2></div>
+    <form method="post" action="{{.AdminPath}}" class="create-form">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="action" value="site.save">
+      <div class="row">
+        <label class="field">{{.SiteNameLabel}}<input type="text" name="site_title" value="{{.SiteTitleValue}}" placeholder="{{.SitePh}}" maxlength="64"></label>
+        <button type="submit" class="primary">{{.SiteBtnSave}}</button>
+      </div>
+      <p class="empty">{{.SiteHint}}</p>
+    </form>
+  </section>
+
   </div>
   </div>
 </main>

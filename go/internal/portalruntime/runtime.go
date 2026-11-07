@@ -295,6 +295,18 @@ func (rt *Runtime) Stop(ctx context.Context) error {
 	return firstErr
 }
 
+// siteTitle 读「站点名称」（读不到返回空）：给被代理的 dsh 页面注入标题前缀用。
+func (rt *Runtime) siteTitle() string {
+	if rt == nil || rt.opts.Store == nil {
+		return ""
+	}
+	v, err := rt.opts.Store.SiteTitle()
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
 // Upstream 返回某实例的反向代理处理器，供 portal.Server 当作上游使用。
 //
 // 第一次调用会把这个实例的监督者与代理建好，并**幂等地**把监督者跑起来：
@@ -391,6 +403,7 @@ func (rt *Runtime) ensureInstance(inst portal.Instance) (*instance, error) {
 		Status:       sup.LastError,
 		CookieSecure: rt.opts.TLS,
 		CookiePort:   rt.opts.CookiePort,
+		TitlePrefix:  rt.siteTitle,
 		Logger:       rt.log,
 	})
 	if err != nil {

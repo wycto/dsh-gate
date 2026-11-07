@@ -248,3 +248,104 @@ func TestMigrationV3ToV4(t *testing.T) {
 		t.Errorf("结构版本应升到 %d，实际 %d", SchemaVersion, version)
 	}
 }
+
+func TestServiceLifecycleFieldsRoundtrip(t *testing.T) {
+	store := openServiceTestStore(t)
+	svc := &Service{
+		Name: "managed1", Upstream: "http://127.0.0.1:18080",
+		Managed: true, StartCmd: "sleep 30", WorkDir: "/tmp", Env: "A=1\nB=2",
+		AutoStart: true, HealthPath: "/health",
+	}
+	if err := store.CreateService(svc); err != nil {
+		t.Fatalf("创建受管服务失败: %v", err)
+	}
+	got, err := store.ServiceByName("managed1")
+	if err != nil {
+		t.Fatalf("重读失败: %v", err)
+	}
+	if !got.Managed || got.StartCmd != "sleep 30" || got.WorkDir != "/tmp" ||
+		got.Env != "A=1\nB=2" || !got.AutoStart || got.HealthPath != "/health" {
+		t.Errorf("生命周期字段往返不一致: %+v", got)
+	}
+	got.StartCmd = "sleep 20"
+	got.AutoStart = false
+	if err := store.UpdateService(*got); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	again, _ := store.ServiceByID(got.ID)
+	if again.StartCmd != "sleep 20" || again.AutoStart {
+		t.Errorf("更新未生效: %+v", again)
+	}
+
+	// 纯代理型：即便传了生命周期字段，也应被清空、managed=false。
+	px := &Service{Name: "proxy1", Upstream: "http://10.0.0.1:80", StartCmd: "should-clear"}
+	if err := store.CreateService(px); err != nil {
+		t.Fatalf("创建纯代理服务失败: %v", err)
+	}
+	p2, _ := store.ServiceByName("proxy1")
+	if p2.Managed || p2.StartCmd != "" || p2.WorkDir != "" || p2.AutoStart {
+		t.Errorf("纯代理服务生命周期字段应清空: %+v", p2)
+	}
+}
+
+func TestServiceManagedValidation(t *testing.T) {
+	store := openServiceTestStore(t)
+	cases := []struct {
+		name string
+		svc  Service
+	}{
+		{"受管无启动命令", Service{Name: "m1", Upstream: "http://127.0.0.1:1", Managed: true}},
+		{"env 无等号", Service{Name: "m2", Upstream: "http://127.0.0.1:1", Managed: true, StartCmd: "x", Env: "NOEQUALS"}},
+		{"env 名非法", Service{Name: "m3", Upstream: "http://127.0.0.1:1", Managed: true, StartCmd: "x", Env: "1BAD=1"}},
+	}
+	for _, c := range cases {
+		svc := c.svc
+		if err := store.CreateService(&svc); err == nil {
+			t.Errorf("%s：应拒绝", c.name)
+		}
+	}
+}
+
+// TestMigrationV7ToV8 验证 v7 库升级到 v8：老服务 managed=0，可新建受管服务。
+func TestMigrationV7ToV8(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "portal.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("造库失败: %v", err)
+	}
+	for _, schema := range []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7} {
+		if _, err := db.Exec(schema); err != nil {
+			t.Fatalf("建老结构失败: %v", err)
+		}
+	}
+	if _, err := db.Exec("PRAGMA user_version = 7"); err != nil {
+		t.Fatalf("写版本失败: %v", err)
+	}
+	now := nowText()
+	if _, err := db.Exec("INSERT INTO services (id,name,upstream,host_header,insecure_tls,route_mode,listen_port,note,test_account,health_interval_s,enabled,source,created_at,updated_at) VALUES ('oldv7','legacy7','http://10.0.0.9:80','upstream',0,'path',0,'','',0,1,'manual',?,?)", now, now); err != nil {
+		t.Fatalf("插老服务失败: %v", err)
+	}
+	_ = db.Close()
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("迁移到 v8 失败: %v", err)
+	}
+	defer store.Close()
+	old, err := store.ServiceByName("legacy7")
+	if err != nil {
+		t.Fatalf("读老服务失败: %v", err)
+	}
+	if old.Managed || old.StartCmd != "" {
+		t.Errorf("老服务应 managed=0 且生命周期为空: %+v", old)
+	}
+	m := &Service{Name: "newmanaged", Upstream: "http://127.0.0.1:18080", Managed: true, StartCmd: "sleep 60"}
+	if err := store.CreateService(m); err != nil {
+		t.Fatalf("迁移后应能建受管服务: %v", err)
+	}
+	var version int
+	if err := store.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
+		t.Errorf("结构版本应为 %d，实际 %d (%v)", SchemaVersion, version, err)
+	}
+}

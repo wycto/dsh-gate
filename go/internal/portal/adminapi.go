@@ -55,6 +55,22 @@ type adminStateJSON struct {
 	// Features 是门户全局总开关（实例 / 服务）。关掉某类时所有人（含管理员）
 	// 的该类入口隐藏；与 users 段的每用户开关是两层（见 docs/portal.md）。
 	Features adminFeaturesJSON `json:"features"`
+	// APIKeys 是外部 API 密钥清单（**绝不含 hash/明文**）；
+	// ExternalAPIEnabled 是外部 API 总开关。
+	APIKeys            []adminAPIKeyJSON `json:"apiKeys"`
+	ExternalAPIEnabled bool              `json:"externalAPIEnabled"`
+	// SiteTitle 是自定义站点名称（空 = 各页面用默认标题），用于区分多台设备。
+	SiteTitle string `json:"siteTitle"`
+}
+
+// adminAPIKeyJSON 是状态端点里的一条 API 密钥（不含 hash 与明文）。
+type adminAPIKeyJSON struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Prefix     string   `json:"prefix"`
+	Scopes     []string `json:"scopes"`
+	Disabled   bool     `json:"disabled"`
+	LastUsedAt string   `json:"lastUsedAt"`
 }
 
 // adminFeaturesJSON 是状态端点里的门户全局总开关。
@@ -73,6 +89,11 @@ type adminServiceJSON struct {
 	Note        string `json:"note"`
 	Enabled     bool   `json:"enabled"`
 	URL         string `json:"url"`
+	// 受管服务（P1）：是否受管、是否在跑、运行态、进程号。
+	Managed bool   `json:"managed"`
+	Running bool   `json:"running"`
+	State   string `json:"state"`
+	PID     int    `json:"pid"`
 }
 
 type adminUserJSON struct {
@@ -170,6 +191,11 @@ type adminLiveServiceJSON struct {
 	Reachable   bool   `json:"reachable"`
 	StatusText  string `json:"statusText"`
 	StatusClass string `json:"statusClass"`
+	// 受管服务（P1）：运行态与显示就绪文案（running/stopped），非受管恒 false/空。
+	Managed   bool   `json:"managed"`
+	Running   bool   `json:"running"`
+	State     string `json:"state"`
+	StateText string `json:"stateText"`
 }
 
 // adminLiveEnvJSON 是运行环境页的实时状态（只在该页可见时请求）。
@@ -268,18 +294,36 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, actor 
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	apiKeys, err := s.opts.Store.ListAPIKeys()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	extEnabled, err := s.opts.Store.ExternalAPIEnabled()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	siteTitle, err := s.opts.Store.SiteTitle()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	out := adminStateJSON{
-		OK:            true,
-		Features:      adminFeaturesJSON{Instances: featInstances, Services: featServices},
-		Grants:        map[string][]string{},
-		ServiceGrants: map[string][]string{},
-		Counts:        map[string]int{"users": len(users), "instances": len(instances), "services": len(services)},
-		User:          map[string]string{"name": actor.Name, "role": string(actor.Role)},
-		Users:         make([]adminUserJSON, 0, len(users)),
-		Instances:     make([]adminInstanceJSON, 0, len(instances)),
-		Audit:         make([]adminAuditJSON, 0, len(audit)),
-		Services:      make([]adminServiceJSON, 0, len(services)),
+		OK:                 true,
+		Features:           adminFeaturesJSON{Instances: featInstances, Services: featServices},
+		Grants:             map[string][]string{},
+		ServiceGrants:      map[string][]string{},
+		Counts:             map[string]int{"users": len(users), "instances": len(instances), "services": len(services)},
+		User:               map[string]string{"name": actor.Name, "role": string(actor.Role)},
+		Users:              make([]adminUserJSON, 0, len(users)),
+		Instances:          make([]adminInstanceJSON, 0, len(instances)),
+		Audit:              make([]adminAuditJSON, 0, len(audit)),
+		Services:           make([]adminServiceJSON, 0, len(services)),
+		APIKeys:            make([]adminAPIKeyJSON, 0, len(apiKeys)),
+		ExternalAPIEnabled: extEnabled,
+		SiteTitle:          siteTitle,
 	}
 	for _, u := range users {
 		visible, err := s.opts.Store.InstancesForUser(u.ID)
@@ -322,10 +366,25 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request, actor 
 		})
 	}
 	for _, svc := range services {
+		var run ServiceRunStatus
+		if svc.Managed {
+			run = s.serviceRunStatus(svc.ID)
+		}
 		out.Services = append(out.Services, adminServiceJSON{
 			ID: svc.ID, Name: svc.Name, Upstream: svc.Upstream,
 			HostHeader: svc.HostHeader, InsecureTLS: svc.InsecureTLS,
 			Note: svc.Note, Enabled: svc.Enabled, URL: ServiceMountPrefix + svc.ID + "/",
+			Managed: svc.Managed, Running: run.Running, State: run.State, PID: run.PID,
+		})
+	}
+	for _, k := range apiKeys {
+		lastUsed := ""
+		if !k.LastUsedAt.IsZero() {
+			lastUsed = k.LastUsedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		out.APIKeys = append(out.APIKeys, adminAPIKeyJSON{
+			ID: k.ID, Name: k.Name, Prefix: k.Prefix, Scopes: k.ScopeList(),
+			Disabled: k.Disabled, LastUsedAt: lastUsed,
 		})
 	}
 	for _, e := range audit {
@@ -399,9 +458,19 @@ func (s *Server) handleAdminLive(w http.ResponseWriter, r *http.Request, lang i1
 	for _, svc := range services {
 		probe, probed := s.cachedServiceProbe(svc.ID)
 		text, class := serviceProbeLabel(lang, probe, probed)
+		var run ServiceRunStatus
+		stateText := ""
+		if svc.Managed {
+			run = s.serviceRunStatus(svc.ID)
+			stateText = i18n.T(lang, i18n.KeyAdminSvcStopped)
+			if run.Running {
+				stateText = i18n.T(lang, i18n.KeyAdminSvcRunning)
+			}
+		}
 		out.Services = append(out.Services, adminLiveServiceJSON{
 			ID: svc.ID, Probed: probed, Reachable: probed && probe.Reachable,
 			StatusText: text, StatusClass: class,
+			Managed: svc.Managed, Running: run.Running, State: run.State, StateText: stateText,
 		})
 	}
 	out.Stats = adminLiveStatsJSON{
